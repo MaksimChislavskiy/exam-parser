@@ -1,0 +1,837 @@
+{
+    "input_path": "output\\pages\\page_2.png",
+    "page_index": null,
+    "page_count": null,
+    "width": 3508,
+    "height": 2480,
+    "model_settings": {
+        "use_doc_preprocessor": false,
+        "use_layout_detection": true,
+        "use_chart_recognition": false,
+        "use_seal_recognition": false,
+        "use_ocr_for_image_block": false,
+        "format_block_content": false,
+        "merge_layout_blocks": true,
+        "markdown_ignore_labels": [
+            "number",
+            "footnote",
+            "header",
+            "header_image",
+            "footer",
+            "footer_image",
+            "aside_text"
+        ],
+        "return_layout_polygon_points": true
+    },
+    "parsing_res_list": [
+        {
+            "block_label": "text",
+            "block_content": "Единый государственный экзамен, 2026 г. Математика, 11 класс",
+            "block_bbox": [
+                105,
+                42,
+                1457,
+                94
+            ],
+            "block_id": 0,
+            "block_order": 1,
+            "group_id": 0
+        },
+        {
+            "block_label": "text",
+            "block_content": "4. Монету подбрасывают до тех пор, пока «орел» не выпадет два раза подряд. Найдите вероятность того, что опыт закончится ровно на четвертом броске.",
+            "block_bbox": [
+                103,
+                157,
+                1681,
+                269
+            ],
+            "block_id": 1,
+            "block_order": 2,
+            "group_id": 1
+        },
+        {
+            "block_label": "text",
+            "block_content": "Ответ: ___.",
+            "block_bbox": [
+                105,
+                352,
+                730,
+                399
+            ],
+            "block_id": 2,
+            "block_order": 3,
+            "group_id": 2
+        },
+        {
+            "block_label": "text",
+            "block_content": "5. В лабиринте Минотавра 5 дверей. За одной — выход, за остальными — тупики. Герой Тесей открывает двери случайным образом, но если находит тупик, то с вероятностью 0,2 забывает об этом и может проверить эту же дверь снова. Найдите вероятность того, что он найдет выход ровно с третьей попытки.",
+            "block_bbox": [
+                104,
+                554,
+                1692,
+                766
+            ],
+            "block_id": 3,
+            "block_order": 4,
+            "group_id": 3
+        },
+        {
+            "block_label": "text",
+            "block_content": "Ответ: ___.",
+            "block_bbox": [
+                105,
+                871,
+                730,
+                919
+            ],
+            "block_id": 4,
+            "block_order": 5,
+            "group_id": 4
+        },
+        {
+            "block_label": "text",
+            "block_content": "6. Решите уравнение:  $ x^{2} + 4x - \\cos(\\pi x) = -5 $",
+            "block_bbox": [
+                105,
+                1075,
+                1013,
+                1137
+            ],
+            "block_id": 5,
+            "block_order": 6,
+            "group_id": 5
+        },
+        {
+            "block_label": "text",
+            "block_content": "Ответ: ___.",
+            "block_bbox": [
+                105,
+                1253,
+                728,
+                1301
+            ],
+            "block_id": 6,
+            "block_order": 7,
+            "group_id": 6
+        },
+        {
+            "block_label": "text",
+            "block_content": "7. Найдите значение выражения:  $ \\frac{1}{\\log_{2}100!} + \\frac{1}{\\log_{3}100!} + \\ldots + \\frac{1}{\\log_{100}100!} $.\nОтвет: ___.",
+            "block_bbox": [
+                104,
+                1422,
+                1500,
+                1722
+            ],
+            "block_id": 7,
+            "block_order": 8,
+            "group_id": 7
+        },
+        {
+            "block_label": "text",
+            "block_content": "8. При каком значении параметра $a$ касательная к графику функции $f(x)=x^{3}-3x+2$, проведенная в точке с абсциссой $x_{0}=a$, проходит через точку $M(0;4)?$",
+            "block_bbox": [
+                106,
+                1901,
+                1689,
+                2096
+            ],
+            "block_id": 8,
+            "block_order": 9,
+            "group_id": 8
+        },
+        {
+            "block_label": "text",
+            "block_content": "Ответ: ___",
+            "block_bbox": [
+                106,
+                2211,
+                732,
+                2259
+            ],
+            "block_id": 9,
+            "block_order": 10,
+            "group_id": 9
+        },
+        {
+            "block_label": "text",
+            "block_content": "Тренировочный вариант № 540",
+            "block_bbox": [
+                1732,
+                45,
+                2311,
+                93
+            ],
+            "block_id": 10,
+            "block_order": 11,
+            "group_id": 10
+        },
+        {
+            "block_label": "text",
+            "block_content": "9. Для обогрева помещения, температура в котором поддерживается на уровне  $ T_{p}=20^{0}C $, используется нагреватель мощностью P. Температура воздуха на улице  $ T_{out}=-20^{0}C $. Известно, что  $ P=\\alpha\\cdot\\left(T_{P}-T_{out}\\right) $, где  $ \\alpha=250\\frac{Bm}{K} $. На сколько процентов нужно увеличить мощность нагревателя, чтобы поддерживать в помещении температуру  $ 24^{0}C $ при той же температура на улице?",
+            "block_bbox": [
+                1812,
+                157,
+                3401,
+                548
+            ],
+            "block_id": 11,
+            "block_order": 12,
+            "group_id": 11
+        },
+        {
+            "block_label": "text",
+            "block_content": "Ответ: ___",
+            "block_bbox": [
+                1815,
+                629,
+                2441,
+                678
+            ],
+            "block_id": 12,
+            "block_order": 13,
+            "group_id": 12
+        },
+        {
+            "block_label": "text",
+            "block_content": "10. На квалификации перед гонкой пилот решил проверить предельный износ шин и поехал по трассе 4 часа подряд без заездов в боксы. Известно, что каждый час из-за стирания резины он проезжал ровно на 1 круг меньше, чем в предыдущий. Всего за эти 4 часа непрерывной езды болид намотал 98 кругов.",
+            "block_bbox": [
+                1814,
+                802,
+                3401,
+                1014
+            ],
+            "block_id": 13,
+            "block_order": 14,
+            "group_id": 13
+        },
+        {
+            "block_label": "text",
+            "block_content": "Какое количество кругов пилот проехал за самый первый час квалификации?",
+            "block_bbox": [
+                1818,
+                1017,
+                3216,
+                1066
+            ],
+            "block_id": 14,
+            "block_order": 15,
+            "group_id": 14
+        },
+        {
+            "block_label": "text",
+            "block_content": "Ответ: ___",
+            "block_bbox": [
+                1818,
+                1147,
+                2439,
+                1195
+            ],
+            "block_id": 15,
+            "block_order": 16,
+            "group_id": 15
+        },
+        {
+            "block_label": "text",
+            "block_content": "11. График функции $y=\\frac{x^{2}+ax+b}{x^{2}+cx+d}$ имеет горизонтальную асимптоту $y=1$ и две вертикальные $x=2$ и $x=3$. При этом он проходит через начало координат и не пересекает свою горизонтальную асимптоту. Найдите значение $a+b+c+d$.",
+            "block_bbox": [
+                1814,
+                1324,
+                2773,
+                1737
+            ],
+            "block_id": 16,
+            "block_order": 17,
+            "group_id": 16
+        },
+        {
+            "block_label": "image",
+            "block_content": "",
+            "block_bbox": [
+                2809,
+                1333,
+                3460,
+                1897
+            ],
+            "block_id": 17,
+            "block_order": null,
+            "group_id": 17
+        },
+        {
+            "block_label": "text",
+            "block_content": "Ответ: ___.",
+            "block_bbox": [
+                1817,
+                1905,
+                2439,
+                1954
+            ],
+            "block_id": 18,
+            "block_order": 18,
+            "group_id": 18
+        },
+        {
+            "block_label": "text",
+            "block_content": "12. Найдите наименьшее значение функции  $ y = 2^{x} + 2^{2-x} $.",
+            "block_bbox": [
+                1818,
+                2081,
+                2936,
+                2141
+            ],
+            "block_id": 19,
+            "block_order": 19,
+            "group_id": 19
+        },
+        {
+            "block_label": "text",
+            "block_content": "Ответ: ___.",
+            "block_bbox": [
+                1818,
+                2257,
+                2439,
+                2305
+            ],
+            "block_id": 20,
+            "block_order": 20,
+            "group_id": 20
+        },
+        {
+            "block_label": "footer",
+            "block_content": "alexlarin.net 2026",
+            "block_bbox": [
+                567,
+                2387,
+                914,
+                2434
+            ],
+            "block_id": 21,
+            "block_order": null,
+            "group_id": 21
+        },
+        {
+            "block_label": "footer",
+            "block_content": "Разрешается свободное копирование, распространение и использование в образовательных некоммерческих целях",
+            "block_bbox": [
+                1046,
+                2395,
+                2953,
+                2435
+            ],
+            "block_id": 22,
+            "block_order": null,
+            "group_id": 22
+        }
+    ],
+    "layout_det_res": {
+        "input_path": null,
+        "page_index": null,
+        "boxes": [
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9040798544883728,
+                "coordinate": [
+                    105,
+                    42,
+                    1457,
+                    94
+                ],
+                "order": 1
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9694101214408875,
+                "coordinate": [
+                    103,
+                    157,
+                    1681,
+                    269
+                ],
+                "order": 2
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9306023716926575,
+                "coordinate": [
+                    105,
+                    352,
+                    730,
+                    399
+                ],
+                "order": 3
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9830371737480164,
+                "coordinate": [
+                    104,
+                    554,
+                    1692,
+                    766
+                ],
+                "order": 4
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.4102092385292053,
+                "coordinate": [
+                    892,
+                    562,
+                    1197,
+                    605
+                ],
+                "order": 5
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9409500360488892,
+                "coordinate": [
+                    105,
+                    871,
+                    730,
+                    919
+                ],
+                "order": 6
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9549111723899841,
+                "coordinate": [
+                    105,
+                    1075,
+                    1013,
+                    1137
+                ],
+                "order": 7
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.9443581700325012,
+                "coordinate": [
+                    542,
+                    1076,
+                    998,
+                    1133
+                ],
+                "order": 8
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9395546317100525,
+                "coordinate": [
+                    105,
+                    1253,
+                    728,
+                    1301
+                ],
+                "order": 9
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.6593871712684631,
+                "coordinate": [
+                    103,
+                    1424,
+                    1499,
+                    1559
+                ],
+                "order": 10
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.9597509503364563,
+                "coordinate": [
+                    741,
+                    1426,
+                    1491,
+                    1555
+                ],
+                "order": 11
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.4890398383140564,
+                "coordinate": [
+                    104,
+                    1422,
+                    1500,
+                    1722
+                ],
+                "order": 12
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.8167504668235779,
+                "coordinate": [
+                    105,
+                    1668,
+                    730,
+                    1716
+                ],
+                "order": 13
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.9403091669082642,
+                "coordinate": [
+                    122,
+                    1967,
+                    488,
+                    2025
+                ],
+                "order": 14
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9746939539909363,
+                "coordinate": [
+                    106,
+                    1901,
+                    1689,
+                    2096
+                ],
+                "order": 15
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.7543976902961731,
+                "coordinate": [
+                    1133,
+                    1980,
+                    1265,
+                    2027
+                ],
+                "order": 16
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9320462346076965,
+                "coordinate": [
+                    106,
+                    2211,
+                    732,
+                    2259
+                ],
+                "order": 17
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.8258122801780701,
+                "coordinate": [
+                    1732,
+                    45,
+                    2311,
+                    93
+                ],
+                "order": 18
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.592703104019165,
+                "coordinate": [
+                    1905,
+                    164,
+                    1988,
+                    210
+                ],
+                "order": 19
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.9382910132408142,
+                "coordinate": [
+                    1827,
+                    223,
+                    2044,
+                    287
+                ],
+                "order": 20
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.9465377926826477,
+                "coordinate": [
+                    1828,
+                    330,
+                    2087,
+                    394
+                ],
+                "order": 21
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.4024047255516052,
+                "coordinate": [
+                    2767,
+                    228,
+                    2815,
+                    276
+                ],
+                "order": 22
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9801777005195618,
+                "coordinate": [
+                    1812,
+                    157,
+                    3401,
+                    548
+                ],
+                "order": 23
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.9232986569404602,
+                "coordinate": [
+                    2409,
+                    326,
+                    2758,
+                    395
+                ],
+                "order": 24
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.9359983205795288,
+                "coordinate": [
+                    2875,
+                    307,
+                    3141,
+                    418
+                ],
+                "order": 25
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.9109491109848022,
+                "coordinate": [
+                    2285,
+                    484,
+                    2401,
+                    539
+                ],
+                "order": 26
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9215764403343201,
+                "coordinate": [
+                    1815,
+                    629,
+                    2441,
+                    678
+                ],
+                "order": 27
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9561586380004883,
+                "coordinate": [
+                    1814,
+                    802,
+                    3401,
+                    1014
+                ],
+                "order": 28
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.7061107158660889,
+                "coordinate": [
+                    1818,
+                    1017,
+                    3216,
+                    1066
+                ],
+                "order": 29
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9347036480903625,
+                "coordinate": [
+                    1818,
+                    1147,
+                    2439,
+                    1195
+                ],
+                "order": 30
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9859593510627747,
+                "coordinate": [
+                    1814,
+                    1324,
+                    2773,
+                    1737
+                ],
+                "order": 31
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.9528647661209106,
+                "coordinate": [
+                    2302,
+                    1325,
+                    2616,
+                    1446
+                ],
+                "order": 32
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.6101084351539612,
+                "coordinate": [
+                    2114,
+                    1525,
+                    2443,
+                    1574
+                ],
+                "order": 33
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.5195072889328003,
+                "coordinate": [
+                    2435,
+                    1462,
+                    2540,
+                    1511
+                ],
+                "order": 34
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.898138165473938,
+                "coordinate": [
+                    1828,
+                    1687,
+                    2088,
+                    1733
+                ],
+                "order": 35
+            },
+            {
+                "cls_id": 14,
+                "label": "image",
+                "score": 0.9768417477607727,
+                "coordinate": [
+                    2809,
+                    1333,
+                    3460,
+                    1897
+                ],
+                "order": null
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9322593808174133,
+                "coordinate": [
+                    1817,
+                    1905,
+                    2439,
+                    1954
+                ],
+                "order": 36
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9462994933128357,
+                "coordinate": [
+                    1818,
+                    2081,
+                    2936,
+                    2141
+                ],
+                "order": 37
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.9184685349464417,
+                "coordinate": [
+                    2661,
+                    2081,
+                    2907,
+                    2138
+                ],
+                "order": 38
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9294036030769348,
+                "coordinate": [
+                    1818,
+                    2257,
+                    2439,
+                    2305
+                ],
+                "order": 39
+            },
+            {
+                "cls_id": 8,
+                "label": "footer",
+                "score": 0.6914960145950317,
+                "coordinate": [
+                    567,
+                    2387,
+                    914,
+                    2434
+                ],
+                "order": null
+            },
+            {
+                "cls_id": 8,
+                "label": "footer",
+                "score": 0.9449367523193359,
+                "coordinate": [
+                    1046,
+                    2395,
+                    2953,
+                    2435
+                ],
+                "order": null
+            }
+        ]
+    }
+}
