@@ -1,0 +1,1017 @@
+{
+    "input_path": "output\\pages\\page_1.png",
+    "page_index": null,
+    "page_count": null,
+    "width": 3508,
+    "height": 2480,
+    "model_settings": {
+        "use_doc_preprocessor": false,
+        "use_layout_detection": true,
+        "use_chart_recognition": false,
+        "use_seal_recognition": false,
+        "use_ocr_for_image_block": false,
+        "format_block_content": false,
+        "merge_layout_blocks": true,
+        "markdown_ignore_labels": [
+            "number",
+            "footnote",
+            "header",
+            "header_image",
+            "footer",
+            "footer_image",
+            "aside_text"
+        ],
+        "return_layout_polygon_points": true
+    },
+    "parsing_res_list": [
+        {
+            "block_label": "header",
+            "block_content": "Единый государственный экзамен, 2026 г. Математика, 11 класс",
+            "block_bbox": [
+                111,
+                43,
+                1456,
+                93
+            ],
+            "block_id": 0,
+            "block_order": null,
+            "group_id": 0
+        },
+        {
+            "block_label": "header",
+            "block_content": "Тренировочный вариант № 540",
+            "block_bbox": [
+                1734,
+                46,
+                2309,
+                92
+            ],
+            "block_id": 1,
+            "block_order": null,
+            "group_id": 1
+        },
+        {
+            "block_label": "image",
+            "block_content": "",
+            "block_bbox": [
+                102,
+                154,
+                370,
+                416
+            ],
+            "block_id": 2,
+            "block_order": null,
+            "group_id": 2
+        },
+        {
+            "block_label": "paragraph_title",
+            "block_content": "Единый государственный экзамен по МАТЕМАТИКЕ\nТренировочный вариант № 540",
+            "block_bbox": [
+                568,
+                195,
+                1529,
+                295
+            ],
+            "block_id": 3,
+            "block_order": 1,
+            "group_id": 3
+        },
+        {
+            "block_label": "vision_footnote",
+            "block_content": "@ALEXLARIN_NET",
+            "block_bbox": [
+                105,
+                445,
+                370,
+                482
+            ],
+            "block_id": 4,
+            "block_order": null,
+            "group_id": 4
+        },
+        {
+            "block_label": "paragraph_title",
+            "block_content": "Профильный уровень\nИнструкция по выполнению работы",
+            "block_bbox": [
+                714,
+                351,
+                1383,
+                450
+            ],
+            "block_id": 5,
+            "block_order": 2,
+            "group_id": 5
+        },
+        {
+            "block_label": "text",
+            "block_content": "Экзаменационная работа состоит из двух частей, включающих в себя 19 заданий. Часть 1 содержит 12 заданий с кратким ответом базового и повышенного уровней сложности. Часть 2 содержит 7 заданий с развёрнутым ответом повышенного и высокого уровней сложности.",
+            "block_bbox": [
+                102,
+                503,
+                1689,
+                702
+            ],
+            "block_id": 6,
+            "block_order": 3,
+            "group_id": 6
+        },
+        {
+            "block_label": "text",
+            "block_content": "На выполнение экзаменационной работы по математике отводится 3 часа 55 минут (235 минут).",
+            "block_bbox": [
+                104,
+                708,
+                1688,
+                805
+            ],
+            "block_id": 7,
+            "block_order": 4,
+            "group_id": 7
+        },
+        {
+            "block_label": "text",
+            "block_content": "Ответы к заданиям 1–12 записываются по приведенному ниже образцу в виде целого числа или конечной десятичной дроби. Числа запишите в поля ответов в тексте работы, а затем перенесите в бланк ответов № 1.",
+            "block_bbox": [
+                105,
+                810,
+                1688,
+                957
+            ],
+            "block_id": 8,
+            "block_order": 5,
+            "group_id": 8
+        },
+        {
+            "block_label": "text",
+            "block_content": "КИМ Ответ: -0.8",
+            "block_bbox": [
+                135,
+                997,
+                589,
+                1055
+            ],
+            "block_id": 9,
+            "block_order": 6,
+            "group_id": 9
+        },
+        {
+            "block_label": "table",
+            "block_content": "<table><tr><td>10</td><td>-0,8</td><td></td><td></td><td></td></tr></table>",
+            "block_bbox": [
+                730,
+                984,
+                1542,
+                1056
+            ],
+            "block_id": 10,
+            "block_order": null,
+            "group_id": 10
+        },
+        {
+            "block_label": "text",
+            "block_content": "Бланк",
+            "block_bbox": [
+                1579,
+                991,
+                1659,
+                1027
+            ],
+            "block_id": 11,
+            "block_order": 7,
+            "group_id": 11
+        },
+        {
+            "block_label": "text",
+            "block_content": "При выполнении заданий 13—19 требуется записать полное решение и ответ в бланке ответов № 2.",
+            "block_bbox": [
+                104,
+                1101,
+                1688,
+                1196
+            ],
+            "block_id": 12,
+            "block_order": 8,
+            "group_id": 12
+        },
+        {
+            "block_label": "text",
+            "block_content": "Все бланки ЕГЭ заполняются яркими чёрными чернилами. Допускается использование телевой или капиллярной ручки.",
+            "block_bbox": [
+                105,
+                1202,
+                1688,
+                1299
+            ],
+            "block_id": 13,
+            "block_order": 9,
+            "group_id": 13
+        },
+        {
+            "block_label": "text",
+            "block_content": "При выполнении заданий можно пользоваться черновиком. Записи в черновике, а также в тексте контрольных измерительных материалов не учитываются при оценивании работы.",
+            "block_bbox": [
+                103,
+                1305,
+                1690,
+                1451
+            ],
+            "block_id": 14,
+            "block_order": 10,
+            "group_id": 14
+        },
+        {
+            "block_label": "text",
+            "block_content": "Баллы, полученные Вами за выполненные задания, суммируются. Постарайтесь выполнить как можно больше заданий и набрать наибольшее количество баллов.",
+            "block_bbox": [
+                105,
+                1459,
+                1687,
+                1602
+            ],
+            "block_id": 15,
+            "block_order": 11,
+            "group_id": 15
+        },
+        {
+            "block_label": "text",
+            "block_content": "После завершения работы проверьте, чтобы ответ на каждое задание в бланках ответов №1 и №2 был записан под правильным номером.",
+            "block_bbox": [
+                104,
+                1609,
+                1689,
+                1708
+            ],
+            "block_id": 16,
+            "block_order": 12,
+            "group_id": 16
+        },
+        {
+            "block_label": "text",
+            "block_content": "Желаем успеха!",
+            "block_bbox": [
+                742,
+                1761,
+                1051,
+                1808
+            ],
+            "block_id": 17,
+            "block_order": 13,
+            "group_id": 17
+        },
+        {
+            "block_label": "text",
+            "block_content": "Справочные материалы",
+            "block_bbox": [
+                663,
+                1865,
+                1132,
+                1910
+            ],
+            "block_id": 18,
+            "block_order": 14,
+            "group_id": 18
+        },
+        {
+            "block_label": "display_formula",
+            "block_content": " $$ \\sin2\\alpha=2\\sin\\alpha\\cdot\\cos\\alpha $$ ",
+            "block_bbox": [
+                669,
+                2014,
+                1127,
+                2066
+            ],
+            "block_id": 19,
+            "block_order": 15,
+            "group_id": 19
+        },
+        {
+            "block_label": "display_formula",
+            "block_content": " $$ \\cos2\\alpha=\\cos^{2}\\alpha-\\sin^{2}\\alpha $$ ",
+            "block_bbox": [
+                652,
+                2076,
+                1143,
+                2132
+            ],
+            "block_id": 20,
+            "block_order": 16,
+            "group_id": 20
+        },
+        {
+            "block_label": "display_formula",
+            "block_content": " $$ \\sin\\left(\\alpha+\\beta\\right)=\\sin\\alpha\\cdot\\cos\\beta+\\cos\\alpha\\cdot\\sin\\beta $$ ",
+            "block_bbox": [
+                502,
+                2143,
+                1293,
+                2206
+            ],
+            "block_id": 21,
+            "block_order": 17,
+            "group_id": 21
+        },
+        {
+            "block_label": "display_formula",
+            "block_content": " $$ \\cos\\left(\\alpha+\\beta\\right)=\\cos\\alpha\\cdot\\cos\\beta-\\sin\\alpha\\cdot\\sin\\beta $$ ",
+            "block_bbox": [
+                499,
+                2228,
+                1298,
+                2291
+            ],
+            "block_id": 22,
+            "block_order": 18,
+            "group_id": 22
+        },
+        {
+            "block_label": "figure_title",
+            "block_content": "Часть 1",
+            "block_bbox": [
+                2509,
+                154,
+                2703,
+                204
+            ],
+            "block_id": 23,
+            "block_order": null,
+            "group_id": 23
+        },
+        {
+            "block_label": "text",
+            "block_content": "Ответом к заданиям 1-12 является целое число или конечная десятичная дробь. Во всех заданиях числа предполагаются действительные, если отдельно не указано иное. Запишите число в поле ответа в тексте работы, затем перенесите его в БЛАНК ОТВЕТОВ №1 справа от номера соответствующего задания, начиная с первой клеточки. Каждую цифру, знак «минус» и запятую пишите в отдельной клеточке в соответствии с приведёнными в бланке образцами. Единицы измерений писать не нужно.\n1. В остроугольном треугольнике АВС проведены высоты АА $ _{1} $ и ВВ $ _{1} $. Известно, что А $ _{1} $В $ _{1} $ = 4, а площадь описанного около треугольника АВС круга равна 16π. Найдите угол АВС в градусах.",
+            "block_bbox": [
+                1809,
+                218,
+                3399,
+                579
+            ],
+            "block_id": 24,
+            "block_order": 19,
+            "group_id": 24
+        },
+        {
+            "block_label": "text",
+            "block_content": "",
+            "block_bbox": [
+                1814,
+                686,
+                2956,
+                906
+            ],
+            "block_id": 25,
+            "block_order": 20,
+            "group_id": 24
+        },
+        {
+            "block_label": "text",
+            "block_content": "Ответ: ___",
+            "block_bbox": [
+                1817,
+                1061,
+                2437,
+                1108
+            ],
+            "block_id": 26,
+            "block_order": 21,
+            "group_id": 26
+        },
+        {
+            "block_label": "image",
+            "block_content": "",
+            "block_bbox": [
+                3006,
+                668,
+                3435,
+                1126
+            ],
+            "block_id": 27,
+            "block_order": null,
+            "group_id": 27
+        },
+        {
+            "block_label": "text",
+            "block_content": "2. Даны векторы  $ \\vec{a} $ и  $ \\vec{b} $, такие что  $ \\left|\\vec{a}\\right|=2 $;  $ \\left|\\vec{b}\\right|=5 $, а угол между ними равен  $ 120^{\\circ} $. Найдите квадрат длины вектора  $ \\vec{c}=3\\vec{a}-\\vec{b} $.",
+            "block_bbox": [
+                1810,
+                1243,
+                3395,
+                1412
+            ],
+            "block_id": 28,
+            "block_order": 22,
+            "group_id": 28
+        },
+        {
+            "block_label": "text",
+            "block_content": "Ответ: ___.",
+            "block_bbox": [
+                1817,
+                1548,
+                2438,
+                1595
+            ],
+            "block_id": 29,
+            "block_order": 23,
+            "group_id": 29
+        },
+        {
+            "block_label": "text",
+            "block_content": "3. Основанием прямой треугольной призмы АВСА₁В₁С₁ является равнобедренный прямоугольный треугольник ABC, AB = BC = 2. Точка М – середина бокового ребра АА₁, которое равно 3. Найдите объем пирамиды ВСС₁М.",
+            "block_bbox": [
+                1813,
+                1708,
+                2915,
+                1922
+            ],
+            "block_id": 30,
+            "block_order": 24,
+            "group_id": 30
+        },
+        {
+            "block_label": "text",
+            "block_content": "Ответ: ___.",
+            "block_bbox": [
+                1819,
+                2250,
+                2438,
+                2297
+            ],
+            "block_id": 31,
+            "block_order": 25,
+            "group_id": 31
+        },
+        {
+            "block_label": "image",
+            "block_content": "",
+            "block_bbox": [
+                2949,
+                1718,
+                3423,
+                2230
+            ],
+            "block_id": 32,
+            "block_order": null,
+            "group_id": 32
+        },
+        {
+            "block_label": "footer",
+            "block_content": "alexlarin.net 2026",
+            "block_bbox": [
+                567,
+                2387,
+                914,
+                2434
+            ],
+            "block_id": 33,
+            "block_order": null,
+            "group_id": 33
+        },
+        {
+            "block_label": "footer",
+            "block_content": "Разрешается свободное копирование, распространение и использование в образовательных некоммерческих целях",
+            "block_bbox": [
+                1047,
+                2395,
+                2952,
+                2435
+            ],
+            "block_id": 34,
+            "block_order": null,
+            "group_id": 34
+        }
+    ],
+    "layout_det_res": {
+        "input_path": null,
+        "page_index": null,
+        "boxes": [
+            {
+                "cls_id": 12,
+                "label": "header",
+                "score": 0.857795000076294,
+                "coordinate": [
+                    111,
+                    43,
+                    1456,
+                    93
+                ],
+                "order": null
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.43248629570007324,
+                "coordinate": [
+                    1020,
+                    44,
+                    1454,
+                    92
+                ],
+                "order": 1
+            },
+            {
+                "cls_id": 12,
+                "label": "header",
+                "score": 0.9225133657455444,
+                "coordinate": [
+                    1734,
+                    46,
+                    2309,
+                    92
+                ],
+                "order": null
+            },
+            {
+                "cls_id": 14,
+                "label": "image",
+                "score": 0.9752776622772217,
+                "coordinate": [
+                    102,
+                    154,
+                    370,
+                    416
+                ],
+                "order": null
+            },
+            {
+                "cls_id": 17,
+                "label": "paragraph_title",
+                "score": 0.7573165893554688,
+                "coordinate": [
+                    568,
+                    195,
+                    1529,
+                    295
+                ],
+                "order": 2
+            },
+            {
+                "cls_id": 24,
+                "label": "vision_footnote",
+                "score": 0.7920325994491577,
+                "coordinate": [
+                    105,
+                    445,
+                    370,
+                    482
+                ],
+                "order": null
+            },
+            {
+                "cls_id": 17,
+                "label": "paragraph_title",
+                "score": 0.5949556231498718,
+                "coordinate": [
+                    714,
+                    351,
+                    1383,
+                    450
+                ],
+                "order": 3
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.985858142375946,
+                "coordinate": [
+                    102,
+                    503,
+                    1689,
+                    702
+                ],
+                "order": 4
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9761936664581299,
+                "coordinate": [
+                    104,
+                    708,
+                    1688,
+                    805
+                ],
+                "order": 5
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.982363224029541,
+                "coordinate": [
+                    105,
+                    810,
+                    1688,
+                    957
+                ],
+                "order": 6
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.4560851454734802,
+                "coordinate": [
+                    135,
+                    996,
+                    211,
+                    1038
+                ],
+                "order": 7
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.6694887280464172,
+                "coordinate": [
+                    135,
+                    997,
+                    589,
+                    1055
+                ],
+                "order": 8
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.48467278480529785,
+                "coordinate": [
+                    261,
+                    1010,
+                    379,
+                    1052
+                ],
+                "order": 9
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.45047932863235474,
+                "coordinate": [
+                    735,
+                    989,
+                    968,
+                    1053
+                ],
+                "order": 10
+            },
+            {
+                "cls_id": 21,
+                "label": "table",
+                "score": 0.8861644268035889,
+                "coordinate": [
+                    730,
+                    984,
+                    1542,
+                    1056
+                ],
+                "order": null
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.48613473773002625,
+                "coordinate": [
+                    1579,
+                    991,
+                    1659,
+                    1027
+                ],
+                "order": 11
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9763848185539246,
+                "coordinate": [
+                    104,
+                    1101,
+                    1688,
+                    1196
+                ],
+                "order": 12
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9770058989524841,
+                "coordinate": [
+                    105,
+                    1202,
+                    1688,
+                    1299
+                ],
+                "order": 13
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9825729131698608,
+                "coordinate": [
+                    103,
+                    1305,
+                    1690,
+                    1451
+                ],
+                "order": 14
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9821218252182007,
+                "coordinate": [
+                    105,
+                    1459,
+                    1687,
+                    1602
+                ],
+                "order": 15
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9761074781417847,
+                "coordinate": [
+                    104,
+                    1609,
+                    1689,
+                    1708
+                ],
+                "order": 16
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.7381649017333984,
+                "coordinate": [
+                    742,
+                    1761,
+                    1051,
+                    1808
+                ],
+                "order": 17
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.7034820318222046,
+                "coordinate": [
+                    663,
+                    1865,
+                    1132,
+                    1910
+                ],
+                "order": 18
+            },
+            {
+                "cls_id": 5,
+                "label": "display_formula",
+                "score": 0.8139942288398743,
+                "coordinate": [
+                    669,
+                    2014,
+                    1127,
+                    2066
+                ],
+                "order": 19
+            },
+            {
+                "cls_id": 5,
+                "label": "display_formula",
+                "score": 0.883435070514679,
+                "coordinate": [
+                    652,
+                    2076,
+                    1143,
+                    2132
+                ],
+                "order": 20
+            },
+            {
+                "cls_id": 5,
+                "label": "display_formula",
+                "score": 0.8596539497375488,
+                "coordinate": [
+                    502,
+                    2143,
+                    1293,
+                    2206
+                ],
+                "order": 21
+            },
+            {
+                "cls_id": 5,
+                "label": "display_formula",
+                "score": 0.8609925508499146,
+                "coordinate": [
+                    499,
+                    2228,
+                    1298,
+                    2291
+                ],
+                "order": 22
+            },
+            {
+                "cls_id": 7,
+                "label": "figure_title",
+                "score": 0.5947064757347107,
+                "coordinate": [
+                    2509,
+                    154,
+                    2703,
+                    204
+                ],
+                "order": null
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9266086220741272,
+                "coordinate": [
+                    1809,
+                    218,
+                    3399,
+                    579
+                ],
+                "order": 23
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9837626218795776,
+                "coordinate": [
+                    1814,
+                    686,
+                    2956,
+                    906
+                ],
+                "order": 24
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.7196713089942932,
+                "coordinate": [
+                    2216,
+                    749,
+                    2383,
+                    792
+                ],
+                "order": 25
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9272776246070862,
+                "coordinate": [
+                    1817,
+                    1061,
+                    2437,
+                    1108
+                ],
+                "order": 26
+            },
+            {
+                "cls_id": 14,
+                "label": "image",
+                "score": 0.980955183506012,
+                "coordinate": [
+                    3006,
+                    668,
+                    3435,
+                    1126
+                ],
+                "order": null
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.4078344702720642,
+                "coordinate": [
+                    2168,
+                    1247,
+                    2301,
+                    1311
+                ],
+                "order": 27
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9794518947601318,
+                "coordinate": [
+                    1810,
+                    1243,
+                    3395,
+                    1412
+                ],
+                "order": 28
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.9287230372428894,
+                "coordinate": [
+                    2503,
+                    1244,
+                    2801,
+                    1328
+                ],
+                "order": 29
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.8667219877243042,
+                "coordinate": [
+                    2423,
+                    1341,
+                    2629,
+                    1405
+                ],
+                "order": 30
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9411042332649231,
+                "coordinate": [
+                    1817,
+                    1548,
+                    2438,
+                    1595
+                ],
+                "order": 31
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9839885830879211,
+                "coordinate": [
+                    1813,
+                    1708,
+                    2915,
+                    1922
+                ],
+                "order": 32
+            },
+            {
+                "cls_id": 15,
+                "label": "inline_formula",
+                "score": 0.4915785491466522,
+                "coordinate": [
+                    1918,
+                    1822,
+                    2133,
+                    1864
+                ],
+                "order": 33
+            },
+            {
+                "cls_id": 22,
+                "label": "text",
+                "score": 0.9321649074554443,
+                "coordinate": [
+                    1819,
+                    2250,
+                    2438,
+                    2297
+                ],
+                "order": 34
+            },
+            {
+                "cls_id": 14,
+                "label": "image",
+                "score": 0.9809617400169373,
+                "coordinate": [
+                    2949,
+                    1718,
+                    3423,
+                    2230
+                ],
+                "order": null
+            },
+            {
+                "cls_id": 8,
+                "label": "footer",
+                "score": 0.9050517678260803,
+                "coordinate": [
+                    567,
+                    2387,
+                    914,
+                    2434
+                ],
+                "order": null
+            },
+            {
+                "cls_id": 8,
+                "label": "footer",
+                "score": 0.9432650804519653,
+                "coordinate": [
+                    1047,
+                    2395,
+                    2952,
+                    2435
+                ],
+                "order": null
+            }
+        ]
+    }
+}
