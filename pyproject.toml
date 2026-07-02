@@ -1,19 +1,37 @@
+[build-system]
+requires = ["setuptools>=82.0.1"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "exam-parser"
 version = "0.1.0"
-description = "Add your description here"
+description = "Extract mathematical exam tasks with PaddleOCR and Mistral"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "paddleocr>=3.7.0",
-    "paddlepaddle>=3.3.1",
+    "paddleocr==3.7.0",
+    "paddlepaddle==3.3.1",
+    "paddlex[ocr]==3.7.1",
     "pdf2image>=1.17.0",
     "pillow>=12.2.0",
     "pymupdf>=1.27.2.3",
-    "requests>=2.34.2",
+    "mistralai>=2.5.0",
+    "openpyxl>=3.1.5",
+    "pydantic>=2.10.0",
+    "python-dotenv>=1.0.1",
     "setuptools>=82.0.1",
-    "torch>=2.10.0",
-    "torchaudio>=2.11.0",
-    "torchvision>=0.25.0",
+    "torch==2.10.0",
+    "torchaudio==2.10.0",
+    "torchvision==0.25.0",
     "transformers==4.40.0",
 ]
+
+[project.scripts]
+exam-parser = "exam_parser.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["exam_parser*"]
+
+[tool.uv]
+link-mode = "copy"
