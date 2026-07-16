@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .documents import prepare_pages
 from .markdown_pipeline import process_markdown
-from .paddle import recognize_pages
+from .paddle import PaddleDeviceError, recognize_pages
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -38,6 +38,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--device",
         default="gpu:0",
         help="Устройство Paddle: gpu:0 (по умолчанию), cpu или auto",
+    )
+    parser.add_argument(
+        "--allow-cpu-fallback",
+        action="store_true",
+        help=(
+            "Автоматически продолжить на CPU, если GPU недоступен. "
+            "Без этого флага в обычном терминале программа запросит подтверждение."
+        ),
     )
     parser.add_argument(
         "--reuse-markdown",
@@ -77,7 +85,15 @@ def main() -> None:
     print(f"Источник ответов: {args.answer_source}", flush=True)
     if run_ocr:
         pages = prepare_pages(input_path, pages_dir, dpi=args.dpi)
-        recognize_pages(pages, markdown_dir, device=args.device)
+        try:
+            recognize_pages(
+                pages,
+                markdown_dir,
+                device=args.device,
+                allow_cpu_fallback=args.allow_cpu_fallback,
+            )
+        except PaddleDeviceError as error:
+            raise SystemExit(str(error)) from None
     else:
         print(f"Используется готовый Markdown: {markdown_dir}", flush=True)
 
