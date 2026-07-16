@@ -13,7 +13,9 @@ from .models import (
     DocumentAnswerExtraction,
     ExtractedAnswer,
     ExtractedTask,
+    GeneratedAnswer,
     PageExtraction,
+    TaskDetailedSolution,
     TaskSolution,
 )
 
@@ -24,6 +26,25 @@ SOLUTION_PROMPT = """
 названия отрезков, прямых, углов и вершин оборачивай в одиночные знаки $...$.
 Индексы записывай в LaTeX: A1 как $A_1$, A2BB2 как $A_2BB_2$.
 Корректно экранируй обратные слэши LaTeX.
+
+Задача {task_num}:
+{condition}
+""".strip()
+
+SOLUTION_ONLY_PROMPT = """
+Реши математическую задачу. Верни только подробное пошаговое решение.
+Не добавляй отдельный короткий ответ. Сохрани язык условия. Все математические
+переменные, формулы, названия отрезков, прямых, углов и вершин оборачивай в
+одиночные знаки $...$. Индексы записывай в LaTeX: A1 как $A_1$,
+A2BB2 как $A_2BB_2$. Корректно экранируй обратные слэши LaTeX.
+
+Задача {task_num}:
+{condition}
+""".strip()
+
+ANSWER_ONLY_PROMPT = """
+Реши математическую задачу и верни только короткий финальный ответ без объяснений
+и без подробного решения. Сохрани точные числа, знаки, дроби и необходимый LaTeX.
 
 Задача {task_num}:
 {condition}
@@ -111,23 +132,41 @@ Markdown всех страниц документа:
         return _parse_response(response, DocumentAnswerExtraction).answers
 
     def solve_task(self, task: ExtractedTask) -> TaskSolution:
+        return self._request_task_result(task, SOLUTION_PROMPT, TaskSolution)
+
+    def generate_solution(self, task: ExtractedTask) -> TaskDetailedSolution:
+        return self._request_task_result(
+            task,
+            SOLUTION_ONLY_PROMPT,
+            TaskDetailedSolution,
+        )
+
+    def generate_answer(self, task: ExtractedTask) -> GeneratedAnswer:
+        return self._request_task_result(task, ANSWER_ONLY_PROMPT, GeneratedAnswer)
+
+    def _request_task_result(
+        self,
+        task: ExtractedTask,
+        prompt_template: str,
+        response_model: type[T],
+    ) -> T:
         response = _with_rate_limit_retry(
             lambda: self.client.chat.parse(
                 model=self.model,
                 messages=[
                     {
                         "role": "user",
-                        "content": SOLUTION_PROMPT.format(
+                        "content": prompt_template.format(
                             task_num=task.task_num,
                             condition=task.condition,
                         ),
                     }
                 ],
-                response_format=TaskSolution,
+                response_format=response_model,
                 temperature=0,
             )
         )
-        return _parse_response(response, TaskSolution)
+        return _parse_response(response, response_model)
 
 
 def _parse_response(response: object, model: type[T]) -> T:
