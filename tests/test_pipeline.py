@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from types import SimpleNamespace
 
 from PIL import Image
 from pydantic import ValidationError
 
+from exam_parser.cli import build_parser
 from exam_parser.markdown_pipeline import (
     _apply_document_answers,
     _associate_images_with_tasks,
@@ -23,13 +26,35 @@ from exam_parser.paddle import (
 )
 
 
+class CliTests(unittest.TestCase):
+    def test_input_document_is_required(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit) as context:
+            build_parser().parse_args([])
+
+        self.assertEqual(context.exception.code, 2)
+        self.assertIn("input", stderr.getvalue())
+
+    def test_one_concrete_input_path_is_accepted(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "output/input/variant_951.pdf",
+                "--answer-source",
+                "document",
+            ]
+        )
+
+        self.assertEqual(args.input, Path("output/input/variant_951.pdf"))
+        self.assertEqual(args.answer_source, "document")
+
+
 class ModelsTests(unittest.TestCase):
     def test_empty_task_number_is_rejected(self) -> None:
         with self.assertRaises(ValidationError):
             ExtractedTask(task_num="", condition="Условие")
 
     def test_latex_control_escape_is_repaired(self) -> None:
-        result = TaskSolution(solution="$x=\x0crac{1}{2}$", answer="1/2")
+        result = TaskSolution(solution="$x=" + "\f" + "rac{1}{2}$", answer="1/2")
         self.assertIn("\\frac", result.solution)
 
     def test_geometry_notation_is_wrapped(self) -> None:
