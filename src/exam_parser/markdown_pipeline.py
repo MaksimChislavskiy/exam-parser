@@ -12,7 +12,7 @@ from .mistral_client import MistralTaskClient
 from .models import ExtractedAnswer, ExtractedTask, TaskRecord
 
 
-AnswerSource = Literal["generated", "document"]
+AnswerSource = Literal["generated", "document", "none"]
 
 IMAGE_PATTERN = re.compile(
     r'(?:src=["\'](?:imgs/)?([^"\']+)["\']|!\[[^]]*]\((?:imgs/)?([^)]+)\))',
@@ -25,6 +25,7 @@ def process_markdown(
     markdown_dir: str | Path,
     output_dir: str | Path,
     *,
+    include_solutions: bool = True,
     answer_source: AnswerSource = "generated",
     model: str | None = None,
     expected_tasks: int | None = 19,
@@ -78,30 +79,84 @@ def process_markdown(
             )
         )
 
-    if answer_source == "generated":
-        _generate_solutions(records, extracted, client)
-    elif answer_source == "document":
-        print("Mistral: извлечение готовых ответов из документа", flush=True)
-        answers = client.extract_document_answers("".join(all_markdown))
-        _apply_document_answers(records, answers)
-    else:
-        raise ValueError(f"Неизвестный источник ответов: {answer_source}")
+    _populate_requested_results(
+        records,
+        extracted,
+        "".join(all_markdown),
+        client,
+        include_solutions=include_solutions,
+        answer_source=answer_source,
+    )
 
     write_tasks_xlsx(records, output_dir / "tasks.xlsx")
     return records
 
 
-def _generate_solutions(
+def _populate_requested_results(
+    records: list[TaskRecord],
+    extracted: list[tuple[ExtractedTask, Path]],
+    all_markdown: str,
+    client: MistralTaskClient,
+    *,
+    include_solutions: bool,
+    answer_source: AnswerSource,
+) -> None:
+    if answer_source == "document":
+        print("Mistral: извлечение готовых ответов из документа", flush=True)
+        answers = client.extract_document_answers(all_markdown)
+        _apply_document_answers(records, answers)
+    elif answer_source not in {"generated", "none"}:
+        raise ValueError(f"Неизвестный источник ответов: {answer_source}")
+
+    if include_solutions and answer_source == "generated":
+        _generate_solutions_and_answers(records, extracted, client)
+    elif include_solutions:
+        _generate_solutions_only(records, extracted, client)
+    elif answer_source == "generated":
+        _generate_answers_only(records, extracted, client)
+
+
+def _task_by_number(
+    extracted: list[tuple[ExtractedTask, Path]],
+) -> dict[str, ExtractedTask]:
+    return {task.task_num: task for task, _ in extracted}
+
+
+def _generate_solutions_and_answers(
     records: list[TaskRecord],
     extracted: list[tuple[ExtractedTask, Path]],
     client: MistralTaskClient,
 ) -> None:
-    task_by_num = {task.task_num: task for task, _ in extracted}
+    task_by_num = _task_by_number(extracted)
     for record in records:
-        print(f"Mistral: решение задачи {record.task_num}", flush=True)
+        print(f"Mistral: решение и ответ для задачи {record.task_num}", flush=True)
         solved = client.solve_task(task_by_num[record.task_num])
         record.solution = solved.solution
         record.answer = solved.answer
+
+
+def _generate_solutions_only(
+    records: list[TaskRecord],
+    extracted: list[tuple[ExtractedTask, Path]],
+    client: MistralTaskClient,
+) -> None:
+    task_by_num = _task_by_number(extracted)
+    for record in records:
+        print(f"Mistral: подробное решение задачи {record.task_num}", flush=True)
+        solved = client.generate_solution(task_by_num[record.task_num])
+        record.solution = solved.solution
+
+
+def _generate_answers_only(
+    records: list[TaskRecord],
+    extracted: list[tuple[ExtractedTask, Path]],
+    client: MistralTaskClient,
+) -> None:
+    task_by_num = _task_by_number(extracted)
+    for record in records:
+        print(f"Mistral: короткий ответ для задачи {record.task_num}", flush=True)
+        generated = client.generate_answer(task_by_num[record.task_num])
+        record.answer = generated.answer
 
 
 def _apply_document_answers(
@@ -129,7 +184,6 @@ def _apply_document_answers(
         )
 
     for record in records:
-        record.solution = ""
         record.answer = answer_by_num[record.task_num]
 
 
