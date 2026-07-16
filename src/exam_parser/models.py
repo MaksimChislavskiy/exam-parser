@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
+from .math_text import normalize_geometry_notation
+
 
 def repair_latex_control_characters(value: str) -> str:
     """Восстанавливает LaTeX-команды, ошибочно декодированные как JSON escapes."""
@@ -13,6 +15,11 @@ def repair_latex_control_characters(value: str) -> str:
     )
 
 
+def normalize_math_text(value: str) -> str:
+    repaired = repair_latex_control_characters(value)
+    return normalize_geometry_notation(repaired)
+
+
 class ExtractedTask(BaseModel):
     task_num: str = Field(min_length=1)
     condition: str = Field(min_length=1)
@@ -20,12 +27,26 @@ class ExtractedTask(BaseModel):
 
     @field_validator("condition")
     @classmethod
-    def repair_condition_latex(cls, value: str) -> str:
-        return repair_latex_control_characters(value)
+    def normalize_condition(cls, value: str) -> str:
+        return normalize_math_text(value)
 
 
 class PageExtraction(BaseModel):
     tasks: list[ExtractedTask]
+
+
+class ExtractedAnswer(BaseModel):
+    task_num: str = Field(min_length=1)
+    answer: str = Field(min_length=1)
+
+    @field_validator("answer")
+    @classmethod
+    def normalize_answer(cls, value: str) -> str:
+        return normalize_math_text(value)
+
+
+class DocumentAnswerExtraction(BaseModel):
+    answers: list[ExtractedAnswer]
 
 
 class TaskSolution(BaseModel):
@@ -34,8 +55,8 @@ class TaskSolution(BaseModel):
 
     @field_validator("solution", "answer")
     @classmethod
-    def repair_solution_latex(cls, value: str) -> str:
-        return repair_latex_control_characters(value)
+    def normalize_solution(cls, value: str) -> str:
+        return normalize_math_text(value)
 
 
 class TaskRecord(BaseModel):
@@ -47,5 +68,5 @@ class TaskRecord(BaseModel):
 
     @field_validator("condition", "solution", "answer")
     @classmethod
-    def repair_record_latex(cls, value: str) -> str:
-        return repair_latex_control_characters(value)
+    def normalize_record_math(cls, value: str) -> str:
+        return normalize_math_text(value)

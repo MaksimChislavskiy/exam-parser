@@ -1,27 +1,33 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
+from typing import Literal
 
 from PIL import Image
 
 from .excel import write_tasks_xlsx
 from .mistral_client import MistralTaskClient
-from .models import TaskRecord
+from .models import ExtractedAnswer, ExtractedTask, TaskRecord
 
+
+AnswerSource = Literal["generated", "document"]
 
 IMAGE_PATTERN = re.compile(
     r'(?:src=["\'](?:imgs/)?([^"\']+)["\']|!\[[^]]*]\((?:imgs/)?([^)]+)\))',
     re.IGNORECASE,
 )
+TASK_HEADING_PATTERN = re.compile(r"(?m)^\s*(\d+(?:\.\d+)*)\.\s")
 
 
 def process_markdown(
     markdown_dir: str | Path,
     output_dir: str | Path,
     *,
-    include_solutions: bool = True,
+    answer_source: AnswerSource = "generated",
     model: str | None = None,
+    expected_tasks: int | None = 19,
 ) -> list[TaskRecord]:
     markdown_dir = Path(markdown_dir)
     output_dir = Path(output_dir)
@@ -36,43 +42,125 @@ def process_markdown(
         raise FileNotFoundError(f"В {markdown_dir} нет page_N/page_N.md")
 
     client = MistralTaskClient(model=model)
-    records: list[TaskRecord] = []
+    extracted: list[tuple[ExtractedTask, Path]] = []
+    all_markdown: list[str] = []
+
     for page_path in pages:
         page_num = _page_number(page_path)
         markdown = page_path.read_text(encoding="utf-8")
+        all_markdown.append(f"\n\n<!-- PAGE {page_num} -->\n{markdown}")
         image_ids = _image_ids(markdown)
         image_by_task = _associate_images_with_tasks(markdown)
 
         print(f"Mistral: извлечение задач со страницы {page_num}", flush=True)
         tasks = client.extract_markdown(markdown, image_ids)
         for task in tasks:
-            task.image_id = image_by_task.get(task.task_num)
-            image_name = _copy_task_image(
-                page_path,
-                task.image_id,
-                images_dir,
-                task.task_num,
-            )
+            fallback = image_by_task.get(task.task_num)
+            task.image_id = _resolve_image_id(task.image_id, fallback, image_ids)
+            extracted.append((task, page_path))
 
-            solution = ""
-            answer = ""
-            if include_solutions:
-                print(f"Mistral: решение задачи {task.task_num}", flush=True)
-                solved = client.solve_task(task)
-                solution = solved.solution
-                answer = solved.answer
+    extracted = _deduplicate_tasks(extracted)
+    _validate_task_count(extracted, expected_tasks)
 
-            records.append(
-                TaskRecord(
-                    task_num=task.task_num,
-                    condition=task.condition,
-                    image_name=image_name,
-                    solution=solution,
-                    answer=answer,
-                )
+    records: list[TaskRecord] = []
+    for task, page_path in extracted:
+        image_name = _copy_task_image(
+            page_path,
+            task.image_id,
+            images_dir,
+            task.task_num,
+        )
+        records.append(
+            TaskRecord(
+                task_num=task.task_num,
+                condition=task.condition,
+                image_name=image_name,
             )
-            write_tasks_xlsx(records, output_dir / "tasks.xlsx")
+        )
+
+    if answer_source == "generated":
+        _generate_solutions(records, extracted, client)
+    elif answer_source == "document":
+        print("Mistral: извлечение готовых ответов из документа", flush=True)
+        answers = client.extract_document_answers("".join(all_markdown))
+        _apply_document_answers(records, answers)
+    else:
+        raise ValueError(f"Неизвестный источник ответов: {answer_source}")
+
+    write_tasks_xlsx(records, output_dir / "tasks.xlsx")
     return records
+
+
+def _generate_solutions(
+    records: list[TaskRecord],
+    extracted: list[tuple[ExtractedTask, Path]],
+    client: MistralTaskClient,
+) -> None:
+    task_by_num = {task.task_num: task for task, _ in extracted}
+    for record in records:
+        print(f"Mistral: решение задачи {record.task_num}", flush=True)
+        solved = client.solve_task(task_by_num[record.task_num])
+        record.solution = solved.solution
+        record.answer = solved.answer
+
+
+def _apply_document_answers(
+    records: list[TaskRecord],
+    answers: Iterable[ExtractedAnswer],
+) -> None:
+    answer_by_num: dict[str, str] = {}
+    duplicates: set[str] = set()
+    for item in answers:
+        if item.task_num in answer_by_num:
+            duplicates.add(item.task_num)
+        answer_by_num[item.task_num] = item.answer
+
+    if duplicates:
+        raise ValueError(
+            "В разделе ответов найдены повторяющиеся номера: "
+            + ", ".join(sorted(duplicates, key=_task_sort_key))
+        )
+
+    task_numbers = {record.task_num for record in records}
+    missing = sorted(task_numbers - answer_by_num.keys(), key=_task_sort_key)
+    if missing:
+        raise ValueError(
+            "В документе не найдены ответы к заданиям: " + ", ".join(missing)
+        )
+
+    for record in records:
+        record.solution = ""
+        record.answer = answer_by_num[record.task_num]
+
+
+def _deduplicate_tasks(
+    extracted: list[tuple[ExtractedTask, Path]],
+) -> list[tuple[ExtractedTask, Path]]:
+    result: list[tuple[ExtractedTask, Path]] = []
+    seen: set[str] = set()
+    for item in extracted:
+        task = item[0]
+        if task.task_num in seen:
+            print(f"Повтор задания {task.task_num} пропущен", flush=True)
+            continue
+        seen.add(task.task_num)
+        result.append(item)
+    result.sort(key=lambda item: _task_sort_key(item[0].task_num))
+    return result
+
+
+def _validate_task_count(
+    extracted: list[tuple[ExtractedTask, Path]],
+    expected_tasks: int | None,
+) -> None:
+    if expected_tasks is None:
+        return
+    if len(extracted) != expected_tasks:
+        numbers = ", ".join(task.task_num for task, _ in extracted) or "нет"
+        raise ValueError(
+            f"Ожидалось {expected_tasks} задач, извлечено {len(extracted)}. "
+            f"Номера: {numbers}"
+        )
 
 
 def _page_number(path: Path) -> int:
@@ -82,25 +170,40 @@ def _page_number(path: Path) -> int:
     return int(match.group(1))
 
 
+def _task_sort_key(task_num: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in task_num.split("."))
+    except ValueError:
+        return (10**9,)
+
+
 def _image_ids(markdown: str) -> list[str]:
-    return [first or second for first, second in IMAGE_PATTERN.findall(markdown)]
+    return [Path(first or second).name for first, second in IMAGE_PATTERN.findall(markdown)]
 
 
 def _associate_images_with_tasks(markdown: str) -> dict[str, str]:
-    events: list[tuple[int, str, str]] = []
-    for match in re.finditer(r"(?m)^\s*(\d+(?:\.\d+)*)\.\s", markdown):
-        events.append((match.start(), "task", match.group(1)))
-    for match in IMAGE_PATTERN.finditer(markdown):
-        events.append((match.start(), "image", match.group(1) or match.group(2)))
-
-    current_task: str | None = None
+    headings = list(TASK_HEADING_PATTERN.finditer(markdown))
     associations: dict[str, str] = {}
-    for _, event_type, value in sorted(events):
-        if event_type == "task":
-            current_task = value
-        elif current_task is not None:
-            associations[current_task] = Path(value).name
+    for index, heading in enumerate(headings):
+        block_end = headings[index + 1].start() if index + 1 < len(headings) else len(markdown)
+        block = markdown[heading.end() : block_end]
+        images = _image_ids(block)
+        if images:
+            associations[heading.group(1)] = images[0]
     return associations
+
+
+def _resolve_image_id(
+    model_image_id: str | None,
+    fallback_image_id: str | None,
+    available_image_ids: list[str],
+) -> str | None:
+    available = {Path(item).name for item in available_image_ids}
+    if model_image_id and Path(model_image_id).name in available:
+        return Path(model_image_id).name
+    if fallback_image_id and Path(fallback_image_id).name in available:
+        return Path(fallback_image_id).name
+    return None
 
 
 def _copy_task_image(
@@ -113,6 +216,7 @@ def _copy_task_image(
         return None
     source = markdown_path.parent / "imgs" / Path(image_id).name
     if not source.is_file():
+        print(f"Картинка не найдена: {source}", flush=True)
         return None
 
     safe_num = re.sub(r"[^0-9A-Za-zА-Яа-я._-]+", "_", task_num).strip("._-")
