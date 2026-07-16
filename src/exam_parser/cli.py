@@ -9,7 +9,6 @@ from .paddle import PaddleDeviceError, recognize_pages
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_INPUT = PROJECT_DIR / "output" / "input" / "trvar540.pdf"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,9 +16,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "input",
         type=Path,
-        nargs="?",
-        default=None,
-        help="PDF или изображение страницы",
+        help=(
+            "Путь к одному конкретному PDF или изображению страницы. "
+            "Файлы из папки input автоматически не перебираются."
+        ),
     )
     parser.add_argument(
         "--answer-source",
@@ -47,15 +47,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Без этого флага в обычном терминале программа запросит подтверждение."
         ),
     )
-    parser.add_argument(
+    ocr_mode = parser.add_mutually_exclusive_group()
+    ocr_mode.add_argument(
         "--reuse-markdown",
         action="store_true",
-        help="Принудительно использовать готовый Markdown",
+        help="Использовать готовый Markdown без повторного OCR",
     )
-    parser.add_argument(
+    ocr_mode.add_argument(
         "--run-ocr",
         action="store_true",
-        help="Принудительно запустить PaddleOCR заново",
+        help="Явно запустить PaddleOCR заново (OCR и так запускается по умолчанию)",
     )
     parser.add_argument(
         "--expected-tasks",
@@ -69,17 +70,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    input_was_provided = args.input is not None
-    input_path = (args.input or DEFAULT_INPUT).resolve()
+    input_path = args.input.resolve()
     workspace = PROJECT_DIR / "output" / "work" / input_path.stem
     output_dir = args.output_dir or PROJECT_DIR / "output" / "result" / input_path.stem
     markdown_dir = args.markdown_dir or workspace / "markdown"
     pages_dir = args.pages_dir or workspace / "pages"
 
     markdown_is_ready = any(markdown_dir.glob("page_*/page_*.md"))
-    run_ocr = args.run_ocr or input_was_provided or not markdown_is_ready
-    if args.reuse_markdown:
-        run_ocr = False
+    if args.reuse_markdown and not markdown_is_ready:
+        raise SystemExit(
+            f"Нельзя использовать --reuse-markdown: в {markdown_dir} нет готовых страниц."
+        )
+    run_ocr = not args.reuse_markdown
 
     print(f"Входной документ: {input_path}", flush=True)
     print(f"Источник ответов: {args.answer_source}", flush=True)
