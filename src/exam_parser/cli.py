@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Literal
 
 from .documents import prepare_pages
 from .markdown_pipeline import process_markdown
@@ -9,26 +10,65 @@ from .paddle import PaddleDeviceError, recognize_pages
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
+INPUT_DIR = PROJECT_DIR / "output" / "input"
+AnswerSource = Literal["generated", "document", "none"]
+
+HELP_EPILOG = """
+Примеры:
+  uv run python main.py trvar540.pdf
+      Полный цикл: подробные решения и короткие ответы через Mistral.
+
+  uv run python main.py trvar540.pdf --no-solutions
+      Только короткие ответы через Mistral, без подробных решений.
+
+  uv run python main.py variant_951.pdf --no-solutions --document-answers
+      Без подробных решений; короткие ответы берутся из документа.
+
+  uv run python main.py variant_951.pdf --document-answers
+      Подробные решения через Mistral; короткие ответы берутся из документа.
+
+  uv run python main.py trvar540.pdf --no-answers
+      Подробные решения без отдельного столбца коротких ответов.
+
+Входной файл всегда ищется в output/input. Указывайте только имя файла.
+""".strip()
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Парсер математических задач")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Извлечение математических задач, изображений, решений и ответов "
+            "из одного документа"
+        ),
+        epilog=HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "input",
-        type=Path,
+        metavar="FILE",
         help=(
-            "Путь к одному конкретному PDF или изображению страницы. "
-            "Файлы из папки input автоматически не перебираются."
+            "Имя одного PDF или изображения из output/input. "
+            "Папка автоматически не перебирается."
         ),
     )
     parser.add_argument(
-        "--answer-source",
-        choices=("generated", "document"),
-        default="generated",
+        "--no-solutions",
+        action="store_true",
+        help="Не генерировать подробные решения через Mistral.",
+    )
+    answer_mode = parser.add_mutually_exclusive_group()
+    answer_mode.add_argument(
+        "--document-answers",
+        action="store_true",
         help=(
-            "generated — Mistral генерирует подробное решение и ответ; "
-            "document — ответ извлекается из самого документа без решения"
+            "Брать короткие ответы из раздела ответов самого документа. "
+            "Без этого флага ответы генерирует Mistral."
         ),
+    )
+    answer_mode.add_argument(
+        "--no-answers",
+        action="store_true",
+        help="Не генерировать и не извлекать короткие ответы.",
     )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--markdown-dir", type=Path, default=None)
@@ -37,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--device",
         default="gpu:0",
-        help="Устройство Paddle: gpu:0 (по умолчанию), cpu или auto",
+        help="Устройство Paddle: gpu:0 (по умолчанию), cpu или auto.",
     )
     parser.add_argument(
         "--allow-cpu-fallback",
@@ -51,26 +91,58 @@ def build_parser() -> argparse.ArgumentParser:
     ocr_mode.add_argument(
         "--reuse-markdown",
         action="store_true",
-        help="Использовать готовый Markdown без повторного OCR",
+        help="Использовать готовый Markdown без повторного OCR.",
     )
     ocr_mode.add_argument(
         "--run-ocr",
         action="store_true",
-        help="Явно запустить PaddleOCR заново (OCR и так запускается по умолчанию)",
+        help="Явно запустить PaddleOCR заново; по умолчанию OCR и так запускается.",
     )
     parser.add_argument(
         "--expected-tasks",
         type=int,
         default=19,
-        help="Ожидаемое число задач; 0 отключает проверку",
+        help="Ожидаемое число задач; 0 отключает проверку.",
     )
-    parser.add_argument("--model", default=None)
+    parser.add_argument("--model", default=None, help="Модель Mistral.")
     return parser
+
+
+def resolve_input_path(filename: str, input_dir: Path = INPUT_DIR) -> Path:
+    """Возвращает путь к одному файлу из стандартной входной папки."""
+
+    candidate = Path(filename)
+    if candidate.is_absolute() or candidate.name != filename:
+        raise ValueError(
+            "Укажите только имя файла из output/input, например: trvar540.pdf"
+        )
+
+    input_path = input_dir / candidate.name
+    if not input_path.is_file():
+        raise FileNotFoundError(
+            f"Входной файл не найден: {input_path}. "
+            "Поместите его в output/input и укажите только имя файла."
+        )
+    return input_path.resolve()
+
+
+def _answer_source(args: argparse.Namespace) -> AnswerSource:
+    if args.no_answers:
+        return "none"
+    if args.document_answers:
+        return "document"
+    return "generated"
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    input_path = args.input.resolve()
+    try:
+        input_path = resolve_input_path(args.input)
+    except (ValueError, FileNotFoundError) as error:
+        raise SystemExit(str(error)) from None
+
+    answer_source = _answer_source(args)
+    include_solutions = not args.no_solutions
     workspace = PROJECT_DIR / "output" / "work" / input_path.stem
     output_dir = args.output_dir or PROJECT_DIR / "output" / "result" / input_path.stem
     markdown_dir = args.markdown_dir or workspace / "markdown"
@@ -83,8 +155,19 @@ def main() -> None:
         )
     run_ocr = not args.reuse_markdown
 
+    answer_description = {
+        "generated": "генерируются Mistral",
+        "document": "извлекаются из документа",
+        "none": "не создаются",
+    }[answer_source]
     print(f"Входной документ: {input_path}", flush=True)
-    print(f"Источник ответов: {args.answer_source}", flush=True)
+    print(
+        "Подробные решения: "
+        + ("генерируются Mistral" if include_solutions else "не создаются"),
+        flush=True,
+    )
+    print(f"Короткие ответы: {answer_description}", flush=True)
+
     if run_ocr:
         pages = prepare_pages(input_path, pages_dir, dpi=args.dpi)
         try:
@@ -102,7 +185,8 @@ def main() -> None:
     records = process_markdown(
         markdown_dir,
         output_dir,
-        answer_source=args.answer_source,
+        include_solutions=include_solutions,
+        answer_source=answer_source,
         model=args.model,
         expected_tasks=args.expected_tasks or None,
     )
