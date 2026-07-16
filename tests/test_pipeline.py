@@ -16,7 +16,11 @@ from exam_parser.markdown_pipeline import (
 )
 from exam_parser.math_text import normalize_geometry_notation
 from exam_parser.models import ExtractedAnswer, ExtractedTask, TaskRecord, TaskSolution
-from exam_parser.paddle import configure_paddle_device
+from exam_parser.paddle import (
+    CpuFallbackDeclined,
+    PaddleDeviceError,
+    configure_paddle_device,
+)
 
 
 class ModelsTests(unittest.TestCase):
@@ -128,10 +132,55 @@ class PaddleDeviceTests(unittest.TestCase):
         paddle = _FakePaddle(compiled=True, count=1)
         self.assertEqual(configure_paddle_device("gpu:0", paddle), "gpu:0")
 
-    def test_gpu_request_does_not_fall_back_to_cpu(self) -> None:
+    def test_user_can_confirm_cpu_fallback(self) -> None:
         paddle = _FakePaddle(compiled=False, count=0)
-        with self.assertRaisesRegex(RuntimeError, "paddlepaddle-gpu"):
-            configure_paddle_device("gpu:0", paddle)
+        selected = configure_paddle_device(
+            "gpu:0",
+            paddle,
+            interactive=True,
+            input_func=lambda _: "y",
+        )
+        self.assertEqual(selected, "cpu")
+
+    def test_empty_answer_cancels_cpu_fallback(self) -> None:
+        paddle = _FakePaddle(compiled=False, count=0)
+        with self.assertRaisesRegex(CpuFallbackDeclined, "отменён"):
+            configure_paddle_device(
+                "gpu:0",
+                paddle,
+                interactive=True,
+                input_func=lambda _: "",
+            )
+
+    def test_noninteractive_run_does_not_wait_for_input(self) -> None:
+        paddle = _FakePaddle(compiled=False, count=0)
+        with self.assertRaisesRegex(PaddleDeviceError, "неинтерактивном"):
+            configure_paddle_device(
+                "gpu:0",
+                paddle,
+                interactive=False,
+                input_func=lambda _: self.fail("input не должен вызываться"),
+            )
+
+    def test_flag_allows_noninteractive_cpu_fallback(self) -> None:
+        paddle = _FakePaddle(compiled=False, count=0)
+        selected = configure_paddle_device(
+            "gpu:0",
+            paddle,
+            allow_cpu_fallback=True,
+            interactive=False,
+        )
+        self.assertEqual(selected, "cpu")
+
+    def test_explicit_cpu_does_not_request_confirmation(self) -> None:
+        paddle = _FakePaddle(compiled=False, count=0)
+        selected = configure_paddle_device(
+            "cpu",
+            paddle,
+            interactive=True,
+            input_func=lambda _: self.fail("input не должен вызываться"),
+        )
+        self.assertEqual(selected, "cpu")
 
 
 if __name__ == "__main__":
