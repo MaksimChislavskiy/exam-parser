@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 import shutil
+import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+
+class PaddleDeviceError(RuntimeError):
+    """Ошибка выбора устройства для PaddleOCR."""
+
+
+class CpuFallbackDeclined(PaddleDeviceError):
+    """Пользователь отказался продолжать обработку на CPU."""
 
 
 def recognize_pages(
@@ -10,11 +20,16 @@ def recognize_pages(
     markdown_dir: str | Path,
     *,
     device: str = "gpu:0",
+    allow_cpu_fallback: bool = False,
 ) -> list[Path]:
     import paddle
     from paddleocr import PaddleOCRVL
 
-    selected_device = configure_paddle_device(device, paddle)
+    selected_device = configure_paddle_device(
+        device,
+        paddle,
+        allow_cpu_fallback=allow_cpu_fallback,
+    )
     markdown_dir = Path(markdown_dir)
     markdown_dir.mkdir(parents=True, exist_ok=True)
     print(f"Загрузка PaddleOCR-VL; устройство: {selected_device}", flush=True)
@@ -39,30 +54,35 @@ def recognize_pages(
     return markdown_files
 
 
-def configure_paddle_device(requested: str, paddle_module: Any) -> str:
-    """Выбирает устройство без скрытого отката с GPU на CPU."""
+def configure_paddle_device(
+    requested: str,
+    paddle_module: Any,
+    *,
+    allow_cpu_fallback: bool = False,
+    interactive: bool | None = None,
+    input_func: Callable[[str], str] = input,
+) -> str:
+    """Выбирает устройство и не переключается на CPU без согласия пользователя."""
 
     requested = requested.strip().lower()
-    if requested == "auto":
-        selected = "gpu:0" if _cuda_is_available(paddle_module) else "cpu"
-    elif requested == "cpu":
+    if requested == "cpu":
         selected = "cpu"
-    elif requested.startswith("gpu"):
-        if not _cuda_is_available(paddle_module):
-            raise RuntimeError(
-                "Запрошен GPU, но установленная сборка Paddle не видит CUDA. "
-                "Проверьте, что установлен paddlepaddle-gpu, а не CPU-пакет "
-                "paddlepaddle, и что версии драйвера/CUDA совместимы. "
-                "Для осознанного запуска на CPU укажите --device cpu."
+    elif requested in {"auto"} or requested.startswith("gpu"):
+        if _cuda_is_available(paddle_module):
+            selected = "gpu:0" if requested == "auto" else requested
+        else:
+            selected = _request_cpu_fallback(
+                allow_cpu_fallback=allow_cpu_fallback,
+                interactive=interactive,
+                input_func=input_func,
             )
-        selected = requested
     else:
         raise ValueError("--device должен быть gpu:0, cpu или auto")
 
     paddle_module.set_device(selected)
     actual = str(paddle_module.get_device()).lower()
     if selected.startswith("gpu") and not actual.startswith("gpu"):
-        raise RuntimeError(
+        raise PaddleDeviceError(
             f"Paddle сообщил устройство {actual!r} вместо запрошенного {selected!r}"
         )
     print(
@@ -72,6 +92,44 @@ def configure_paddle_device(requested: str, paddle_module: Any) -> str:
         flush=True,
     )
     return selected
+
+
+def _request_cpu_fallback(
+    *,
+    allow_cpu_fallback: bool,
+    interactive: bool | None,
+    input_func: Callable[[str], str],
+) -> str:
+    print(
+        "GPU недоступен: установленная сборка Paddle не видит CUDA.\n"
+        "PaddleOCR-VL может обрабатывать одну страницу на CPU десятки минут.",
+        flush=True,
+    )
+
+    if allow_cpu_fallback:
+        print(
+            "Переход на CPU разрешён параметром --allow-cpu-fallback.",
+            flush=True,
+        )
+        return "cpu"
+
+    if interactive is None:
+        interactive = bool(getattr(sys.stdin, "isatty", lambda: False)())
+    if not interactive:
+        raise PaddleDeviceError(
+            "GPU недоступен, а запрос подтверждения невозможен в неинтерактивном "
+            "запуске. Укажите --allow-cpu-fallback для автоматического перехода "
+            "или --device cpu для явного запуска на CPU."
+        )
+
+    try:
+        answer = input_func("Продолжить на CPU? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt) as error:
+        raise CpuFallbackDeclined("Запуск на CPU отменён пользователем.") from error
+
+    if answer in {"y", "yes", "д", "да"}:
+        return "cpu"
+    raise CpuFallbackDeclined("Запуск на CPU отменён пользователем.")
 
 
 def _compiled_with_cuda(paddle_module: Any) -> bool:
