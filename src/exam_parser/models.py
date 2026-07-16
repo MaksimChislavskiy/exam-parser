@@ -59,6 +59,24 @@ class TaskSolution(BaseModel):
         return normalize_math_text(value)
 
 
+class TaskDetailedSolution(BaseModel):
+    solution: str = Field(min_length=1)
+
+    @field_validator("solution")
+    @classmethod
+    def normalize_solution(cls, value: str) -> str:
+        return normalize_math_text(value)
+
+
+class GeneratedAnswer(BaseModel):
+    answer: str = Field(min_length=1)
+
+    @field_validator("answer")
+    @classmethod
+    def normalize_answer(cls, value: str) -> str:
+        return normalize_math_text(value)
+
+
 class TaskRecord(BaseModel):
     task_num: str
     condition: str
