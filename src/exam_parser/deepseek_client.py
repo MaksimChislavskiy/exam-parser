@@ -142,6 +142,38 @@ JSON должен строго соответствовать этой схем�
 {schema}
 """.strip()
 
+        response = self._create_structured_response(
+            structured_prompt,
+            thinking=thinking,
+        )
+        content = _response_content(response)
+
+        if not content and thinking:
+            print(
+                "DeepSeek: пустой итог после режима рассуждения; "
+                "повтор без reasoning",
+                flush=True,
+            )
+            response = self._create_structured_response(
+                structured_prompt,
+                thinking=False,
+            )
+            content = _response_content(response)
+
+        if not content:
+            raise RuntimeError(
+                "DeepSeek вернул пустой структурированный ответ: "
+                + _response_diagnostics(response)
+            )
+
+        return _parse_structured_content(content, response_model)
+
+    def _create_structured_response(
+        self,
+        structured_prompt: str,
+        *,
+        thinking: bool,
+    ) -> object:
         extra_body: dict[str, object] = {
             "thinking": {"type": "enabled" if thinking else "disabled"}
         }
@@ -162,11 +194,40 @@ JSON должен строго соответствовать этой схем�
         if not thinking:
             request_kwargs["temperature"] = 0.0
 
-        response = self.client.chat.completions.create(**request_kwargs)
-        content = response.choices[0].message.content
-        if not isinstance(content, str) or not content.strip():
-            raise RuntimeError("DeepSeek вернул пустой структурированный ответ")
-        return _parse_structured_content(content, response_model)
+        return self.client.chat.completions.create(**request_kwargs)
+
+
+def _response_content(response: object) -> str | None:
+    choices = getattr(response, "choices", None)
+    if not choices:
+        return None
+    message = getattr(choices[0], "message", None)
+    content = getattr(message, "content", None)
+    if isinstance(content, str) and content.strip():
+        return content
+    return None
+
+
+def _response_diagnostics(response: object) -> str:
+    choices = getattr(response, "choices", None)
+    choice = choices[0] if choices else None
+    message = getattr(choice, "message", None)
+    finish_reason = getattr(choice, "finish_reason", None)
+    reasoning_content = getattr(message, "reasoning_content", None)
+    reasoning_chars = (
+        len(reasoning_content) if isinstance(reasoning_content, str) else 0
+    )
+
+    usage = getattr(response, "usage", None)
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    total_tokens = getattr(usage, "total_tokens", None)
+
+    return (
+        f"finish_reason={finish_reason!r}, "
+        f"reasoning_chars={reasoning_chars}, "
+        f"completion_tokens={completion_tokens!r}, "
+        f"total_tokens={total_tokens!r}"
+    )
 
 
 def _parse_structured_content(content: str, model: type[T]) -> T:
