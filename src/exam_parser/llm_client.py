@@ -11,7 +11,7 @@ from .models import (
 )
 
 
-LLMProvider = Literal["mistral", "gigachat"]
+LLMProvider = Literal["mistral", "gigachat", "deepseek"]
 
 
 class TaskClient(Protocol):
@@ -45,4 +45,8 @@ def create_task_client(
         from .gigachat_client import GigaChatTaskClient
 
         return GigaChatTaskClient(model=model)
+    if provider == "deepseek":
+        from .deepseek_client import DeepSeekTaskClient
+
+        return DeepSeekTaskClient(model=model)
     raise ValueError(f"Неизвестный LLM-провайдер: {provider}")
