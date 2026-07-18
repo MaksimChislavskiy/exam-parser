@@ -175,6 +175,8 @@ class DocumentAnswersTests(unittest.TestCase):
 
 
 class _FakeTaskClient:
+    provider_name = "Test"
+
     def __init__(self) -> None:
         self.calls: list[str] = []
 
