@@ -166,7 +166,34 @@ JSON должен строго соответствовать этой схем�
                 + _response_diagnostics(response)
             )
 
-        return _parse_structured_content(content, response_model)
+        try:
+            return _parse_structured_content(content, response_model)
+        except ValueError as first_error:
+            print(
+                "DeepSeek: ответ обрезан или JSON некорректен; "
+                "повтор в компактном режиме",
+                flush=True,
+            )
+            compact_prompt = _build_compact_retry_prompt(structured_prompt)
+            retry_response = self._create_structured_response(
+                compact_prompt,
+                thinking=False,
+            )
+            retry_content = _response_content(retry_response)
+            if not retry_content:
+                raise RuntimeError(
+                    "DeepSeek не смог повторить структурированный ответ: "
+                    + _response_diagnostics(retry_response)
+                ) from first_error
+
+            try:
+                return _parse_structured_content(retry_content, response_model)
+            except ValueError as retry_error:
+                raise ValueError(
+                    "DeepSeek дважды вернул невалидный или обрезанный JSON. "
+                    f"Первая попытка: {_response_diagnostics(response)}; "
+                    f"компактный повтор: {_response_diagnostics(retry_response)}"
+                ) from retry_error
 
     def _create_structured_response(
         self,
@@ -197,6 +224,18 @@ JSON должен строго соответствовать этой схем�
         return self.client.chat.completions.create(**request_kwargs)
 
 
+def _build_compact_retry_prompt(structured_prompt: str) -> str:
+    return f"""
+{structured_prompt}
+
+Предыдущая попытка вернула обрезанный или некорректный JSON.
+Повтори ответ полностью и обязательно закрой все строки, массивы и объект.
+Сделай строковые поля компактными. Если схема содержит поле solution,
+ограничь его 8000 символами. Не используй длинный полный перебор, когда можно
+дать краткое математическое обоснование. Верни только завершённый JSON-объект.
+""".strip()
+
+
 def _response_content(response: object) -> str | None:
     choices = getattr(response, "choices", None)
     if not choices:
@@ -213,6 +252,8 @@ def _response_diagnostics(response: object) -> str:
     choice = choices[0] if choices else None
     message = getattr(choice, "message", None)
     finish_reason = getattr(choice, "finish_reason", None)
+    content = getattr(message, "content", None)
+    content_chars = len(content) if isinstance(content, str) else 0
     reasoning_content = getattr(message, "reasoning_content", None)
     reasoning_chars = (
         len(reasoning_content) if isinstance(reasoning_content, str) else 0
@@ -224,6 +265,7 @@ def _response_diagnostics(response: object) -> str:
 
     return (
         f"finish_reason={finish_reason!r}, "
+        f"content_chars={content_chars}, "
         f"reasoning_chars={reasoning_chars}, "
         f"completion_tokens={completion_tokens!r}, "
         f"total_tokens={total_tokens!r}"
