@@ -45,7 +45,9 @@ def _response(
     )
 
 
-def _client_with_responses(responses: list[object]) -> tuple[DeepSeekTaskClient, _FakeCompletions]:
+def _client_with_responses(
+    responses: list[object],
+) -> tuple[DeepSeekTaskClient, _FakeCompletions]:
     completions = _FakeCompletions(responses)
     client = object.__new__(DeepSeekTaskClient)
     client.client = SimpleNamespace(
@@ -138,6 +140,35 @@ class DeepSeekStructuredOutputTests(unittest.TestCase):
             )
 
         self.assertEqual(len(completions.calls), 1)
+
+    def test_truncated_json_retries_in_compact_mode(self) -> None:
+        client, completions = _client_with_responses(
+            [
+                _response(
+                    '{"tasks":[{"task_num":"1","condition":"оборвано',
+                    finish_reason="length",
+                    completion_tokens=100,
+                ),
+                _response('{"tasks": []}'),
+            ]
+        )
+
+        result = client._request_structured(
+            "prompt",
+            PageExtraction,
+            thinking=False,
+        )
+
+        self.assertEqual(result.tasks, [])
+        self.assertEqual(len(completions.calls), 2)
+        retry_message = completions.calls[1]["messages"][0]["content"]
+        self.assertIn("обрезанный или некорректный JSON", retry_message)
+        self.assertIn("8000 символами", retry_message)
+        self.assertEqual(
+            completions.calls[1]["extra_body"],
+            {"thinking": {"type": "disabled"}},
+        )
+        self.assertEqual(completions.calls[1]["temperature"], 0.0)
 
 
 if __name__ == "__main__":
