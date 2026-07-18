@@ -46,19 +46,17 @@ class GigaChatTaskClient:
 
         try:
             from gigachat import GigaChat
-            from gigachat.models import ChatCompletionRequest, ChatMessage
         except ImportError as error:
             raise RuntimeError(
                 "Пакет gigachat не установлен. Выполните uv sync."
             ) from error
 
         self.model = model or os.getenv("GIGACHAT_MODEL", "GigaChat-3-Ultra")
-        self._request_type = ChatCompletionRequest
-        self._message_type = ChatMessage
         self.client = GigaChat(
             credentials=resolved_credentials,
             scope=os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS"),
             base_url=os.getenv("GIGACHAT_BASE_URL", "https://api.giga.chat/v1"),
+            model=self.model,
             verify_ssl_certs=_env_bool("GIGACHAT_VERIFY_SSL_CERTS", True),
             ca_bundle_file=os.getenv("GIGACHAT_CA_BUNDLE_FILE") or None,
             timeout=float(os.getenv("GIGACHAT_TIMEOUT", "180")),
@@ -118,12 +116,13 @@ class GigaChatTaskClient:
 JSON должен строго соответствовать этой схеме:
 {schema}
 """.strip()
-        request = self._request_type(
-            model=self.model,
-            messages=[self._message_type(role="user", content=structured_prompt)],
-            temperature=0.0,
+        response = self.client.chat(
+            {
+                "model": self.model,
+                "messages": [{"role": "user", "content": structured_prompt}],
+                "temperature": 0,
+            }
         )
-        response = self.client.chat.create(request)
         return _parse_structured_content(_response_text(response), response_model)
 
 
