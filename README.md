@@ -7,11 +7,11 @@ PDF/изображение
       ↓
 PaddleOCR-VL → Markdown + изображения
       ↓
-Mistral Structured Output → условия задач
+Mistral или GigaChat → условия задач
       ↓
 независимо настраиваемые результаты
-      ├── подробное решение: Mistral или пусто
-      └── короткий ответ: Mistral, документ или пусто
+      ├── подробное решение: выбранная LLM или пусто
+      └── короткий ответ: выбранная LLM, документ или пусто
       ↓
 tasks.xlsx + images/*.png
 ```
@@ -33,23 +33,78 @@ uv run python main.py trvar540.pdf
 Программа обработает только `output/input/trvar540.pdf`. Она не перебирает остальные
 файлы в папке. Полный путь передавать не нужно и нельзя.
 
-Примеры документов:
+## Выбор LLM-провайдера
 
-```text
-output/input/trvar540.pdf
-output/input/variant_951.pdf
-```
-
-## Поведение по умолчанию
-
-Запуск без дополнительных флагов выполняет полный цикл:
+По умолчанию используется Mistral:
 
 ```powershell
 uv run python main.py trvar540.pdf
 ```
 
-Для каждой задачи Mistral одним запросом создаёт подробное решение и короткий
-финальный ответ.
+GigaChat выбирается отдельным параметром:
+
+```powershell
+uv run python main.py trvar540.pdf --provider gigachat
+```
+
+Провайдера по умолчанию можно задать в `.env`:
+
+```env
+LLM_PROVIDER=gigachat
+```
+
+Поддерживаемые значения:
+
+```text
+mistral
+gigachat
+```
+
+Параметр `--model` относится к выбранному провайдеру.
+
+## Настройка Mistral
+
+```env
+MISTRAL_API_KEY=ваш_ключ
+MISTRAL_MODEL=mistral-large-2512
+```
+
+## Настройка GigaChat
+
+Для физического лица с моделью GigaChat 3 Ultra:
+
+```env
+GIGACHAT_CREDENTIALS=ваш_ключ_авторизации
+GIGACHAT_MODEL=GigaChat-3-Ultra
+GIGACHAT_SCOPE=GIGACHAT_API_PERS
+GIGACHAT_BASE_URL=https://api.giga.chat/v1
+GIGACHAT_VERIFY_SSL_CERTS=true
+```
+
+`GIGACHAT_CREDENTIALS` — ключ авторизации из проекта GigaChat API, а не временный
+access token. SDK самостоятельно получает и обновляет access token.
+
+Для проверки TLS рекомендуется установить корневой сертификат НУЦ Минцифры и
+указать путь:
+
+```env
+GIGACHAT_CA_BUNDLE_FILE=C:/path/to/russian_trusted_root_ca.pem
+```
+
+Временное отключение проверки сертификата возможно через:
+
+```env
+GIGACHAT_VERIFY_SSL_CERTS=false
+```
+
+Это снижает безопасность соединения и не должно оставаться постоянной настройкой.
+Полный шаблон переменных находится в `.env.example`.
+
+Установка зависимостей:
+
+```powershell
+uv sync
+```
 
 ## Независимые флаги результата
 
@@ -57,11 +112,11 @@ uv run python main.py trvar540.pdf
 
 | Команда | Подробное решение | Короткий ответ |
 |---|---|---|
-| `main.py FILE` | Mistral | Mistral |
-| `main.py FILE --no-solutions` | пусто | Mistral |
-| `main.py FILE --document-answers` | Mistral | из документа |
+| `main.py FILE` | выбранная LLM | выбранная LLM |
+| `main.py FILE --no-solutions` | пусто | выбранная LLM |
+| `main.py FILE --document-answers` | выбранная LLM | из документа |
 | `main.py FILE --no-solutions --document-answers` | пусто | из документа |
-| `main.py FILE --no-answers` | Mistral | пусто |
+| `main.py FILE --no-answers` | выбранная LLM | пусто |
 | `main.py FILE --no-solutions --no-answers` | пусто | пусто |
 
 Программа не создаёт ненужный результат:
@@ -74,7 +129,7 @@ uv run python main.py trvar540.pdf
 
 Флаги `--document-answers` и `--no-answers` взаимоисключающие.
 
-## Примеры для двух документов
+## Примеры
 
 Вариант 540 с подробными решениями и ответами Mistral:
 
@@ -82,43 +137,31 @@ uv run python main.py trvar540.pdf
 uv run python main.py trvar540.pdf
 ```
 
-Только короткие ответы:
+Тот же документ через GigaChat:
 
 ```powershell
-uv run python main.py trvar540.pdf --no-solutions
+uv run python main.py trvar540.pdf --provider gigachat
 ```
 
-Вариант 951 с ответами из документа и без решений:
+Вариант 951 с ответами из документа, без решений и без повторного OCR:
 
 ```powershell
-uv run python main.py variant_951.pdf --no-solutions --document-answers
+uv run python main.py variant_951.pdf `
+  --provider gigachat `
+  --no-solutions `
+  --document-answers `
+  --reuse-markdown
 ```
 
-Для того же документа можно позднее добавить подробные решения:
+## Изображения задач
 
-```powershell
-uv run python main.py variant_951.pdf --document-answers
-```
+LLM получает имена изображений в Markdown, но итоговая привязка проверяется кодом.
+Изображение принимается только тогда, когда оно действительно находится внутри
+Markdown-блока соответствующей задачи.
 
-## Настройка
-
-В корневом `.env` должен быть ключ:
-
-```env
-MISTRAL_API_KEY=ваш_ключ
-```
-
-Необязательно можно задать модель:
-
-```env
-MISTRAL_MODEL=mistral-large-2512
-```
-
-Установка зависимостей:
-
-```powershell
-uv sync
-```
+Маленькие HTML-изображения с шириной не больше `5%` считаются служебными
+значками и не попадают в итоговую папку задач. Это защищает от привязки логотипов,
+значков предупреждений и декоративных элементов.
 
 ## Выбор GPU или CPU
 
@@ -163,10 +206,16 @@ output/result/<имя_файла>/images/
 Готовый Markdown можно использовать повторно:
 
 ```powershell
+uv run python main.py variant_951.pdf --reuse-markdown
+```
+
+При сравнении провайдеров рекомендуется задавать разные итоговые папки:
+
+```powershell
 uv run python main.py variant_951.pdf `
-  --no-solutions `
-  --document-answers `
-  --reuse-markdown
+  --provider gigachat `
+  --reuse-markdown `
+  --output-dir output/result/variant_951_gigachat
 ```
 
 Если для выбранного документа готового Markdown нет, программа завершится с
@@ -191,12 +240,11 @@ task_num | condition | image_name | solution | answer
 uv run python main.py --help
 ```
 
-Справка содержит описание флагов и примеры основных сочетаний.
-
 Основные параметры:
 
 ```text
 FILE                     имя файла из output/input
+--provider PROVIDER      mistral или gigachat
 --no-solutions           не создавать подробные решения
 --document-answers       брать короткие ответы из документа
 --no-answers             не создавать короткие ответы
