@@ -15,19 +15,23 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 INPUT_DIR = PROJECT_DIR / "output" / "input"
 AnswerSource = Literal["generated", "document", "none"]
 DEFAULT_PROVIDER = os.getenv("LLM_PROVIDER", "mistral").strip().lower()
-PROVIDER_LABELS = {"mistral": "Mistral", "gigachat": "GigaChat"}
+PROVIDER_LABELS = {
+    "mistral": "Mistral",
+    "gigachat": "GigaChat",
+    "deepseek": "DeepSeek",
+}
 
 HELP_EPILOG = """
 Примеры:
   uv run python main.py trvar540.pdf
       Полный цикл через Mistral.
 
-  uv run python main.py trvar540.pdf --provider gigachat
-      Полный цикл через GigaChat.
+  uv run python main.py trvar540.pdf --provider deepseek
+      Полный цикл через DeepSeek.
 
-  uv run python main.py variant_951.pdf --provider gigachat \
+  uv run python main.py variant_951.pdf --provider deepseek \
       --no-solutions --document-answers --reuse-markdown
-      Готовый Markdown; условия и ответы из документа обрабатывает GigaChat.
+      Готовый Markdown; условия и ответы из документа обрабатывает DeepSeek.
 
   uv run python main.py trvar540.pdf --no-answers
       Подробные решения без отдельного столбца коротких ответов.
@@ -55,10 +59,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--provider",
-        choices=("mistral", "gigachat"),
+        choices=("mistral", "gigachat", "deepseek"),
         default=DEFAULT_PROVIDER,
         help=(
-            "LLM-провайдер: mistral или gigachat. "
+            "LLM-провайдер: mistral, gigachat или deepseek. "
             "По умолчанию берётся LLM_PROVIDER или mistral."
         ),
     )
@@ -153,7 +157,7 @@ def main() -> None:
     args = build_parser().parse_args()
     if args.provider not in PROVIDER_LABELS:
         raise SystemExit(
-            "LLM_PROVIDER должен быть mistral или gigachat"
+            "LLM_PROVIDER должен быть mistral, gigachat или deepseek"
         )
 
     provider: LLMProvider = args.provider
