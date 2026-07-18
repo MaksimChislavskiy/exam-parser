@@ -22,6 +22,29 @@ def recognize_pages(
     device: str = "gpu:0",
     allow_cpu_fallback: bool = False,
 ) -> list[Path]:
+    import os
+
+    dll_directory_handles = []
+
+    if sys.platform == "win32":
+        nvidia_packages_dir = (
+            Path(sys.prefix)
+            / "Lib"
+            / "site-packages"
+            / "nvidia"
+        )
+
+        if nvidia_packages_dir.is_dir():
+            for bin_dir in nvidia_packages_dir.glob("*/bin"):
+                if bin_dir.is_dir():
+                    dll_directory_handles.append(
+                        os.add_dll_directory(str(bin_dir))
+                    )
+
+    # На Windows Torch нужно загрузить раньше Paddle,
+    # иначе возможен конфликт нативных DLL.
+    import torch  # noqa: F401
+
     import paddle
     from paddleocr import PaddleOCRVL
 
