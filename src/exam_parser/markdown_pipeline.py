@@ -8,17 +8,26 @@ from typing import Literal
 from PIL import Image
 
 from .excel import write_tasks_xlsx
-from .mistral_client import MistralTaskClient
+from .llm_client import LLMProvider, TaskClient, create_task_client
 from .models import ExtractedAnswer, ExtractedTask, TaskRecord
 
 
 AnswerSource = Literal["generated", "document", "none"]
 
 IMAGE_PATTERN = re.compile(
-    r'(?:src=["\'](?:imgs/)?([^"\']+)["\']|!\[[^]]*]\((?:imgs/)?([^)]+)\))',
+    r"(?P<html><img\b[^>]*>)|"
+    r"(?P<markdown>!\[[^]]*]\((?:imgs/)?(?P<markdown_src>[^)]+)\))",
     re.IGNORECASE,
 )
-TASK_HEADING_PATTERN = re.compile(r"(?m)^\s*(\d+(?:\.\d+)*)\.\s")
+HTML_SRC_PATTERN = re.compile(
+    r"src=[\"'](?:imgs/)?([^\"']+)[\"']",
+    re.IGNORECASE,
+)
+HTML_WIDTH_PERCENT_PATTERN = re.compile(
+    r"width\s*=\s*[\"']?\s*(\d+(?:\.\d+)?)\s*%",
+    re.IGNORECASE,
+)
+TASK_HEADING_PATTERN = re.compile(r"(?m)^\s*(\d+(?:\.\d+)*)\.?\s+")
 
 
 def process_markdown(
@@ -27,6 +36,7 @@ def process_markdown(
     *,
     include_solutions: bool = True,
     answer_source: AnswerSource = "generated",
+    provider: LLMProvider = "mistral",
     model: str | None = None,
     expected_tasks: int | None = 19,
 ) -> list[TaskRecord]:
@@ -42,7 +52,7 @@ def process_markdown(
     if not pages:
         raise FileNotFoundError(f"В {markdown_dir} нет page_N/page_N.md")
 
-    client = MistralTaskClient(model=model)
+    client = create_task_client(provider, model=model)
     extracted: list[tuple[ExtractedTask, Path]] = []
     all_markdown: list[str] = []
 
@@ -53,7 +63,10 @@ def process_markdown(
         image_ids = _image_ids(markdown)
         image_by_task = _associate_images_with_tasks(markdown)
 
-        print(f"Mistral: извлечение задач со страницы {page_num}", flush=True)
+        print(
+            f"{client.provider_name}: извлечение задач со страницы {page_num}",
+            flush=True,
+        )
         tasks = client.extract_markdown(markdown, image_ids)
         for task in tasks:
             fallback = image_by_task.get(task.task_num)
@@ -96,13 +109,16 @@ def _populate_requested_results(
     records: list[TaskRecord],
     extracted: list[tuple[ExtractedTask, Path]],
     all_markdown: str,
-    client: MistralTaskClient,
+    client: TaskClient,
     *,
     include_solutions: bool,
     answer_source: AnswerSource,
 ) -> None:
     if answer_source == "document":
-        print("Mistral: извлечение готовых ответов из документа", flush=True)
+        print(
+            f"{client.provider_name}: извлечение готовых ответов из документа",
+            flush=True,
+        )
         answers = client.extract_document_answers(all_markdown)
         _apply_document_answers(records, answers)
     elif answer_source not in {"generated", "none"}:
@@ -125,11 +141,14 @@ def _task_by_number(
 def _generate_solutions_and_answers(
     records: list[TaskRecord],
     extracted: list[tuple[ExtractedTask, Path]],
-    client: MistralTaskClient,
+    client: TaskClient,
 ) -> None:
     task_by_num = _task_by_number(extracted)
     for record in records:
-        print(f"Mistral: решение и ответ для задачи {record.task_num}", flush=True)
+        print(
+            f"{client.provider_name}: решение и ответ для задачи {record.task_num}",
+            flush=True,
+        )
         solved = client.solve_task(task_by_num[record.task_num])
         record.solution = solved.solution
         record.answer = solved.answer
@@ -138,11 +157,14 @@ def _generate_solutions_and_answers(
 def _generate_solutions_only(
     records: list[TaskRecord],
     extracted: list[tuple[ExtractedTask, Path]],
-    client: MistralTaskClient,
+    client: TaskClient,
 ) -> None:
     task_by_num = _task_by_number(extracted)
     for record in records:
-        print(f"Mistral: подробное решение задачи {record.task_num}", flush=True)
+        print(
+            f"{client.provider_name}: подробное решение задачи {record.task_num}",
+            flush=True,
+        )
         solved = client.generate_solution(task_by_num[record.task_num])
         record.solution = solved.solution
 
@@ -150,11 +172,14 @@ def _generate_solutions_only(
 def _generate_answers_only(
     records: list[TaskRecord],
     extracted: list[tuple[ExtractedTask, Path]],
-    client: MistralTaskClient,
+    client: TaskClient,
 ) -> None:
     task_by_num = _task_by_number(extracted)
     for record in records:
-        print(f"Mistral: короткий ответ для задачи {record.task_num}", flush=True)
+        print(
+            f"{client.provider_name}: короткий ответ для задачи {record.task_num}",
+            flush=True,
+        )
         generated = client.generate_answer(task_by_num[record.task_num])
         record.answer = generated.answer
 
@@ -232,7 +257,25 @@ def _task_sort_key(task_num: str) -> tuple[int, ...]:
 
 
 def _image_ids(markdown: str) -> list[str]:
-    return [Path(first or second).name for first, second in IMAGE_PATTERN.findall(markdown)]
+    image_ids: list[str] = []
+    for match in IMAGE_PATTERN.finditer(markdown):
+        markdown_src = match.group("markdown_src")
+        if markdown_src:
+            image_ids.append(Path(markdown_src.strip()).name)
+            continue
+
+        html_tag = match.group("html") or ""
+        if _is_small_decorative_image(html_tag):
+            continue
+        src_match = HTML_SRC_PATTERN.search(html_tag)
+        if src_match:
+            image_ids.append(Path(src_match.group(1)).name)
+    return image_ids
+
+
+def _is_small_decorative_image(html_tag: str) -> bool:
+    width_match = HTML_WIDTH_PERCENT_PATTERN.search(html_tag)
+    return bool(width_match and float(width_match.group(1)) <= 5)
 
 
 def _associate_images_with_tasks(markdown: str) -> dict[str, str]:
@@ -252,9 +295,8 @@ def _resolve_image_id(
     fallback_image_id: str | None,
     available_image_ids: list[str],
 ) -> str | None:
+    del model_image_id
     available = {Path(item).name for item in available_image_ids}
-    if model_image_id and Path(model_image_id).name in available:
-        return Path(model_image_id).name
     if fallback_image_id and Path(fallback_image_id).name in available:
         return Path(fallback_image_id).name
     return None
