@@ -95,6 +95,9 @@ def process_markdown(
             )
         )
 
+    output_path = output_dir / "tasks.xlsx"
+    write_tasks_xlsx(records, output_path)
+
     _populate_requested_results(
         records,
         extracted,
@@ -102,9 +105,10 @@ def process_markdown(
         client,
         include_solutions=include_solutions,
         answer_source=answer_source,
+        checkpoint_path=output_path,
     )
 
-    write_tasks_xlsx(records, output_dir / "tasks.xlsx")
+    write_tasks_xlsx(records, output_path)
     return records
 
 
@@ -116,6 +120,7 @@ def _populate_requested_results(
     *,
     include_solutions: bool,
     answer_source: AnswerSource,
+    checkpoint_path: Path | None = None,
 ) -> None:
     if answer_source == "document":
         print(
@@ -124,15 +129,31 @@ def _populate_requested_results(
         )
         answers = client.extract_document_answers(all_markdown)
         _apply_document_answers(records, answers)
+        _write_checkpoint(records, checkpoint_path)
     elif answer_source not in {"generated", "none"}:
         raise ValueError(f"Неизвестный источник ответов: {answer_source}")
 
     if include_solutions and answer_source == "generated":
-        _generate_solutions_and_answers(records, extracted, client)
+        _generate_solutions_and_answers(
+            records,
+            extracted,
+            client,
+            checkpoint_path=checkpoint_path,
+        )
     elif include_solutions:
-        _generate_solutions_only(records, extracted, client)
+        _generate_solutions_only(
+            records,
+            extracted,
+            client,
+            checkpoint_path=checkpoint_path,
+        )
     elif answer_source == "generated":
-        _generate_answers_only(records, extracted, client)
+        _generate_answers_only(
+            records,
+            extracted,
+            client,
+            checkpoint_path=checkpoint_path,
+        )
 
 
 def _task_by_number(
@@ -145,6 +166,8 @@ def _generate_solutions_and_answers(
     records: list[TaskRecord],
     extracted: list[tuple[ExtractedTask, Path]],
     client: TaskClient,
+    *,
+    checkpoint_path: Path | None = None,
 ) -> None:
     task_by_num = _task_by_number(extracted)
     for record in records:
@@ -155,12 +178,15 @@ def _generate_solutions_and_answers(
         solved = client.solve_task(task_by_num[record.task_num])
         record.solution = solved.solution
         record.answer = solved.answer
+        _write_checkpoint(records, checkpoint_path)
 
 
 def _generate_solutions_only(
     records: list[TaskRecord],
     extracted: list[tuple[ExtractedTask, Path]],
     client: TaskClient,
+    *,
+    checkpoint_path: Path | None = None,
 ) -> None:
     task_by_num = _task_by_number(extracted)
     for record in records:
@@ -170,12 +196,15 @@ def _generate_solutions_only(
         )
         solved = client.generate_solution(task_by_num[record.task_num])
         record.solution = solved.solution
+        _write_checkpoint(records, checkpoint_path)
 
 
 def _generate_answers_only(
     records: list[TaskRecord],
     extracted: list[tuple[ExtractedTask, Path]],
     client: TaskClient,
+    *,
+    checkpoint_path: Path | None = None,
 ) -> None:
     task_by_num = _task_by_number(extracted)
     for record in records:
@@ -185,6 +214,15 @@ def _generate_answers_only(
         )
         generated = client.generate_answer(task_by_num[record.task_num])
         record.answer = generated.answer
+        _write_checkpoint(records, checkpoint_path)
+
+
+def _write_checkpoint(
+    records: list[TaskRecord],
+    checkpoint_path: Path | None,
+) -> None:
+    if checkpoint_path is not None:
+        write_tasks_xlsx(records, checkpoint_path)
 
 
 def _apply_document_answers(
