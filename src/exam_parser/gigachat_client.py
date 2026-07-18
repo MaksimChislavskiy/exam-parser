@@ -52,6 +52,7 @@ class GigaChatTaskClient:
             ) from error
 
         self.model = model or os.getenv("GIGACHAT_MODEL", "GigaChat-3-Ultra")
+        self.max_tokens = int(os.getenv("GIGACHAT_MAX_TOKENS", "8192"))
         self.client = GigaChat(
             credentials=resolved_credentials,
             scope=os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS"),
@@ -121,6 +122,7 @@ JSON должен строго соответствовать этой схем�
                 "model": self.model,
                 "messages": [{"role": "user", "content": structured_prompt}],
                 "temperature": 0,
+                "max_tokens": self.max_tokens,
             }
         )
         return _parse_structured_content(_response_text(response), response_model)
