@@ -7,7 +7,7 @@ PDF/изображение
       ↓
 PaddleOCR-VL → Markdown + изображения
       ↓
-Mistral или GigaChat → условия задач
+Mistral, GigaChat или DeepSeek → условия задач
       ↓
 независимо настраиваемые результаты
       ├── подробное решение: выбранная LLM или пусто
@@ -41,16 +41,17 @@ uv run python main.py trvar540.pdf
 uv run python main.py trvar540.pdf
 ```
 
-GigaChat выбирается отдельным параметром:
+DeepSeek и GigaChat выбираются отдельным параметром:
 
 ```powershell
+uv run python main.py trvar540.pdf --provider deepseek
 uv run python main.py trvar540.pdf --provider gigachat
 ```
 
 Провайдера по умолчанию можно задать в `.env`:
 
 ```env
-LLM_PROVIDER=gigachat
+LLM_PROVIDER=deepseek
 ```
 
 Поддерживаемые значения:
@@ -58,6 +59,7 @@ LLM_PROVIDER=gigachat
 ```text
 mistral
 gigachat
+deepseek
 ```
 
 Параметр `--model` относится к выбранному провайдеру.
@@ -67,6 +69,28 @@ gigachat
 ```env
 MISTRAL_API_KEY=ваш_ключ
 MISTRAL_MODEL=mistral-large-2512
+```
+
+## Настройка DeepSeek
+
+```env
+DEEPSEEK_API_KEY=ваш_ключ
+DEEPSEEK_MODEL=deepseek-v4-pro
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_TIMEOUT=180
+DEEPSEEK_MAX_RETRIES=6
+DEEPSEEK_MAX_TOKENS=16384
+DEEPSEEK_REASONING_EFFORT=high
+```
+
+Для извлечения задач и готовых ответов клиент отключает thinking mode и просит
+строгий JSON. Для генерации решений и ответов thinking mode включается с усилием
+`high`.
+
+Можно выбрать более дешёвую модель:
+
+```powershell
+uv run python main.py trvar540.pdf --provider deepseek --model deepseek-v4-flash
 ```
 
 ## Настройка GigaChat
@@ -137,20 +161,21 @@ uv sync
 uv run python main.py trvar540.pdf
 ```
 
-Тот же документ через GigaChat:
+Тот же документ через DeepSeek:
 
 ```powershell
-uv run python main.py trvar540.pdf --provider gigachat
+uv run python main.py trvar540.pdf --provider deepseek
 ```
 
 Вариант 951 с ответами из документа, без решений и без повторного OCR:
 
 ```powershell
-uv run python main.py variant_951.pdf `
-  --provider gigachat `
+uv run python main.py "ЕГКР Профиль 951 ФИПИ с ответами.pdf" `
+  --provider deepseek `
   --no-solutions `
   --document-answers `
-  --reuse-markdown
+  --reuse-markdown `
+  --output-dir output/result/951-deepseek
 ```
 
 ## Изображения задач
@@ -213,9 +238,9 @@ uv run python main.py variant_951.pdf --reuse-markdown
 
 ```powershell
 uv run python main.py variant_951.pdf `
-  --provider gigachat `
+  --provider deepseek `
   --reuse-markdown `
-  --output-dir output/result/variant_951_gigachat
+  --output-dir output/result/variant_951_deepseek
 ```
 
 Если для выбранного документа готового Markdown нет, программа завершится с
@@ -244,7 +269,7 @@ uv run python main.py --help
 
 ```text
 FILE                     имя файла из output/input
---provider PROVIDER      mistral или gigachat
+--provider PROVIDER      mistral, gigachat или deepseek
 --no-solutions           не создавать подробные решения
 --document-answers       брать короткие ответы из документа
 --no-answers             не создавать короткие ответы
