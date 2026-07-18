@@ -27,7 +27,10 @@ HTML_WIDTH_PERCENT_PATTERN = re.compile(
     r"width\s*=\s*[\"']?\s*(\d+(?:\.\d+)?)\s*%",
     re.IGNORECASE,
 )
-TASK_HEADING_PATTERN = re.compile(r"(?m)^\s*(\d+(?:\.\d+)*)\.?\s+")
+TASK_HEADING_PATTERN = re.compile(
+    r"(?m)^[ \t]*((?:1[0-9]|[1-9])(?:\.\d+)*)"
+    r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-я])|[ \t]*$)"
+)
 
 
 def process_markdown(
