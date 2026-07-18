@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "exam-parser"
 version = "0.1.0"
-description = "Extract mathematical exam tasks with PaddleOCR and Mistral"
+description = "Extract mathematical exam tasks with PaddleOCR and selectable LLM providers"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -15,6 +15,7 @@ dependencies = [
     "pdf2image>=1.17.0",
     "pillow>=12.2.0",
     "pymupdf>=1.27.2.3",
+    "gigachat==0.2.1",
     "mistralai>=2.5.0",
     "openpyxl>=3.1.5",
     "pydantic>=2.10.0",
