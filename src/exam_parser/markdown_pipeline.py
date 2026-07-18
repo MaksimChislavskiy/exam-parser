@@ -298,8 +298,9 @@ def _resolve_image_id(
     fallback_image_id: str | None,
     available_image_ids: list[str],
 ) -> str | None:
-    del model_image_id
     available = {Path(item).name for item in available_image_ids}
+    if model_image_id and Path(model_image_id).name in available:
+        return Path(model_image_id).name
     if fallback_image_id and Path(fallback_image_id).name in available:
         return Path(fallback_image_id).name
     return None
