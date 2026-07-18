@@ -36,23 +36,32 @@ class MarkdownImageTests(unittest.TestCase):
         self.assertEqual(_image_ids(markdown), ["diagram.jpg"])
         self.assertEqual(_associate_images_with_tasks(markdown), {"1": "diagram.jpg"})
 
-    def test_rejects_model_image_without_markdown_association(self) -> None:
+    def test_accepts_available_model_image(self) -> None:
         result = _resolve_image_id(
-            "unrelated.jpg",
+            "model.jpg",
             None,
-            ["unrelated.jpg"],
+            ["model.jpg"],
         )
 
-        self.assertIsNone(result)
+        self.assertEqual(result, "model.jpg")
 
-    def test_prefers_deterministic_markdown_association(self) -> None:
+    def test_prefers_model_image_over_fallback(self) -> None:
         result = _resolve_image_id(
-            "wrong.jpg",
-            "right.jpg",
-            ["wrong.jpg", "right.jpg"],
+            "model.jpg",
+            "fallback.jpg",
+            ["model.jpg", "fallback.jpg"],
         )
 
-        self.assertEqual(result, "right.jpg")
+        self.assertEqual(result, "model.jpg")
+
+    def test_uses_fallback_when_model_image_is_unavailable(self) -> None:
+        result = _resolve_image_id(
+            "missing.jpg",
+            "fallback.jpg",
+            ["fallback.jpg"],
+        )
+
+        self.assertEqual(result, "fallback.jpg")
 
 
 if __name__ == "__main__":
