@@ -57,7 +57,7 @@ class DeepSeekTaskClient:
             timeout=float(os.getenv("DEEPSEEK_TIMEOUT", "180")),
             max_retries=int(os.getenv("DEEPSEEK_MAX_RETRIES", "6")),
         )
-        self.model = model or os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+        self.model = model or os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
         self.max_tokens = int(os.getenv("DEEPSEEK_MAX_TOKENS", "16384"))
 
     def extract_markdown(
@@ -142,22 +142,24 @@ JSON должен строго соответствовать этой схем�
 {schema}
 """.strip()
 
+        extra_body: dict[str, object] = {
+            "thinking": {"type": "enabled" if thinking else "disabled"}
+        }
+        if thinking:
+            extra_body["reasoning_effort"] = os.getenv(
+                "DEEPSEEK_REASONING_EFFORT",
+                "high",
+            )
+
         request_kwargs: dict[str, object] = {
             "model": self.model,
             "messages": [{"role": "user", "content": structured_prompt}],
             "response_format": {"type": "json_object"},
             "max_tokens": self.max_tokens,
             "stream": False,
-            "extra_body": {
-                "thinking": {"type": "enabled" if thinking else "disabled"}
-            },
+            "extra_body": extra_body,
         }
-        if thinking:
-            request_kwargs["reasoning_effort"] = os.getenv(
-                "DEEPSEEK_REASONING_EFFORT",
-                "high",
-            )
-        else:
+        if not thinking:
             request_kwargs["temperature"] = 0.0
 
         response = self.client.chat.completions.create(**request_kwargs)
