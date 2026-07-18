@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import Literal
 
 from .documents import prepare_pages
+from .llm_client import LLMProvider
 from .markdown_pipeline import process_markdown
 from .paddle import PaddleDeviceError, recognize_pages
 
@@ -12,20 +14,20 @@ from .paddle import PaddleDeviceError, recognize_pages
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 INPUT_DIR = PROJECT_DIR / "output" / "input"
 AnswerSource = Literal["generated", "document", "none"]
+DEFAULT_PROVIDER = os.getenv("LLM_PROVIDER", "mistral").strip().lower()
+PROVIDER_LABELS = {"mistral": "Mistral", "gigachat": "GigaChat"}
 
 HELP_EPILOG = """
 Примеры:
   uv run python main.py trvar540.pdf
-      Полный цикл: подробные решения и короткие ответы через Mistral.
+      Полный цикл через Mistral.
 
-  uv run python main.py trvar540.pdf --no-solutions
-      Только короткие ответы через Mistral, без подробных решений.
+  uv run python main.py trvar540.pdf --provider gigachat
+      Полный цикл через GigaChat.
 
-  uv run python main.py variant_951.pdf --no-solutions --document-answers
-      Без подробных решений; короткие ответы берутся из документа.
-
-  uv run python main.py variant_951.pdf --document-answers
-      Подробные решения через Mistral; короткие ответы берутся из документа.
+  uv run python main.py variant_951.pdf --provider gigachat \
+      --no-solutions --document-answers --reuse-markdown
+      Готовый Markdown; условия и ответы из документа обрабатывает GigaChat.
 
   uv run python main.py trvar540.pdf --no-answers
       Подробные решения без отдельного столбца коротких ответов.
@@ -52,9 +54,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--provider",
+        choices=("mistral", "gigachat"),
+        default=DEFAULT_PROVIDER,
+        help=(
+            "LLM-провайдер: mistral или gigachat. "
+            "По умолчанию берётся LLM_PROVIDER или mistral."
+        ),
+    )
+    parser.add_argument(
         "--no-solutions",
         action="store_true",
-        help="Не генерировать подробные решения через Mistral.",
+        help="Не генерировать подробные решения через выбранную LLM.",
     )
     answer_mode = parser.add_mutually_exclusive_group()
     answer_mode.add_argument(
@@ -62,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Брать короткие ответы из раздела ответов самого документа. "
-            "Без этого флага ответы генерирует Mistral."
+            "Без этого флага ответы генерирует выбранная LLM."
         ),
     )
     answer_mode.add_argument(
@@ -104,7 +115,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=19,
         help="Ожидаемое число задач; 0 отключает проверку.",
     )
-    parser.add_argument("--model", default=None, help="Модель Mistral.")
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Имя модели выбранного LLM-провайдера.",
+    )
     return parser
 
 
@@ -136,6 +151,13 @@ def _answer_source(args: argparse.Namespace) -> AnswerSource:
 
 def main() -> None:
     args = build_parser().parse_args()
+    if args.provider not in PROVIDER_LABELS:
+        raise SystemExit(
+            "LLM_PROVIDER должен быть mistral или gigachat"
+        )
+
+    provider: LLMProvider = args.provider
+    provider_label = PROVIDER_LABELS[provider]
     try:
         input_path = resolve_input_path(args.input)
     except (ValueError, FileNotFoundError) as error:
@@ -156,14 +178,15 @@ def main() -> None:
     run_ocr = not args.reuse_markdown
 
     answer_description = {
-        "generated": "генерируются Mistral",
-        "document": "извлекаются из документа",
+        "generated": f"генерируются {provider_label}",
+        "document": f"извлекаются из документа через {provider_label}",
         "none": "не создаются",
     }[answer_source]
     print(f"Входной документ: {input_path}", flush=True)
+    print(f"LLM-провайдер: {provider_label}", flush=True)
     print(
         "Подробные решения: "
-        + ("генерируются Mistral" if include_solutions else "не создаются"),
+        + (f"генерируются {provider_label}" if include_solutions else "не создаются"),
         flush=True,
     )
     print(f"Короткие ответы: {answer_description}", flush=True)
@@ -187,6 +210,7 @@ def main() -> None:
         output_dir,
         include_solutions=include_solutions,
         answer_source=answer_source,
+        provider=provider,
         model=args.model,
         expected_tasks=args.expected_tasks or None,
     )
