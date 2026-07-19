@@ -153,10 +153,11 @@ class RetryBudgetTests(unittest.TestCase):
         api_key: str | None = None,
         model: str | None = None,
     ) -> None:
+        client.max_tokens = 16384
         client.compact_max_tokens = 2400
         client.minimal_max_tokens = 1200
 
-    def test_default_minimal_budget_matches_compact_budget(self) -> None:
+    def test_default_retry_budgets_use_normal_model_budget(self) -> None:
         with patch.object(
             DeepSeekTaskClient,
             "__init__",
@@ -164,6 +165,22 @@ class RetryBudgetTests(unittest.TestCase):
         ), patch.dict(os.environ, {}, clear=True):
             client = VerifiedDeepSeekTaskClient()
 
+        self.assertEqual(client.compact_max_tokens, 16384)
+        self.assertEqual(client.minimal_max_tokens, 16384)
+
+    def test_explicit_compact_budget_is_preserved(self) -> None:
+        with patch.object(
+            DeepSeekTaskClient,
+            "__init__",
+            self._fake_parent_init,
+        ), patch.dict(
+            os.environ,
+            {"DEEPSEEK_COMPACT_MAX_TOKENS": "2400"},
+            clear=True,
+        ):
+            client = VerifiedDeepSeekTaskClient()
+
+        self.assertEqual(client.compact_max_tokens, 2400)
         self.assertEqual(client.minimal_max_tokens, 2400)
 
     def test_explicit_minimal_budget_is_preserved(self) -> None:
@@ -178,6 +195,7 @@ class RetryBudgetTests(unittest.TestCase):
         ):
             client = VerifiedDeepSeekTaskClient()
 
+        self.assertEqual(client.compact_max_tokens, 16384)
         self.assertEqual(client.minimal_max_tokens, 1200)
 
 
