@@ -5,6 +5,9 @@ from pydantic import BaseModel, Field, field_validator
 from .math_text import normalize_geometry_notation
 
 
+DEFAULT_MAX_SOLUTION_CHARS = 8000
+
+
 def repair_latex_control_characters(value: str) -> str:
     """Восстанавливает LaTeX-команды, ошибочно декодированные как JSON escapes."""
     return (
@@ -50,7 +53,10 @@ class DocumentAnswerExtraction(BaseModel):
 
 
 class TaskSolution(BaseModel):
-    solution: str = Field(min_length=1)
+    solution: str = Field(
+        min_length=1,
+        max_length=DEFAULT_MAX_SOLUTION_CHARS,
+    )
     answer: str = Field(min_length=1)
 
     @field_validator("solution", "answer")
@@ -64,7 +70,10 @@ class SolutionVerification(BaseModel):
 
     is_correct: bool
     issues: list[str] = Field(default_factory=list)
-    solution: str = Field(min_length=1)
+    solution: str = Field(
+        min_length=1,
+        max_length=DEFAULT_MAX_SOLUTION_CHARS,
+    )
     answer: str = Field(min_length=1)
 
     @field_validator("solution", "answer")
@@ -74,7 +83,10 @@ class SolutionVerification(BaseModel):
 
 
 class TaskDetailedSolution(BaseModel):
-    solution: str = Field(min_length=1)
+    solution: str = Field(
+        min_length=1,
+        max_length=DEFAULT_MAX_SOLUTION_CHARS,
+    )
 
     @field_validator("solution")
     @classmethod
