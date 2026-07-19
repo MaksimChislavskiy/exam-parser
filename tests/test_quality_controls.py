@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from exam_parser.deepseek_client import DeepSeekTaskClient
 from exam_parser.markdown_pipeline import (
     _condition_fidelity_issues,
+    _generate_solutions_and_answers,
     _task_condition_blocks,
 )
 from exam_parser.math_text import normalize_ege_short_answer
 from exam_parser.models import (
     ExtractedTask,
     SolutionVerification,
+    TaskRecord,
     TaskSolution,
 )
 
@@ -55,6 +58,8 @@ def _client_with_responses(
     client.model = "test-model"
     client.max_tokens = 100
     client.max_solution_chars = max_solution_chars
+    client.compact_max_tokens = 17
+    client.minimal_max_tokens = 9
     client.verify_solutions = True
     return client, completions
 
@@ -105,6 +110,24 @@ class ConditionFidelityTests(unittest.TestCase):
             [],
         )
 
+    def test_accepts_ocr_spaces_around_geometry_indices(self) -> None:
+        self.assertEqual(
+            _condition_fidelity_issues(
+                "Проведены высоты АА 1 и ВВ 1. Известно, что А 1 В 1 = 4.",
+                "Проведены высоты $AA_1$ и $BB_1$. Известно, что $A_1B_1=4$.",
+            ),
+            [],
+        )
+
+    def test_accepts_cyrillic_d_in_latin_geometry_name(self) -> None:
+        self.assertEqual(
+            _condition_fidelity_issues(
+                "Трапеция ABCД имеет основания BC и AD.",
+                "Трапеция $ABCD$ имеет основания $BC$ и $AD$.",
+            ),
+            [],
+        )
+
     def test_extracts_clean_source_block(self) -> None:
         blocks = _task_condition_blocks(
             '1. Найдите угол АСВ.\n<img src="imgs/one.jpg" />\n'
@@ -112,6 +135,15 @@ class ConditionFidelityTests(unittest.TestCase):
         )
         self.assertEqual(blocks["1"], "Найдите угол АСВ.")
         self.assertEqual(blocks["2"], "Найдите число 5.")
+
+    def test_removes_variant_footer_from_source_block(self) -> None:
+        blocks = _task_condition_blocks(
+            "8. Найдите параметр a.\n"
+            "Тренировочный вариант № 540\n"
+            "9. Найдите процент.\n"
+        )
+        self.assertEqual(blocks["8"], "Найдите параметр a.")
+        self.assertEqual(blocks["9"], "Найдите процент.")
 
 
 class DeepSeekQualityTests(unittest.TestCase):
@@ -132,10 +164,32 @@ class DeepSeekQualityTests(unittest.TestCase):
 
         self.assertEqual(result.solution, "кратко")
         self.assertEqual(len(completions.calls), 2)
+        self.assertEqual(completions.calls[1]["max_tokens"], 17)
         self.assertEqual(
             completions.calls[1]["extra_body"],
             {"thinking": {"type": "disabled"}},
         )
+
+    def test_invalid_compact_response_gets_minimal_third_attempt(self) -> None:
+        client, completions = _client_with_responses(
+            [
+                _response('{"solution":"оборвано'),
+                _response('{"solution":"снова оборвано'),
+                _response('{"solution":"готово","answer":"1"}'),
+            ],
+            max_solution_chars=100,
+        )
+
+        result = client._request_structured(
+            "prompt",
+            TaskSolution,
+            thinking=False,
+        )
+
+        self.assertEqual(result.solution, "готово")
+        self.assertEqual(len(completions.calls), 3)
+        self.assertEqual(completions.calls[1]["max_tokens"], 17)
+        self.assertEqual(completions.calls[2]["max_tokens"], 9)
 
     def test_solution_verification_returns_corrected_result(self) -> None:
         client = object.__new__(DeepSeekTaskClient)
@@ -162,6 +216,38 @@ class DeepSeekQualityTests(unittest.TestCase):
 
         self.assertEqual(result.solution, "исправленное решение")
         self.assertEqual(result.answer, "да")
+
+
+class _PartiallyFailingClient:
+    provider_name = "Test"
+
+    def solve_task(self, task: ExtractedTask) -> TaskSolution:
+        if task.task_num == "1":
+            raise ValueError("сбой первой задачи")
+        return TaskSolution(solution="решено", answer="2")
+
+
+class PerTaskFailureTests(unittest.TestCase):
+    def test_later_tasks_continue_after_one_failure(self) -> None:
+        records = [
+            TaskRecord(task_num="1", condition="Условие 1"),
+            TaskRecord(task_num="2", condition="Условие 2"),
+        ]
+        extracted = [
+            (ExtractedTask(task_num="1", condition="Условие 1"), Path("1.md")),
+            (ExtractedTask(task_num="2", condition="Условие 2"), Path("2.md")),
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "1: ValueError"):
+            _generate_solutions_and_answers(
+                records,
+                extracted,
+                _PartiallyFailingClient(),
+            )
+
+        self.assertEqual(records[0].solution, "")
+        self.assertEqual(records[1].solution, "решено")
+        self.assertEqual(records[1].answer, "2")
 
 
 if __name__ == "__main__":
