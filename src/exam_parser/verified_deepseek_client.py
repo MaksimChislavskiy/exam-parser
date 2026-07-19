@@ -16,6 +16,11 @@ class VerifiedDeepSeekTaskClient(DeepSeekTaskClient):
         model: str | None = None,
     ) -> None:
         super().__init__(api_key=api_key, model=model)
+        # Пустой итог reasoning — не признак слишком длинного решения. Поэтому
+        # повтор без reasoning должен иметь обычный бюджет модели, а не урезанный
+        # компактный лимит. Явные настройки окружения всегда имеют приоритет.
+        if "DEEPSEEK_COMPACT_MAX_TOKENS" not in os.environ:
+            self.compact_max_tokens = self.max_tokens
         if "DEEPSEEK_MINIMAL_MAX_TOKENS" not in os.environ:
             self.minimal_max_tokens = self.compact_max_tokens
 
