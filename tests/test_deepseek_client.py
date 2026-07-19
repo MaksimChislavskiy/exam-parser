@@ -162,9 +162,10 @@ class DeepSeekStructuredOutputTests(unittest.TestCase):
         self.assertEqual(result.tasks, [])
         self.assertEqual(len(completions.calls), 2)
         retry_message = completions.calls[1]["messages"][0]["content"]
-        self.assertIn("обрезанный или некорректный JSON", retry_message)
-        self.assertIn("слишком длинное решение", retry_message)
-        self.assertIn("8000 символами", retry_message)
+        normalized_message = " ".join(retry_message.split())
+        self.assertIn("обрезанный или некорректный JSON", normalized_message)
+        self.assertIn("слишком длинное решение", normalized_message)
+        self.assertIn("8000 символами", normalized_message)
         self.assertEqual(
             completions.calls[1]["extra_body"],
             {"thinking": {"type": "disabled"}},
