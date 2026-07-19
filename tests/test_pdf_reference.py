@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+import unittest
+
+from exam_parser.pdf_reference import _reconcile_block_symbols
+
+
+class PdfReferenceTests(unittest.TestCase):
+    def test_repairs_reordered_angle_name(self) -> None:
+        markdown = (
+            "В треугольнике АВС проведены высоты АА1 и ВВ1. "
+            "Известно, что А1В1 = 4. Найдите угол $ABC$."
+        )
+        pdf_text = (
+            "В треугольнике АВС проведены высоты АА1 и ВВ1. "
+            "Известно, что А1В1 = 4. Найдите угол АСВ."
+        )
+
+        repaired, changes = _reconcile_block_symbols(markdown, pdf_text)
+
+        self.assertIn("$ACB$", repaired)
+        self.assertNotIn("$ABC$.", repaired)
+        self.assertEqual(changes, [("ABC", "ACB")])
+
+    def test_repairs_replaced_point_in_triangle(self) -> None:
+        markdown = (
+            "Найдите отношение площади треугольника $APO$ к площади "
+            "трапеции $ABCD$, если Q — точка пересечения диагоналей."
+        )
+        pdf_text = (
+            "Найдите отношение площади треугольника APQ к площади "
+            "трапеции ABCD, если Q — точка пересечения диагоналей."
+        )
+
+        repaired, changes = _reconcile_block_symbols(markdown, pdf_text)
+
+        self.assertIn("$APQ$", repaired)
+        self.assertEqual(changes, [("APO", "APQ")])
+
+    def test_keeps_matching_geometry_labels(self) -> None:
+        markdown = (
+            "Основание призмы $ABCA_1B_1C_1$, стороны $AB=BC=2$, "
+            "точка M лежит на $AA_1$."
+        )
+        pdf_text = (
+            "Основание призмы ABCA1B1C1, стороны AB=BC=2, "
+            "точка M лежит на AA1."
+        )
+
+        repaired, changes = _reconcile_block_symbols(markdown, pdf_text)
+
+        self.assertEqual(repaired, markdown)
+        self.assertEqual(changes, [])
+
+    def test_does_not_replace_unrelated_different_labels(self) -> None:
+        markdown = "Рассмотрите треугольник ABC и отрезок MN."
+        pdf_text = "Рассмотрите четырёхугольник PQRS и отрезок KL."
+
+        repaired, changes = _reconcile_block_symbols(markdown, pdf_text)
+
+        self.assertEqual(repaired, markdown)
+        self.assertEqual(changes, [])
+
+
+if __name__ == "__main__":
+    unittest.main()
