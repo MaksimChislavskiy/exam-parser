@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
 from .models import (
+    DEFAULT_MAX_SOLUTION_CHARS,
     DocumentAnswerExtraction,
     ExtractedAnswer,
     ExtractedTask,
@@ -62,7 +63,16 @@ class DeepSeekTaskClient:
         self.model = model or os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
         self.max_tokens = int(os.getenv("DEEPSEEK_MAX_TOKENS", "16384"))
         self.max_solution_chars = int(
-            os.getenv("DEEPSEEK_MAX_SOLUTION_CHARS", "8000")
+            os.getenv(
+                "DEEPSEEK_MAX_SOLUTION_CHARS",
+                str(DEFAULT_MAX_SOLUTION_CHARS),
+            )
+        )
+        self.compact_max_tokens = int(
+            os.getenv("DEEPSEEK_COMPACT_MAX_TOKENS", "2400")
+        )
+        self.minimal_max_tokens = int(
+            os.getenv("DEEPSEEK_MINIMAL_MAX_TOKENS", "1200")
         )
         self.verify_solutions = _env_bool("DEEPSEEK_VERIFY_SOLUTIONS", True)
 
@@ -196,9 +206,27 @@ JSON должен строго соответствовать этой схем�
                 "повтор без reasoning",
                 flush=True,
             )
+            fallback_prompt = structured_prompt
+            fallback_max_tokens: int | None = None
+            if _has_solution_field(response_model):
+                max_chars = getattr(
+                    self,
+                    "max_solution_chars",
+                    DEFAULT_MAX_SOLUTION_CHARS,
+                )
+                fallback_prompt = _build_compact_retry_prompt(
+                    structured_prompt,
+                    max_chars,
+                )
+                fallback_max_tokens = getattr(
+                    self,
+                    "compact_max_tokens",
+                    2400,
+                )
             response = self._create_structured_response(
-                structured_prompt,
+                fallback_prompt,
                 thinking=False,
+                max_tokens=fallback_max_tokens,
             )
             content = _response_content(response)
 
@@ -223,7 +251,11 @@ JSON должен строго соответствовать этой схем�
                 first_error=first_error,
             )
 
-        max_chars = getattr(self, "max_solution_chars", 8000)
+        max_chars = getattr(
+            self,
+            "max_solution_chars",
+            DEFAULT_MAX_SOLUTION_CHARS,
+        )
         solution_chars = _solution_length(parsed)
         if solution_chars > max_chars:
             print(
@@ -248,37 +280,122 @@ JSON должен строго соответствовать этой схем�
         *,
         first_error: ValueError | None,
     ) -> T:
-        max_chars = getattr(self, "max_solution_chars", 8000)
-        compact_prompt = _build_compact_retry_prompt(structured_prompt, max_chars)
+        max_chars = getattr(
+            self,
+            "max_solution_chars",
+            DEFAULT_MAX_SOLUTION_CHARS,
+        )
+        compact_prompt = _build_compact_retry_prompt(
+            structured_prompt,
+            max_chars,
+        )
+        compact_tokens = (
+            getattr(self, "compact_max_tokens", 2400)
+            if _has_solution_field(response_model)
+            else None
+        )
         retry_response = self._create_structured_response(
             compact_prompt,
             thinking=False,
+            max_tokens=compact_tokens,
         )
         retry_content = _response_content(retry_response)
         if not retry_content:
+            return self._retry_minimal(
+                structured_prompt,
+                response_model,
+                first_response,
+                retry_response,
+                first_error=first_error,
+            )
+
+        try:
+            parsed = _parse_structured_content(retry_content, response_model)
+        except ValueError:
+            return self._retry_minimal(
+                structured_prompt,
+                response_model,
+                first_response,
+                retry_response,
+                first_error=first_error,
+            )
+
+        solution_chars = _solution_length(parsed)
+        if solution_chars > max_chars:
+            return self._retry_minimal(
+                structured_prompt,
+                response_model,
+                first_response,
+                retry_response,
+                first_error=first_error,
+            )
+        return parsed
+
+    def _retry_minimal(
+        self,
+        structured_prompt: str,
+        response_model: type[T],
+        first_response: object,
+        compact_response: object,
+        *,
+        first_error: ValueError | None,
+    ) -> T:
+        print(
+            "DeepSeek: компактный ответ снова не завершён; "
+            "последний короткий повтор",
+            flush=True,
+        )
+        max_chars = getattr(
+            self,
+            "max_solution_chars",
+            DEFAULT_MAX_SOLUTION_CHARS,
+        )
+        target_chars = min(max_chars, 3500)
+        minimal_prompt = _build_minimal_retry_prompt(
+            structured_prompt,
+            target_chars,
+        )
+        minimal_tokens = (
+            getattr(self, "minimal_max_tokens", 1200)
+            if _has_solution_field(response_model)
+            else None
+        )
+        minimal_response = self._create_structured_response(
+            minimal_prompt,
+            thinking=False,
+            max_tokens=minimal_tokens,
+        )
+        minimal_content = _response_content(minimal_response)
+        if not minimal_content:
             message = (
-                "DeepSeek не смог повторить структурированный ответ: "
-                + _response_diagnostics(retry_response)
+                "DeepSeek не смог вернуть завершённый короткий ответ. "
+                f"Первая попытка: {_response_diagnostics(first_response)}; "
+                f"компактный повтор: {_response_diagnostics(compact_response)}; "
+                f"короткий повтор: {_response_diagnostics(minimal_response)}"
             )
             if first_error is not None:
                 raise RuntimeError(message) from first_error
             raise RuntimeError(message)
 
         try:
-            parsed = _parse_structured_content(retry_content, response_model)
-        except ValueError as retry_error:
+            parsed = _parse_structured_content(
+                minimal_content,
+                response_model,
+            )
+        except ValueError as minimal_error:
             raise ValueError(
-                "DeepSeek дважды вернул невалидный или обрезанный JSON. "
+                "DeepSeek трижды вернул невалидный или обрезанный JSON. "
                 f"Первая попытка: {_response_diagnostics(first_response)}; "
-                f"компактный повтор: {_response_diagnostics(retry_response)}"
-            ) from retry_error
+                f"компактный повтор: {_response_diagnostics(compact_response)}; "
+                f"короткий повтор: {_response_diagnostics(minimal_response)}"
+            ) from minimal_error
 
         solution_chars = _solution_length(parsed)
         if solution_chars > max_chars:
             raise ValueError(
-                "DeepSeek дважды превысил лимит решения: "
+                "DeepSeek трижды превысил лимит решения: "
                 f"получено {solution_chars}, разрешено {max_chars} символов; "
-                f"компактный повтор: {_response_diagnostics(retry_response)}"
+                f"короткий повтор: {_response_diagnostics(minimal_response)}"
             )
         return parsed
 
@@ -287,6 +404,7 @@ JSON должен строго соответствовать этой схем�
         structured_prompt: str,
         *,
         thinking: bool,
+        max_tokens: int | None = None,
     ) -> object:
         extra_body: dict[str, object] = {
             "thinking": {"type": "enabled" if thinking else "disabled"}
@@ -301,7 +419,7 @@ JSON должен строго соответствовать этой схем�
             "model": self.model,
             "messages": [{"role": "user", "content": structured_prompt}],
             "response_format": {"type": "json_object"},
-            "max_tokens": self.max_tokens,
+            "max_tokens": max_tokens or self.max_tokens,
             "stream": False,
             "extra_body": extra_body,
         }
@@ -318,13 +436,32 @@ def _build_compact_retry_prompt(
     return f"""
 {structured_prompt}
 
-Предыдущая попытка была обрезана, некорректна или слишком длинна.
-Повтори ответ полностью и обязательно закрой все строки, массивы и объект.
-Сделай строковые поля компактными. Если схема содержит поле solution,
-ограничь его {max_solution_chars} символами. Не перечисляй сомнения, неудачные
-попытки и длинный полный перебор, когда можно дать краткое доказательство.
-Верни только завершённый JSON-объект.
+Предыдущая попытка вернула обрезанный или некорректный JSON либо слишком
+длинное решение. Повтори ответ полностью и обязательно закрой все строки,
+массивы и объект. Если схема содержит поле solution, ограничь его
+{max_solution_chars} символами. Оставь только окончательное доказательство:
+без сомнений, неудачных попыток, повторов и длинного перебора. Верни только
+завершённый JSON-объект.
 """.strip()
+
+
+def _build_minimal_retry_prompt(
+    structured_prompt: str,
+    target_solution_chars: int,
+) -> str:
+    return f"""
+{structured_prompt}
+
+Это последний повтор. Предыдущие ответы не успели завершить JSON.
+Верни только полностью закрытый JSON-объект. Если есть поле solution,
+напиши краткое окончательное решение не длиннее {target_solution_chars} символов:
+не более 6 логических шагов, без черновых попыток, самопроверок и обсуждений.
+Сначала мысленно сократи решение, затем сформируй JSON и обязательно закрой его.
+""".strip()
+
+
+def _has_solution_field(response_model: type[BaseModel]) -> bool:
+    return "solution" in response_model.model_fields
 
 
 def _solution_length(result: BaseModel) -> int:
