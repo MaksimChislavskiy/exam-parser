@@ -162,7 +162,7 @@ class DeepSeekStructuredOutputTests(unittest.TestCase):
         self.assertEqual(result.tasks, [])
         self.assertEqual(len(completions.calls), 2)
         retry_message = completions.calls[1]["messages"][0]["content"]
-        self.assertIn("обрезанный или некорректный JSON", retry_message)
+        self.assertIn("обрезана, некорректна или слишком длинна", retry_message)
         self.assertIn("8000 символами", retry_message)
         self.assertEqual(
             completions.calls[1]["extra_body"],
