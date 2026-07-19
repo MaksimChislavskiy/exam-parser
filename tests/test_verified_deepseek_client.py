@@ -7,12 +7,20 @@ from unittest.mock import patch
 from exam_parser.deepseek_client import DeepSeekTaskClient
 from exam_parser.models import (
     ExtractedTask,
+    ProofAudit,
     SolutionConfirmation,
     SolutionVerification,
     TaskSolution,
 )
-from exam_parser.task_prompts import CONFIRMATION_PROMPT, VERIFICATION_PROMPT
-from exam_parser.verified_deepseek_client import VerifiedDeepSeekTaskClient
+from exam_parser.task_prompts import (
+    CONFIRMATION_PROMPT,
+    PROOF_AUDIT_PROMPT,
+    VERIFICATION_PROMPT,
+)
+from exam_parser.verified_deepseek_client import (
+    VerifiedDeepSeekTaskClient,
+    _requires_proof_audit,
+)
 
 
 class VerifiedDeepSeekClientTests(unittest.TestCase):
@@ -146,6 +154,158 @@ class VerifiedDeepSeekClientTests(unittest.TestCase):
         self.assertEqual(result, self.candidate)
 
 
+class ProofAuditRoutingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = object.__new__(VerifiedDeepSeekTaskClient)
+        self.client.verify_solutions = True
+        self.candidate = TaskSolution(
+            solution="Кандидатное решение.",
+            answer="6",
+        )
+        self.verification = SolutionVerification(
+            is_correct=True,
+            issues=[],
+            solution="Неиспользуемая редакция.",
+            answer="6",
+        )
+
+    def test_plain_calculation_does_not_require_proof_audit(self) -> None:
+        task = ExtractedTask(task_num="x", condition="Вычислите значение выражения.")
+        self.assertFalse(_requires_proof_audit(task, self.candidate))
+
+    def test_general_proof_obligations_require_audit(self) -> None:
+        conditions = [
+            "Докажите равенство.",
+            "Существует ли такое число?",
+            "Найдите наибольшее возможное значение.",
+            "Докажите утверждение для всех натуральных чисел.",
+            "Find the maximum possible value.",
+        ]
+        for condition in conditions:
+            with self.subTest(condition=condition):
+                task = ExtractedTask(task_num="x", condition=condition)
+                self.assertTrue(_requires_proof_audit(task, self.candidate))
+
+    def test_complete_proof_is_not_rewritten_by_auditor(self) -> None:
+        task = ExtractedTask(task_num="x", condition="Докажите утверждение.")
+        audit = ProofAudit(
+            is_complete=True,
+            issues=[],
+            solution="Стилистически переписанное доказательство.",
+            answer="6",
+        )
+
+        with patch.object(
+            self.client,
+            "_request_task_result",
+            return_value=self.candidate,
+        ), patch.object(
+            self.client,
+            "_verify_task_solution",
+            return_value=self.verification,
+        ), patch.object(
+            self.client,
+            "_audit_task_proof",
+            return_value=audit,
+        ), patch.object(
+            self.client,
+            "_confirm_task_solution",
+        ) as confirmation:
+            result = self.client.solve_task(task)
+
+        self.assertEqual(result, self.candidate)
+        confirmation.assert_not_called()
+
+    def test_confirmed_audit_correction_is_accepted(self) -> None:
+        task = ExtractedTask(
+            task_num="x",
+            condition="Найдите наибольшее возможное значение.",
+        )
+        audit = ProofAudit(
+            is_complete=False,
+            issues=["не доказана верхняя граница"],
+            solution="Полное доказательство достижимости и верхней границы.",
+            answer="6",
+        )
+        confirmation = SolutionConfirmation(is_valid=True, issues=[])
+
+        with patch.object(
+            self.client,
+            "_request_task_result",
+            return_value=self.candidate,
+        ), patch.object(
+            self.client,
+            "_verify_task_solution",
+            return_value=self.verification,
+        ), patch.object(
+            self.client,
+            "_audit_task_proof",
+            return_value=audit,
+        ), patch.object(
+            self.client,
+            "_confirm_task_solution",
+            return_value=confirmation,
+        ):
+            result = self.client.solve_task(task)
+
+        self.assertEqual(result.solution, audit.solution)
+        self.assertEqual(result.answer, audit.answer)
+
+    def test_rejected_audit_correction_preserves_candidate(self) -> None:
+        task = ExtractedTask(task_num="x", condition="Существует ли такой объект?")
+        audit = ProofAudit(
+            is_complete=False,
+            issues=["пример не проверен"],
+            solution="Сомнительное исправление.",
+            answer="да",
+        )
+        confirmation = SolutionConfirmation(
+            is_valid=False,
+            issues=["исправление также неполно"],
+        )
+
+        with patch.object(
+            self.client,
+            "_request_task_result",
+            return_value=self.candidate,
+        ), patch.object(
+            self.client,
+            "_verify_task_solution",
+            return_value=self.verification,
+        ), patch.object(
+            self.client,
+            "_audit_task_proof",
+            return_value=audit,
+        ), patch.object(
+            self.client,
+            "_confirm_task_solution",
+            return_value=confirmation,
+        ):
+            result = self.client.solve_task(task)
+
+        self.assertEqual(result, self.candidate)
+
+    def test_audit_failure_preserves_candidate(self) -> None:
+        task = ExtractedTask(task_num="x", condition="Докажите утверждение.")
+
+        with patch.object(
+            self.client,
+            "_request_task_result",
+            return_value=self.candidate,
+        ), patch.object(
+            self.client,
+            "_verify_task_solution",
+            return_value=self.verification,
+        ), patch.object(
+            self.client,
+            "_audit_task_proof",
+            side_effect=RuntimeError("временный сбой"),
+        ):
+            result = self.client.solve_task(task)
+
+        self.assertEqual(result, self.candidate)
+
+
 class RetryBudgetTests(unittest.TestCase):
     @staticmethod
     def _fake_parent_init(
@@ -211,6 +371,12 @@ class UniversalVerificationPromptTests(unittest.TestCase):
         self.assertIn("Независимо проверь", CONFIRMATION_PROMPT)
         self.assertIn("доказательство оптимальности", CONFIRMATION_PROMPT)
         self.assertIn("не отклоняй", CONFIRMATION_PROMPT.lower())
+
+    def test_proof_audit_rejects_unsupported_shortcuts(self) -> None:
+        self.assertIn("и т. д.", PROOF_AUDIT_PROMPT)
+        self.assertIn("ограничения становятся строже", PROOF_AUDIT_PROMPT)
+        self.assertIn("общая граница", PROOF_AUDIT_PROMPT)
+        self.assertIn("достижимость", PROOF_AUDIT_PROMPT)
 
 
 if __name__ == "__main__":
