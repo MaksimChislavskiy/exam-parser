@@ -82,6 +82,13 @@ class SolutionVerification(BaseModel):
         return normalize_math_text(value)
 
 
+class SolutionConfirmation(BaseModel):
+    """Независимое подтверждение уже исправленного решения."""
+
+    is_valid: bool
+    issues: list[str] = Field(default_factory=list)
+
+
 class TaskDetailedSolution(BaseModel):
     solution: str = Field(
         min_length=1,
