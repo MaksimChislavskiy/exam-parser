@@ -7,6 +7,7 @@ from typing import Literal
 
 from .documents import prepare_pages
 from .llm_client import LLMProvider
+from .markdown_boundaries import normalize_task_boundaries
 from .markdown_pipeline import process_markdown
 from .paddle import PaddleDeviceError, recognize_pages
 from .pdf_reference import repair_markdown_from_pdf
@@ -220,6 +221,18 @@ def main() -> None:
             f"Используется Markdown, сверенный с PDF: {processing_markdown_dir}",
             flush=True,
         )
+
+    bounded_markdown_dir = normalize_task_boundaries(
+        processing_markdown_dir,
+        workspace / "markdown_bounded",
+    )
+    if bounded_markdown_dir != processing_markdown_dir:
+        print(
+            "Используется Markdown с восстановленными границами задач: "
+            f"{bounded_markdown_dir}",
+            flush=True,
+        )
+    processing_markdown_dir = bounded_markdown_dir
 
     records = process_markdown(
         processing_markdown_dir,
