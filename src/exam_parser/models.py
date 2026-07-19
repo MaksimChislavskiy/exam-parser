@@ -59,6 +59,20 @@ class TaskSolution(BaseModel):
         return normalize_math_text(value)
 
 
+class SolutionVerification(BaseModel):
+    """Результат независимой проверки решения одной задачи."""
+
+    is_correct: bool
+    issues: list[str] = Field(default_factory=list)
+    solution: str = Field(min_length=1)
+    answer: str = Field(min_length=1)
+
+    @field_validator("solution", "answer")
+    @classmethod
+    def normalize_verified_result(cls, value: str) -> str:
+        return normalize_math_text(value)
+
+
 class TaskDetailedSolution(BaseModel):
     solution: str = Field(min_length=1)
 
