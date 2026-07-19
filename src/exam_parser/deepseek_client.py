@@ -14,6 +14,7 @@ from .models import (
     ExtractedTask,
     GeneratedAnswer,
     PageExtraction,
+    SolutionVerification,
     TaskDetailedSolution,
     TaskSolution,
 )
@@ -21,6 +22,7 @@ from .task_prompts import (
     ANSWER_ONLY_PROMPT,
     SOLUTION_ONLY_PROMPT,
     SOLUTION_PROMPT,
+    VERIFICATION_PROMPT,
     build_document_answers_prompt,
     build_task_extraction_prompt,
 )
@@ -59,6 +61,10 @@ class DeepSeekTaskClient:
         )
         self.model = model or os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
         self.max_tokens = int(os.getenv("DEEPSEEK_MAX_TOKENS", "16384"))
+        self.max_solution_chars = int(
+            os.getenv("DEEPSEEK_MAX_SOLUTION_CHARS", "8000")
+        )
+        self.verify_solutions = _env_bool("DEEPSEEK_VERIFY_SOLUTIONS", True)
 
     def extract_markdown(
         self,
@@ -81,11 +87,30 @@ class DeepSeekTaskClient:
         ).answers
 
     def solve_task(self, task: ExtractedTask) -> TaskSolution:
-        return self._request_task_result(
+        solved = self._request_task_result(
             task,
             SOLUTION_PROMPT,
             TaskSolution,
             thinking=True,
+        )
+        if not getattr(self, "verify_solutions", True):
+            return solved
+
+        print(
+            f"{self.provider_name}: проверка решения задачи {task.task_num}",
+            flush=True,
+        )
+        verification = self._verify_task_solution(task, solved)
+        if not verification.is_correct:
+            issues = "; ".join(verification.issues) or "обнаружены ошибки"
+            print(
+                f"{self.provider_name}: решение задачи {task.task_num} исправлено: "
+                f"{issues}",
+                flush=True,
+            )
+        return TaskSolution(
+            solution=verification.solution,
+            answer=verification.answer,
         )
 
     def generate_solution(self, task: ExtractedTask) -> TaskDetailedSolution:
@@ -101,6 +126,23 @@ class DeepSeekTaskClient:
             task,
             ANSWER_ONLY_PROMPT,
             GeneratedAnswer,
+            thinking=True,
+        )
+
+    def _verify_task_solution(
+        self,
+        task: ExtractedTask,
+        solved: TaskSolution,
+    ) -> SolutionVerification:
+        prompt = VERIFICATION_PROMPT.format(
+            task_num=task.task_num,
+            condition=task.condition,
+            solution=solved.solution,
+            answer=solved.answer,
+        )
+        return self._request_structured(
+            prompt,
+            SolutionVerification,
             thinking=True,
         )
 
@@ -167,33 +209,78 @@ JSON должен строго соответствовать этой схем�
             )
 
         try:
-            return _parse_structured_content(content, response_model)
+            parsed = _parse_structured_content(content, response_model)
         except ValueError as first_error:
             print(
                 "DeepSeek: ответ обрезан или JSON некорректен; "
                 "повтор в компактном режиме",
                 flush=True,
             )
-            compact_prompt = _build_compact_retry_prompt(structured_prompt)
-            retry_response = self._create_structured_response(
-                compact_prompt,
-                thinking=False,
+            return self._retry_compact(
+                structured_prompt,
+                response_model,
+                response,
+                first_error=first_error,
             )
-            retry_content = _response_content(retry_response)
-            if not retry_content:
-                raise RuntimeError(
-                    "DeepSeek не смог повторить структурированный ответ: "
-                    + _response_diagnostics(retry_response)
-                ) from first_error
 
-            try:
-                return _parse_structured_content(retry_content, response_model)
-            except ValueError as retry_error:
-                raise ValueError(
-                    "DeepSeek дважды вернул невалидный или обрезанный JSON. "
-                    f"Первая попытка: {_response_diagnostics(response)}; "
-                    f"компактный повтор: {_response_diagnostics(retry_response)}"
-                ) from retry_error
+        max_chars = getattr(self, "max_solution_chars", 8000)
+        solution_chars = _solution_length(parsed)
+        if solution_chars > max_chars:
+            print(
+                f"DeepSeek: решение слишком длинное ({solution_chars} символов); "
+                "повтор в компактном режиме",
+                flush=True,
+            )
+            return self._retry_compact(
+                structured_prompt,
+                response_model,
+                response,
+                first_error=None,
+            )
+
+        return parsed
+
+    def _retry_compact(
+        self,
+        structured_prompt: str,
+        response_model: type[T],
+        first_response: object,
+        *,
+        first_error: ValueError | None,
+    ) -> T:
+        max_chars = getattr(self, "max_solution_chars", 8000)
+        compact_prompt = _build_compact_retry_prompt(structured_prompt, max_chars)
+        retry_response = self._create_structured_response(
+            compact_prompt,
+            thinking=False,
+        )
+        retry_content = _response_content(retry_response)
+        if not retry_content:
+            message = (
+                "DeepSeek не смог повторить структурированный ответ: "
+                + _response_diagnostics(retry_response)
+            )
+            if first_error is not None:
+                raise RuntimeError(message) from first_error
+            raise RuntimeError(message)
+
+        try:
+            parsed = _parse_structured_content(retry_content, response_model)
+        except ValueError as retry_error:
+            raise ValueError(
+                "DeepSeek дважды вернул невалидный или обрезанный JSON. "
+                f"Первая попытка: {_response_diagnostics(first_response)}; "
+                f"компактный повтор: {_response_diagnostics(retry_response)}"
+            ) from retry_error
+
+        solution_chars = _solution_length(parsed)
+        if solution_chars > max_chars:
+            raise ValueError(
+                "DeepSeek дважды превысил лимит решения: "
+                f"получено {solution_chars}, разрешено {max_chars} символов; "
+                f"компактный повтор: {_response_diagnostics(retry_response)}"
+            )
+        return parsed
 
     def _create_structured_response(
         self,
@@ -224,16 +311,25 @@ JSON должен строго соответствовать этой схем�
         return self.client.chat.completions.create(**request_kwargs)
 
 
-def _build_compact_retry_prompt(structured_prompt: str) -> str:
+def _build_compact_retry_prompt(
+    structured_prompt: str,
+    max_solution_chars: int,
+) -> str:
     return f"""
 {structured_prompt}
 
-Предыдущая попытка вернула обрезанный или некорректный JSON.
+Предыдущая попытка была обрезана, некорректна или слишком длинна.
 Повтори ответ полностью и обязательно закрой все строки, массивы и объект.
 Сделай строковые поля компактными. Если схема содержит поле solution,
-ограничь его 8000 символами. Не используй длинный полный перебор, когда можно
-дать краткое математическое обоснование. Верни только завершённый JSON-объект.
+ограничь его {max_solution_chars} символами. Не перечисляй сомнения, неудачные
+попытки и длинный полный перебор, когда можно дать краткое доказательство.
+Верни только завершённый JSON-объект.
 """.strip()
+
+
+def _solution_length(result: BaseModel) -> int:
+    solution = getattr(result, "solution", None)
+    return len(solution) if isinstance(solution, str) else 0
 
 
 def _response_content(response: object) -> str | None:
@@ -302,3 +398,17 @@ def _parse_structured_content(content: str, model: type[T]) -> T:
             "DeepSeek вернул ответ, не соответствующий ожидаемой структуре: "
             f"{preview}"
         ) from direct_error
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "да"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "нет"}:
+        return False
+    raise ValueError(
+        f"{name} должен быть true/false, 1/0, yes/no или да/нет"
+    )
