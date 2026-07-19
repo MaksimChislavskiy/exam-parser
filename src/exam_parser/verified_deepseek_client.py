@@ -19,7 +19,7 @@ from .task_prompts import (
 
 _PROOF_AUDIT_PATTERN = re.compile(
     r"(?:"
-    r"\bдоказ|\bсуществ|\bневозмож|\bможет\s+ли\b|\bвозможно\s+ли\b|"
+    r"\bдоказ|\bдокаж|\bсуществ|\bневозмож|\bможет\s+ли\b|\bвозможно\s+ли\b|"
     r"\bнаибольш|\bнаименьш|\bмаксим|\bминим|\bдля\s+всех\b|"
     r"\bединствен|\bлюб(?:ой|ая|ое|ые)\b|\bкажд(?:ый|ая|ое|ые)\b|"
     r"\bprove\b|\bproof\b|\bexist|\bimpossible\b|\bmaximum\b|"
