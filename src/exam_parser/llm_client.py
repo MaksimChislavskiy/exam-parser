@@ -46,7 +46,7 @@ def create_task_client(
 
         return GigaChatTaskClient(model=model)
     if provider == "deepseek":
-        from .deepseek_client import DeepSeekTaskClient
+        from .verified_deepseek_client import VerifiedDeepSeekTaskClient
 
-        return DeepSeekTaskClient(model=model)
+        return VerifiedDeepSeekTaskClient(model=model)
     raise ValueError(f"Неизвестный LLM-провайдер: {provider}")
