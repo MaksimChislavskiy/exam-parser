@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from .deepseek_client import DeepSeekTaskClient
 from .models import ExtractedTask, SolutionConfirmation, TaskSolution
 from .task_prompts import CONFIRMATION_PROMPT, SOLUTION_PROMPT
@@ -7,6 +9,15 @@ from .task_prompts import CONFIRMATION_PROMPT, SOLUTION_PROMPT
 
 class VerifiedDeepSeekTaskClient(DeepSeekTaskClient):
     """DeepSeek-клиент с безопасным подтверждением исправленных решений."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        super().__init__(api_key=api_key, model=model)
+        if "DEEPSEEK_MINIMAL_MAX_TOKENS" not in os.environ:
+            self.minimal_max_tokens = self.compact_max_tokens
 
     def solve_task(self, task: ExtractedTask) -> TaskSolution:
         solved = self._request_task_result(
