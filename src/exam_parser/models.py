@@ -89,6 +89,23 @@ class SolutionConfirmation(BaseModel):
     issues: list[str] = Field(default_factory=list)
 
 
+class ProofAudit(BaseModel):
+    """Независимый аудит полноты математического доказательства."""
+
+    is_complete: bool
+    issues: list[str] = Field(default_factory=list)
+    solution: str = Field(
+        min_length=1,
+        max_length=DEFAULT_MAX_SOLUTION_CHARS,
+    )
+    answer: str = Field(min_length=1)
+
+    @field_validator("solution", "answer")
+    @classmethod
+    def normalize_audited_result(cls, value: str) -> str:
+        return normalize_math_text(value)
+
+
 class TaskDetailedSolution(BaseModel):
     solution: str = Field(
         min_length=1,
