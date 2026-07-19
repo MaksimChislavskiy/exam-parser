@@ -11,6 +11,9 @@ TASK_HEADING_PATTERN = re.compile(
     r"(?m)^[ \t]*((?:1[0-9]|[1-9])(?:\.\d+)*)"
     r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-я])|[ \t]*$)"
 )
+PDF_TASK_HEADING_PATTERN = re.compile(
+    r"(?m)^[ \t]*((?:1[0-9]|[1-9]))\.[ \t]+"
+)
 GEOMETRY_TOKEN_PATTERN = re.compile(
     r"(?<![A-Za-zА-Яа-яЁё0-9_])"
     r"\$?(?:[A-ZА-ЯЁ](?:\s*_?\s*(?:\{\s*\d+\s*\}|\d+))?){2,16}\$?"
@@ -120,8 +123,14 @@ def _repair_page(
     markdown: str,
     pdf_text: str,
 ) -> tuple[str, list[tuple[str, str, str]]]:
-    markdown_blocks = {block.task_num: block for block in _task_blocks(markdown)}
-    pdf_blocks = {block.task_num: block for block in _task_blocks(pdf_text)}
+    markdown_blocks = {
+        block.task_num: block
+        for block in _task_blocks(markdown, heading_pattern=TASK_HEADING_PATTERN)
+    }
+    pdf_blocks = {
+        block.task_num: block
+        for block in _task_blocks(pdf_text, heading_pattern=PDF_TASK_HEADING_PATTERN)
+    }
     page_changes: list[tuple[int, int, str, list[tuple[str, str, str]]]] = []
 
     for task_num, markdown_block in markdown_blocks.items():
@@ -134,9 +143,12 @@ def _repair_page(
         )
         if repaired != markdown_block.text:
             page_changes.append(
-                (markdown_block.start, markdown_block.end, repaired, [
-                    (task_num, old, new) for old, new in changes
-                ])
+                (
+                    markdown_block.start,
+                    markdown_block.end,
+                    repaired,
+                    [(task_num, old, new) for old, new in changes],
+                )
             )
 
     if not page_changes:
@@ -240,12 +252,19 @@ def _canonical_symbol(value: str) -> str:
 
 
 def _format_replacement(canonical: str, original: str) -> str:
-    latex = INDEX_PATTERN.sub(lambda match: f"{match.group(1)}_{match.group(2)}", canonical)
+    latex = INDEX_PATTERN.sub(
+        lambda match: f"{match.group(1)}_{match.group(2)}",
+        canonical,
+    )
     return f"${latex}$" if "$" in original else latex
 
 
-def _task_blocks(value: str) -> list[_TaskBlock]:
-    headings = list(TASK_HEADING_PATTERN.finditer(value))
+def _task_blocks(
+    value: str,
+    *,
+    heading_pattern: re.Pattern[str] = TASK_HEADING_PATTERN,
+) -> list[_TaskBlock]:
+    headings = list(heading_pattern.finditer(value))
     result: list[_TaskBlock] = []
     for index, heading in enumerate(headings):
         start = heading.end()
