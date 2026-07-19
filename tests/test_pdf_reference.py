@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from exam_parser.pdf_reference import _reconcile_block_symbols
+from exam_parser.pdf_reference import (
+    PDF_TASK_HEADING_PATTERN,
+    _reconcile_block_symbols,
+    _repair_page,
+    _task_blocks,
+)
 
 
 class PdfReferenceTests(unittest.TestCase):
@@ -60,6 +65,42 @@ class PdfReferenceTests(unittest.TestCase):
 
         self.assertEqual(repaired, markdown)
         self.assertEqual(changes, [])
+
+    def test_pdf_formula_number_is_not_mistaken_for_task_heading(self) -> None:
+        pdf_text = (
+            "1. В треугольнике АВС площадь круга равна\n"
+            "π\n"
+            "16\n"
+            ". Найдите угол АСВ.\n"
+            "2. Следующая задача."
+        )
+
+        blocks = _task_blocks(
+            pdf_text,
+            heading_pattern=PDF_TASK_HEADING_PATTERN,
+        )
+
+        self.assertEqual([block.task_num for block in blocks], ["1", "2"])
+        self.assertIn("Найдите угол АСВ", blocks[0].text)
+
+    def test_repairs_angle_after_split_formula_number_in_pdf(self) -> None:
+        markdown = (
+            "1. В треугольнике АВС площадь круга равна 16π. "
+            "Найдите угол $ABC$.\n"
+            "2. Следующая задача."
+        )
+        pdf_text = (
+            "1. В треугольнике АВС площадь круга равна\n"
+            "π\n"
+            "16\n"
+            ". Найдите угол АСВ.\n"
+            "2. Следующая задача."
+        )
+
+        repaired, changes = _repair_page(markdown, pdf_text)
+
+        self.assertIn("Найдите угол $ACB$", repaired)
+        self.assertEqual(changes, [("1", "ABC", "ACB")])
 
 
 if __name__ == "__main__":
