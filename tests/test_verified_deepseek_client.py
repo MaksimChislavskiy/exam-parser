@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import patch
 
+from exam_parser.deepseek_client import DeepSeekTaskClient
 from exam_parser.models import (
     ExtractedTask,
     SolutionConfirmation,
@@ -142,6 +144,41 @@ class VerifiedDeepSeekClientTests(unittest.TestCase):
             result = self.client.solve_task(self.task)
 
         self.assertEqual(result, self.candidate)
+
+
+class RetryBudgetTests(unittest.TestCase):
+    @staticmethod
+    def _fake_parent_init(
+        client: DeepSeekTaskClient,
+        api_key: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        client.compact_max_tokens = 2400
+        client.minimal_max_tokens = 1200
+
+    def test_default_minimal_budget_matches_compact_budget(self) -> None:
+        with patch.object(
+            DeepSeekTaskClient,
+            "__init__",
+            self._fake_parent_init,
+        ), patch.dict(os.environ, {}, clear=True):
+            client = VerifiedDeepSeekTaskClient()
+
+        self.assertEqual(client.minimal_max_tokens, 2400)
+
+    def test_explicit_minimal_budget_is_preserved(self) -> None:
+        with patch.object(
+            DeepSeekTaskClient,
+            "__init__",
+            self._fake_parent_init,
+        ), patch.dict(
+            os.environ,
+            {"DEEPSEEK_MINIMAL_MAX_TOKENS": "1200"},
+            clear=True,
+        ):
+            client = VerifiedDeepSeekTaskClient()
+
+        self.assertEqual(client.minimal_max_tokens, 1200)
 
 
 class UniversalVerificationPromptTests(unittest.TestCase):
