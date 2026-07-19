@@ -9,6 +9,7 @@ from .documents import prepare_pages
 from .llm_client import LLMProvider
 from .markdown_pipeline import process_markdown
 from .paddle import PaddleDeviceError, recognize_pages
+from .pdf_reference import repair_markdown_from_pdf
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -209,8 +210,19 @@ def main() -> None:
     else:
         print(f"Используется готовый Markdown: {markdown_dir}", flush=True)
 
-    records = process_markdown(
+    processing_markdown_dir = repair_markdown_from_pdf(
+        input_path,
         markdown_dir,
+        workspace / "markdown_verified",
+    )
+    if processing_markdown_dir != markdown_dir:
+        print(
+            f"Используется Markdown, сверенный с PDF: {processing_markdown_dir}",
+            flush=True,
+        )
+
+    records = process_markdown(
+        processing_markdown_dir,
         output_dir,
         include_solutions=include_solutions,
         answer_source=answer_source,
