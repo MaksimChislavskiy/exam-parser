@@ -34,10 +34,17 @@ TASK_HEADING_PATTERN = re.compile(
     r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-я])|[ \t]*$)"
 )
 ANSWER_LINE_PATTERN = re.compile(r"(?im)^\s*Ответ\s*:.*$")
+SERVICE_LINE_PATTERN = re.compile(
+    r"(?im)^[^\n]*(?:"
+    r"Единый государственный экзамен|"
+    r"Тренировочный вариант|"
+    r"alexlarin\.net|"
+    r"Разрешается свободное копирование|"
+    r"Математика,\s*11 класс"
+    r")[^\n]*$"
+)
 PROTECTED_SYMBOL_PATTERN = re.compile(
-    r"(?<![A-Za-zА-Яа-яЁё0-9_])"
-    r"(?:[A-ZА-ЯЁ](?:_?(?:\d+|\{\d+\}))?){2,16}"
-    r"(?![A-Za-zА-Яа-яЁё0-9_])"
+    r"(?<![A-Z0-9])(?:[A-Z](?:\d+)?){2,16}(?![A-Z0-9])"
 )
 NUMBER_PATTERN = re.compile(
     r"(?<![A-Za-zА-Яа-яЁё0-9_])\d+(?:[.,]\d+)?"
@@ -48,6 +55,7 @@ CONFUSABLE_LETTERS = str.maketrans(
         "А": "A",
         "В": "B",
         "С": "C",
+        "Д": "D",
         "Е": "E",
         "Н": "H",
         "К": "K",
@@ -206,15 +214,29 @@ def _generate_solutions_and_answers(
     checkpoint_path: Path | None = None,
 ) -> None:
     task_by_num = _task_by_number(extracted)
+    failures: list[tuple[str, Exception]] = []
     for record in records:
         print(
             f"{client.provider_name}: решение и ответ для задачи {record.task_num}",
             flush=True,
         )
-        solved = client.solve_task(task_by_num[record.task_num])
-        record.solution = solved.solution
-        record.answer = normalize_ege_short_answer(record.task_num, solved.answer)
+        try:
+            solved = client.solve_task(task_by_num[record.task_num])
+            record.solution = solved.solution
+            record.answer = normalize_ege_short_answer(
+                record.task_num,
+                solved.answer,
+            )
+        except Exception as error:
+            _record_generation_failure(
+                client,
+                record.task_num,
+                error,
+                failures,
+            )
+            continue
         _write_checkpoint(records, checkpoint_path)
+    _raise_generation_failures(failures)
 
 
 def _generate_solutions_only(
@@ -225,14 +247,25 @@ def _generate_solutions_only(
     checkpoint_path: Path | None = None,
 ) -> None:
     task_by_num = _task_by_number(extracted)
+    failures: list[tuple[str, Exception]] = []
     for record in records:
         print(
             f"{client.provider_name}: подробное решение задачи {record.task_num}",
             flush=True,
         )
-        solved = client.generate_solution(task_by_num[record.task_num])
-        record.solution = solved.solution
+        try:
+            solved = client.generate_solution(task_by_num[record.task_num])
+            record.solution = solved.solution
+        except Exception as error:
+            _record_generation_failure(
+                client,
+                record.task_num,
+                error,
+                failures,
+            )
+            continue
         _write_checkpoint(records, checkpoint_path)
+    _raise_generation_failures(failures)
 
 
 def _generate_answers_only(
@@ -243,14 +276,63 @@ def _generate_answers_only(
     checkpoint_path: Path | None = None,
 ) -> None:
     task_by_num = _task_by_number(extracted)
+    failures: list[tuple[str, Exception]] = []
     for record in records:
         print(
             f"{client.provider_name}: короткий ответ для задачи {record.task_num}",
             flush=True,
         )
-        generated = client.generate_answer(task_by_num[record.task_num])
-        record.answer = normalize_ege_short_answer(record.task_num, generated.answer)
+        try:
+            generated = client.generate_answer(task_by_num[record.task_num])
+            record.answer = normalize_ege_short_answer(
+                record.task_num,
+                generated.answer,
+            )
+        except Exception as error:
+            _record_generation_failure(
+                client,
+                record.task_num,
+                error,
+                failures,
+            )
+            continue
         _write_checkpoint(records, checkpoint_path)
+    _raise_generation_failures(failures)
+
+
+def _record_generation_failure(
+    client: TaskClient,
+    task_num: str,
+    error: Exception,
+    failures: list[tuple[str, Exception]],
+) -> None:
+    failures.append((task_num, error))
+    print(
+        f"{client.provider_name}: ошибка задачи {task_num}: "
+        f"{type(error).__name__}: {error}; переход к следующей задаче",
+        flush=True,
+    )
+
+
+def _raise_generation_failures(
+    failures: list[tuple[str, Exception]],
+) -> None:
+    if not failures:
+        return
+    details = "; ".join(
+        f"{task_num}: {type(error).__name__}: {_short_error(error)}"
+        for task_num, error in failures
+    )
+    raise RuntimeError(
+        "Не удалось обработать отдельные задачи: "
+        + details
+        + ". Остальные результаты сохранены в tasks.xlsx."
+    )
+
+
+def _short_error(error: Exception, limit: int = 300) -> str:
+    text = " ".join(str(error).split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
 def _write_checkpoint(
@@ -317,7 +399,10 @@ def _ensure_condition_fidelity(
     )
     if retry is not None:
         retry.image_id = retry.image_id or task.image_id
-        retry_issues = _condition_fidelity_issues(source_condition, retry.condition)
+        retry_issues = _condition_fidelity_issues(
+            source_condition,
+            retry.condition,
+        )
         if not retry_issues:
             return retry
         issues = retry_issues
@@ -355,30 +440,49 @@ def _condition_fidelity_issues(source: str, candidate: str) -> list[str]:
 
 
 def _protected_symbols(value: str) -> list[str]:
+    canonical = _canonical_fidelity_text(value)
     return [
-        _normalize_protected_symbol(match.group(0))
-        for match in PROTECTED_SYMBOL_PATTERN.finditer(value)
+        match.group(0)
+        for match in PROTECTED_SYMBOL_PATTERN.finditer(canonical)
     ]
 
 
-def _normalize_protected_symbol(value: str) -> str:
-    compact = re.sub(r"[_{}]", "", value.upper())
-    return compact.translate(CONFUSABLE_LETTERS)
-
-
 def _numeric_tokens(value: str) -> list[str]:
-    without_symbols = PROTECTED_SYMBOL_PATTERN.sub(" ", value)
+    canonical = _canonical_fidelity_text(value)
+    without_symbols = PROTECTED_SYMBOL_PATTERN.sub(" ", canonical)
     return [
         match.group(0).replace(",", ".")
         for match in NUMBER_PATTERN.finditer(without_symbols)
     ]
 
 
+def _canonical_fidelity_text(value: str) -> str:
+    text = value.translate(CONFUSABLE_LETTERS)
+    text = text.replace("$", "")
+    text = re.sub(r"_\s*\{\s*(\d+)\s*\}", r"\1", text)
+    text = re.sub(r"_\s*(\d+)", r"\1", text)
+    text = re.sub(r"([A-Z])\s+(\d+)", r"\1\2", text)
+
+    previous = None
+    while previous != text:
+        previous = text
+        text = re.sub(
+            r"([A-Z](?:\d+)?)\s+(?=[A-Z](?:\d+)?)",
+            r"\1",
+            text,
+        )
+    return text
+
+
 def _task_condition_blocks(markdown: str) -> dict[str, str]:
     headings = list(TASK_HEADING_PATTERN.finditer(markdown))
     result: dict[str, str] = {}
     for index, heading in enumerate(headings):
-        block_end = headings[index + 1].start() if index + 1 < len(headings) else len(markdown)
+        block_end = (
+            headings[index + 1].start()
+            if index + 1 < len(headings)
+            else len(markdown)
+        )
         body = markdown[heading.end() : block_end]
         condition = _clean_source_condition(body)
         if condition:
@@ -387,7 +491,8 @@ def _task_condition_blocks(markdown: str) -> dict[str, str]:
 
 
 def _clean_source_condition(value: str) -> str:
-    cleaned = IMAGE_PATTERN.sub(" ", value)
+    cleaned = SERVICE_LINE_PATTERN.sub(" ", value)
+    cleaned = IMAGE_PATTERN.sub(" ", cleaned)
     cleaned = ANSWER_LINE_PATTERN.sub(" ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
@@ -463,7 +568,11 @@ def _associate_images_with_tasks(markdown: str) -> dict[str, str]:
     headings = list(TASK_HEADING_PATTERN.finditer(markdown))
     associations: dict[str, str] = {}
     for index, heading in enumerate(headings):
-        block_end = headings[index + 1].start() if index + 1 < len(headings) else len(markdown)
+        block_end = (
+            headings[index + 1].start()
+            if index + 1 < len(headings)
+            else len(markdown)
+        )
         block = markdown[heading.end() : block_end]
         images = _image_ids(block)
         if images:
