@@ -1,10 +1,32 @@
 from __future__ import annotations
 
 import os
+import re
 
 from .deepseek_client import DeepSeekTaskClient
-from .models import ExtractedTask, SolutionConfirmation, TaskSolution
-from .task_prompts import CONFIRMATION_PROMPT, SOLUTION_PROMPT
+from .models import (
+    ExtractedTask,
+    ProofAudit,
+    SolutionConfirmation,
+    TaskSolution,
+)
+from .task_prompts import (
+    CONFIRMATION_PROMPT,
+    PROOF_AUDIT_PROMPT,
+    SOLUTION_PROMPT,
+)
+
+
+_PROOF_AUDIT_PATTERN = re.compile(
+    r"(?:"
+    r"\bдоказ|\bсуществ|\bневозмож|\bможет\s+ли\b|\bвозможно\s+ли\b|"
+    r"\bнаибольш|\bнаименьш|\bмаксим|\bминим|\bдля\s+всех\b|"
+    r"\bединствен|\bлюб(?:ой|ая|ое|ые)\b|\bкажд(?:ый|ая|ое|ые)\b|"
+    r"\bprove\b|\bproof\b|\bexist|\bimpossible\b|\bmaximum\b|"
+    r"\bminimum\b|\bfor\s+all\b|\bevery\b|\bunique"
+    r")",
+    re.IGNORECASE,
+)
 
 
 class VerifiedDeepSeekTaskClient(DeepSeekTaskClient):
@@ -34,6 +56,14 @@ class VerifiedDeepSeekTaskClient(DeepSeekTaskClient):
         if not getattr(self, "verify_solutions", True):
             return solved
 
+        candidate = self._apply_primary_verification(task, solved)
+        return self._audit_proof_if_needed(task, candidate)
+
+    def _apply_primary_verification(
+        self,
+        task: ExtractedTask,
+        solved: TaskSolution,
+    ) -> TaskSolution:
         print(
             f"{self.provider_name}: проверка решения задачи {task.task_num}",
             flush=True,
@@ -63,17 +93,76 @@ class VerifiedDeepSeekTaskClient(DeepSeekTaskClient):
             f"{issues}; проверка исправления",
             flush=True,
         )
+        return self._confirm_or_preserve(
+            task,
+            original=solved,
+            corrected=corrected,
+            correction_name="исправление",
+        )
 
+    def _audit_proof_if_needed(
+        self,
+        task: ExtractedTask,
+        candidate: TaskSolution,
+    ) -> TaskSolution:
+        if not _requires_proof_audit(task, candidate):
+            return candidate
+
+        print(
+            f"{self.provider_name}: аудит полноты доказательства задачи "
+            f"{task.task_num}",
+            flush=True,
+        )
+        try:
+            audit = self._audit_task_proof(task, candidate)
+        except Exception as error:
+            print(
+                f"{self.provider_name}: аудит задачи {task.task_num} "
+                f"не завершён ({type(error).__name__}: {error}); "
+                "сохранено проверенное решение",
+                flush=True,
+            )
+            return candidate
+
+        if audit.is_complete:
+            # Аудитор также не должен стилистически переписывать полное решение.
+            return candidate
+
+        corrected = TaskSolution(
+            solution=audit.solution,
+            answer=audit.answer,
+        )
+        issues = "; ".join(audit.issues) or "доказательство неполно"
+        print(
+            f"{self.provider_name}: аудит задачи {task.task_num} нашёл пробелы: "
+            f"{issues}; проверка исправления",
+            flush=True,
+        )
+        return self._confirm_or_preserve(
+            task,
+            original=candidate,
+            corrected=corrected,
+            correction_name="исправление после аудита",
+        )
+
+    def _confirm_or_preserve(
+        self,
+        task: ExtractedTask,
+        *,
+        original: TaskSolution,
+        corrected: TaskSolution,
+        correction_name: str,
+    ) -> TaskSolution:
         try:
             confirmation = self._confirm_task_solution(task, corrected)
         except Exception as error:
             print(
-                f"{self.provider_name}: исправление задачи {task.task_num} "
+                f"{self.provider_name}: {correction_name} задачи {task.task_num} "
                 f"не удалось подтвердить ({type(error).__name__}: {error}); "
-                "сохранено исходное решение",
+                "сохранено предыдущее решение",
                 flush=True,
             )
-            return solved
+            return original
 
         if not confirmation.is_valid:
             confirmation_issues = (
@@ -81,18 +170,36 @@ class VerifiedDeepSeekTaskClient(DeepSeekTaskClient):
                 or "корректность исправления не подтверждена"
             )
             print(
-                f"{self.provider_name}: исправление задачи {task.task_num} "
+                f"{self.provider_name}: {correction_name} задачи {task.task_num} "
                 f"отклонено: {confirmation_issues}; "
-                "сохранено исходное решение",
+                "сохранено предыдущее решение",
                 flush=True,
             )
-            return solved
+            return original
 
         print(
-            f"{self.provider_name}: исправление задачи {task.task_num} подтверждено",
+            f"{self.provider_name}: {correction_name} задачи {task.task_num} "
+            "подтверждено",
             flush=True,
         )
         return corrected
+
+    def _audit_task_proof(
+        self,
+        task: ExtractedTask,
+        candidate: TaskSolution,
+    ) -> ProofAudit:
+        prompt = PROOF_AUDIT_PROMPT.format(
+            task_num=task.task_num,
+            condition=task.condition,
+            solution=candidate.solution,
+            answer=candidate.answer,
+        )
+        return self._request_structured(
+            prompt,
+            ProofAudit,
+            thinking=True,
+        )
 
     def _confirm_task_solution(
         self,
@@ -110,3 +217,11 @@ class VerifiedDeepSeekTaskClient(DeepSeekTaskClient):
             SolutionConfirmation,
             thinking=True,
         )
+
+
+def _requires_proof_audit(
+    task: ExtractedTask,
+    solution: TaskSolution,
+) -> bool:
+    text = f"{task.condition}\n{solution.solution}"
+    return _PROOF_AUDIT_PATTERN.search(text) is not None
