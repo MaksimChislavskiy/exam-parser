@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
-from .math_text import normalize_geometry_notation
+from .math_text import normalize_geometry_notation, normalize_latex_delimiters
 
 
 DEFAULT_MAX_SOLUTION_CHARS = 8000
@@ -20,7 +20,8 @@ def repair_latex_control_characters(value: str) -> str:
 
 def normalize_math_text(value: str) -> str:
     repaired = repair_latex_control_characters(value)
-    return normalize_geometry_notation(repaired)
+    delimited = normalize_latex_delimiters(repaired)
+    return normalize_geometry_notation(delimited)
 
 
 class ExtractedTask(BaseModel):
