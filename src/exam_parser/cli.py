@@ -116,6 +116,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Явно запустить PaddleOCR заново; по умолчанию OCR и так запускается.",
     )
     parser.add_argument(
+        "--resume-results",
+        action="store_true",
+        help=(
+            "Продолжить по существующему tasks.xlsx: не извлекать задания "
+            "повторно и запросить только отсутствующие решения или ответы."
+        ),
+    )
+    parser.add_argument(
         "--expected-tasks",
         type=int,
         default=19,
@@ -242,6 +250,7 @@ def main() -> None:
         provider=provider,
         model=args.model,
         expected_tasks=args.expected_tasks or None,
+        resume_results=args.resume_results,
     )
     print(
         f"Готово: {len(records)} задач, файл {output_dir / 'tasks.xlsx'}",

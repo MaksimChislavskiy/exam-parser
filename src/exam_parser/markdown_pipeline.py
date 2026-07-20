@@ -8,7 +8,7 @@ from typing import Literal
 
 from PIL import Image
 
-from .excel import write_tasks_xlsx
+from .excel import read_tasks_xlsx, write_tasks_xlsx
 from .llm_client import LLMProvider, TaskClient, create_task_client
 from .math_text import normalize_ege_short_answer
 from .models import ExtractedAnswer, ExtractedTask, TaskRecord
@@ -78,6 +78,7 @@ def process_markdown(
     provider: LLMProvider = "mistral",
     model: str | None = None,
     expected_tasks: int | None = 19,
+    resume_results: bool = False,
 ) -> list[TaskRecord]:
     markdown_dir = Path(markdown_dir)
     output_dir = Path(output_dir)
@@ -92,55 +93,98 @@ def process_markdown(
         raise FileNotFoundError(f"В {markdown_dir} нет page_N/page_N.md")
 
     client = create_task_client(provider, model=model)
-    extracted: list[tuple[ExtractedTask, Path]] = []
-    all_markdown: list[str] = []
+    output_path = output_dir / "tasks.xlsx"
 
-    for page_path in pages:
-        page_num = _page_number(page_path)
-        markdown = page_path.read_text(encoding="utf-8")
-        all_markdown.append(f"\n\n<!-- PAGE {page_num} -->\n{markdown}")
-        image_ids = _image_ids(markdown)
-        image_by_task = _associate_images_with_tasks(markdown)
-        source_by_task = _task_condition_blocks(markdown)
+    if resume_results:
+        if not output_path.is_file():
+            raise FileNotFoundError(
+                f"Нельзя продолжить обработку: контрольная точка не найдена: "
+                f"{output_path}"
+            )
+        records = read_tasks_xlsx(output_path)
+        extracted = [
+            (
+                ExtractedTask(
+                    task_num=record.task_num,
+                    condition=record.condition,
+                    image_id=record.image_name,
+                ),
+                markdown_dir,
+            )
+            for record in records
+        ]
+        _validate_task_count(extracted, expected_tasks)
+        _validate_resume_images(records, images_dir)
 
+        if not include_solutions:
+            for record in records:
+                record.solution = ""
+        if answer_source == "none":
+            for record in records:
+                record.answer = ""
+
+        all_markdown = [
+            f"\n\n<!-- PAGE {_page_number(page_path)} -->\n"
+            + page_path.read_text(encoding="utf-8")
+            for page_path in pages
+        ]
         print(
-            f"{client.provider_name}: извлечение задач со страницы {page_num}",
+            f"Продолжение по контрольной точке: {len(records)} задач из "
+            f"{output_path}",
             flush=True,
         )
-        tasks = client.extract_markdown(markdown, image_ids)
-        for task in tasks:
-            source_condition = source_by_task.get(task.task_num)
-            if source_condition:
-                task = _ensure_condition_fidelity(
-                    client,
-                    task,
-                    source_condition,
-                )
-            fallback = image_by_task.get(task.task_num)
-            task.image_id = _resolve_image_id(task.image_id, fallback, image_ids)
-            extracted.append((task, page_path))
+    else:
+        extracted: list[tuple[ExtractedTask, Path]] = []
+        all_markdown: list[str] = []
 
-    extracted = _deduplicate_tasks(extracted)
-    _validate_task_count(extracted, expected_tasks)
+        for page_path in pages:
+            page_num = _page_number(page_path)
+            markdown = page_path.read_text(encoding="utf-8")
+            all_markdown.append(f"\n\n<!-- PAGE {page_num} -->\n{markdown}")
+            image_ids = _image_ids(markdown)
+            image_by_task = _associate_images_with_tasks(markdown)
+            source_by_task = _task_condition_blocks(markdown)
 
-    records: list[TaskRecord] = []
-    for task, page_path in extracted:
-        image_name = _copy_task_image(
-            page_path,
-            task.image_id,
-            images_dir,
-            task.task_num,
-        )
-        records.append(
-            TaskRecord(
-                task_num=task.task_num,
-                condition=task.condition,
-                image_name=image_name,
+            print(
+                f"{client.provider_name}: извлечение задач со страницы {page_num}",
+                flush=True,
             )
-        )
+            tasks = client.extract_markdown(markdown, image_ids)
+            for task in tasks:
+                source_condition = source_by_task.get(task.task_num)
+                if source_condition:
+                    task = _ensure_condition_fidelity(
+                        client,
+                        task,
+                        source_condition,
+                    )
+                fallback = image_by_task.get(task.task_num)
+                task.image_id = _resolve_image_id(
+                    task.image_id,
+                    fallback,
+                    image_ids,
+                )
+                extracted.append((task, page_path))
 
-    output_path = output_dir / "tasks.xlsx"
-    write_tasks_xlsx(records, output_path)
+        extracted = _deduplicate_tasks(extracted)
+        _validate_task_count(extracted, expected_tasks)
+
+        records = []
+        for task, page_path in extracted:
+            image_name = _copy_task_image(
+                page_path,
+                task.image_id,
+                images_dir,
+                task.task_num,
+            )
+            records.append(
+                TaskRecord(
+                    task_num=task.task_num,
+                    condition=task.condition,
+                    image_name=image_name,
+                )
+            )
+        write_tasks_xlsx(records, output_path)
 
     _populate_requested_results(
         records,
@@ -154,6 +198,28 @@ def process_markdown(
 
     write_tasks_xlsx(records, output_path)
     return records
+
+
+def _validate_resume_images(
+    records: list[TaskRecord],
+    images_dir: Path,
+) -> None:
+    missing = sorted(
+        {
+            record.image_name
+            for record in records
+            if record.image_name
+            and (
+                Path(record.image_name).name != record.image_name
+                or not (images_dir / record.image_name).is_file()
+            )
+        }
+    )
+    if missing:
+        raise FileNotFoundError(
+            "Нельзя продолжить обработку: не найдены сохранённые изображения: "
+            + ", ".join(missing)
+        )
 
 
 def _populate_requested_results(
@@ -216,17 +282,49 @@ def _generate_solutions_and_answers(
     task_by_num = _task_by_number(extracted)
     failures: list[tuple[str, Exception]] = []
     for record in records:
-        print(
-            f"{client.provider_name}: решение и ответ для задачи {record.task_num}",
-            flush=True,
-        )
-        try:
-            solved = client.solve_task(task_by_num[record.task_num])
-            record.solution = solved.solution
-            record.answer = normalize_ege_short_answer(
-                record.task_num,
-                solved.answer,
+        has_solution = bool(record.solution.strip())
+        has_answer = bool(record.answer.strip())
+        if has_solution and has_answer:
+            print(
+                f"{client.provider_name}: задача {record.task_num} уже содержит "
+                "решение и ответ; запрос пропущен",
+                flush=True,
             )
+            continue
+
+        try:
+            if has_solution:
+                print(
+                    f"{client.provider_name}: короткий ответ для задачи "
+                    f"{record.task_num}",
+                    flush=True,
+                )
+                generated = client.generate_answer(task_by_num[record.task_num])
+                record.answer = normalize_ege_short_answer(
+                    record.task_num,
+                    generated.answer,
+                )
+            elif has_answer:
+                print(
+                    f"{client.provider_name}: подробное решение задачи "
+                    f"{record.task_num}",
+                    flush=True,
+                )
+                solved = client.generate_solution(task_by_num[record.task_num])
+                record.solution = solved.solution
+            else:
+                print(
+                    f"{client.provider_name}: решение и ответ для задачи "
+                    f"{record.task_num}",
+                    flush=True,
+                )
+                solved = client.solve_task(task_by_num[record.task_num])
+                normalized_answer = normalize_ege_short_answer(
+                    record.task_num,
+                    solved.answer,
+                )
+                record.solution = solved.solution
+                record.answer = normalized_answer
         except Exception as error:
             _record_generation_failure(
                 client,
@@ -249,6 +347,14 @@ def _generate_solutions_only(
     task_by_num = _task_by_number(extracted)
     failures: list[tuple[str, Exception]] = []
     for record in records:
+        if record.solution.strip():
+            print(
+                f"{client.provider_name}: задача {record.task_num} уже содержит "
+                "решение; запрос пропущен",
+                flush=True,
+            )
+            continue
+
         print(
             f"{client.provider_name}: подробное решение задачи {record.task_num}",
             flush=True,
@@ -278,6 +384,14 @@ def _generate_answers_only(
     task_by_num = _task_by_number(extracted)
     failures: list[tuple[str, Exception]] = []
     for record in records:
+        if record.answer.strip():
+            print(
+                f"{client.provider_name}: задача {record.task_num} уже содержит "
+                "ответ; запрос пропущен",
+                flush=True,
+            )
+            continue
+
         print(
             f"{client.provider_name}: короткий ответ для задачи {record.task_num}",
             flush=True,
