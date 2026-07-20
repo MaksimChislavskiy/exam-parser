@@ -11,6 +11,7 @@ from fractions import Fraction
 _LATEX_SPAN_PATTERN = re.compile(r"(\$\$.*?\$\$|\$.*?\$)", re.DOTALL)
 _LATEX_INLINE_PAREN_PATTERN = re.compile(r"\\\((.*?)\\\)", re.DOTALL)
 _LATEX_DISPLAY_BRACKET_PATTERN = re.compile(r"\\\[(.*?)\\\]", re.DOTALL)
+_LATEX_DISPLAY_DOLLAR_PATTERN = re.compile(r"\$\$(.*?)\$\$", re.DOTALL)
 _GEOMETRY_TOKEN_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_])"
     r"(?=[A-Z0-9_]{2,24}(?![A-Za-z0-9_]))"
@@ -29,15 +30,20 @@ _NUMBER_PATTERN = re.compile(r"[+-]?\d+(?:[.,]\d+)?")
 
 
 def normalize_latex_delimiters(value: str) -> str:
-    """Приводит стандартные LaTeX-разделители к долларовым.
+    """Приводит все математические разделители к одиночным ``$...$``.
 
-    Inline-формулы ``\\(...\\)`` преобразуются в ``$...$``, а блочные
-    ``\\[...\\]`` — в ``$$...$$``. Уже долларовые формулы не изменяются.
+    Преобразуются inline-формулы ``\\(...\\)``, блочные ``\\[...\\]`` и
+    двойные долларовые разделители ``$$...$$``. Уже правильные ``$...$``
+    не изменяются.
     """
 
-    normalized = _LATEX_DISPLAY_BRACKET_PATTERN.sub(
-        lambda match: f"$${match.group(1)}$$",
+    normalized = _LATEX_DISPLAY_DOLLAR_PATTERN.sub(
+        lambda match: f"${match.group(1)}$",
         value,
+    )
+    normalized = _LATEX_DISPLAY_BRACKET_PATTERN.sub(
+        lambda match: f"${match.group(1)}$",
+        normalized,
     )
     return _LATEX_INLINE_PAREN_PATTERN.sub(
         lambda match: f"${match.group(1)}$",
