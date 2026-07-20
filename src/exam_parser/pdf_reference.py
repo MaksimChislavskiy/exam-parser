@@ -64,7 +64,8 @@ def repair_markdown_from_pdf(
 
     Markdown остаётся главным источником формул и структуры. Текстовый слой PDF
     используется только для замены близких обозначений в одинаковой позиции,
-    например ``ABC`` -> ``ACB`` или ``APO`` -> ``APQ``.
+    например ``ABC`` -> ``ACB``, ``APO`` -> ``APQ`` или восстановления одного
+    потерянного символа в длинном обозначении.
     """
 
     pdf_path = Path(pdf_path)
@@ -222,11 +223,30 @@ def _reconcile_block_symbols(
 
 
 def _safe_symbol_replacement(old: str, new: str) -> bool:
-    if old == new or len(old) != len(new):
+    if old == new:
         return False
-    if len(old) < 3 and not any(character.isdigit() for character in old + new):
+
+    shortest_length = min(len(old), len(new))
+    has_index = any(character.isdigit() for character in old + new)
+    if shortest_length < 3 and not has_index:
         return False
-    return SequenceMatcher(a=old, b=new, autojunk=False).ratio() >= 2 / 3
+
+    similarity = SequenceMatcher(a=old, b=new, autojunk=False).ratio()
+    if len(old) == len(new):
+        return similarity >= 2 / 3
+
+    if shortest_length < 4 or abs(len(old) - len(new)) != 1:
+        return False
+
+    return similarity >= 0.8 and _is_single_character_insertion_or_deletion(old, new)
+
+
+def _is_single_character_insertion_or_deletion(old: str, new: str) -> bool:
+    shorter, longer = (old, new) if len(old) < len(new) else (new, old)
+    return any(
+        longer[:index] + longer[index + 1 :] == shorter
+        for index in range(len(longer))
+    )
 
 
 def _geometry_tokens(value: str) -> list[_Token]:
