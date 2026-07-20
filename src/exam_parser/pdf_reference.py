@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from collections import defaultdict
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -55,6 +56,27 @@ class _TaskBlock:
     text: str
 
 
+@dataclass(frozen=True)
+class _PdfWord:
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    text: str
+    block_num: int
+    line_num: int
+    word_num: int
+
+
+@dataclass(frozen=True)
+class _PdfDigit:
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    value: str
+
+
 def repair_markdown_from_pdf(
     pdf_path: str | Path,
     markdown_dir: str | Path,
@@ -92,12 +114,24 @@ def repair_markdown_from_pdf(
             if page_num < 1 or page_num > len(document):
                 continue
 
+            page = document[page_num - 1]
             markdown = markdown_path.read_text(encoding="utf-8")
-            pdf_text = document[page_num - 1].get_text("text")
-            repaired, changes = _repair_page(markdown, pdf_text)
+            pdf_text = page.get_text("text")
+            repaired, task_changes = _repair_page(markdown, pdf_text)
+            repaired, page_changes = _reconcile_reference_symbols(
+                repaired,
+                _pdf_geometry_symbols(page),
+            )
             if repaired != markdown:
                 replacements_by_page[markdown_path] = repaired
-                all_changes.extend(changes)
+                all_changes.extend(
+                    (f"задача {task_num}", old, new)
+                    for task_num, old, new in task_changes
+                )
+                all_changes.extend(
+                    (f"страница {page_num}", old, new)
+                    for old, new in page_changes
+                )
 
     if not replacements_by_page:
         return markdown_dir
@@ -110,10 +144,9 @@ def repair_markdown_from_pdf(
         relative = source_path.relative_to(markdown_dir)
         (repaired_dir / relative).write_text(repaired, encoding="utf-8")
 
-    for task_num, old, new in all_changes:
+    for location, old, new in all_changes:
         print(
-            f"PDF-текст: условие задачи {task_num}, исправлено обозначение "
-            f"{old} -> {new}",
+            f"PDF-текст: {location}, исправлено обозначение {old} -> {new}",
             flush=True,
         )
 
@@ -172,14 +205,44 @@ def _reconcile_block_symbols(
     markdown_block: str,
     pdf_block: str,
 ) -> tuple[str, list[tuple[str, str]]]:
-    markdown_tokens = _geometry_tokens(markdown_block)
-    pdf_tokens = _geometry_tokens(pdf_block)
-    if not markdown_tokens or not pdf_tokens:
-        return markdown_block, []
+    return _reconcile_symbol_tokens(
+        markdown_block,
+        [token.canonical for token in _geometry_tokens(pdf_block)],
+        allow_equal_length=True,
+    )
+
+
+def _reconcile_reference_symbols(
+    markdown: str,
+    reference_symbols: list[str],
+) -> tuple[str, list[tuple[str, str]]]:
+    """Восстанавливает только потерю/добавление одного символа по всей странице.
+
+    Этот запасной режим нужен для PDF, где номера задач и верхние индексы извлечены
+    не в порядке чтения. Равнодлинные замены здесь запрещены, чтобы не менять
+    короткие обозначения вне надёжно выделенного блока задачи.
+    """
+
+    return _reconcile_symbol_tokens(
+        markdown,
+        reference_symbols,
+        allow_equal_length=False,
+    )
+
+
+def _reconcile_symbol_tokens(
+    markdown: str,
+    reference_symbols: list[str],
+    *,
+    allow_equal_length: bool,
+) -> tuple[str, list[tuple[str, str]]]:
+    markdown_tokens = _geometry_tokens(markdown)
+    if not markdown_tokens or not reference_symbols:
+        return markdown, []
 
     matcher = SequenceMatcher(
         a=[token.canonical for token in markdown_tokens],
-        b=[token.canonical for token in pdf_tokens],
+        b=reference_symbols,
         autojunk=False,
     )
     replacements: list[tuple[int, int, str, str, str]] = []
@@ -187,17 +250,21 @@ def _reconcile_block_symbols(
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag != "replace" or i2 - i1 != j2 - j1:
             continue
-        for markdown_token, pdf_token in zip(
+        for markdown_token, reference_symbol in zip(
             markdown_tokens[i1:i2],
-            pdf_tokens[j1:j2],
+            reference_symbols[j1:j2],
         ):
+            if not allow_equal_length and len(markdown_token.canonical) == len(
+                reference_symbol
+            ):
+                continue
             if not _safe_symbol_replacement(
                 markdown_token.canonical,
-                pdf_token.canonical,
+                reference_symbol,
             ):
                 continue
             replacement = _format_replacement(
-                pdf_token.canonical,
+                reference_symbol,
                 markdown_token.text,
             )
             replacements.append(
@@ -206,14 +273,14 @@ def _reconcile_block_symbols(
                     markdown_token.end,
                     replacement,
                     markdown_token.canonical,
-                    pdf_token.canonical,
+                    reference_symbol,
                 )
             )
 
     if not replacements:
-        return markdown_block, []
+        return markdown, []
 
-    result = markdown_block
+    result = markdown
     changes: list[tuple[str, str]] = []
     for start, end, replacement, old, new in reversed(replacements):
         result = result[:start] + replacement + result[end:]
@@ -247,6 +314,136 @@ def _is_single_character_insertion_or_deletion(old: str, new: str) -> bool:
         longer[:index] + longer[index + 1 :] == shorter
         for index in range(len(longer))
     )
+
+
+def _pdf_geometry_symbols(page: object) -> list[str]:
+    words = [
+        _PdfWord(
+            x0=float(item[0]),
+            y0=float(item[1]),
+            x1=float(item[2]),
+            y1=float(item[3]),
+            text=str(item[4]),
+            block_num=int(item[5]),
+            line_num=int(item[6]),
+            word_num=int(item[7]),
+        )
+        for item in page.get_text("words")  # type: ignore[attr-defined]
+    ]
+    digits = _pdf_digit_characters(page)
+    groups = _pdf_geometry_word_groups(words)
+
+    symbols: list[str] = []
+    for group in groups:
+        symbol = _indexed_pdf_group_symbol(group, digits)
+        if len(symbol) >= 2:
+            symbols.append(symbol)
+    return symbols
+
+
+def _pdf_digit_characters(page: object) -> list[_PdfDigit]:
+    raw = page.get_text("rawdict")  # type: ignore[attr-defined]
+    result: list[_PdfDigit] = []
+    for block in raw.get("blocks", []):
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                for character in span.get("chars", []):
+                    value = str(character.get("c", ""))
+                    if not value.isdigit():
+                        continue
+                    x0, y0, x1, y1 = character["bbox"]
+                    result.append(
+                        _PdfDigit(
+                            x0=float(x0),
+                            y0=float(y0),
+                            x1=float(x1),
+                            y1=float(y1),
+                            value=value,
+                        )
+                    )
+    return result
+
+
+def _pdf_geometry_word_groups(words: list[_PdfWord]) -> list[list[_PdfWord]]:
+    words_by_line: dict[tuple[int, int], list[_PdfWord]] = defaultdict(list)
+    for word in words:
+        words_by_line[(word.block_num, word.line_num)].append(word)
+
+    groups: list[list[_PdfWord]] = []
+    for line_words in words_by_line.values():
+        current: list[_PdfWord] = []
+        for word in sorted(line_words, key=lambda item: item.word_num):
+            if not _is_pdf_geometry_word(word.text):
+                if current:
+                    groups.append(current)
+                    current = []
+                continue
+
+            if current and not _pdf_words_are_adjacent(current[-1], word):
+                groups.append(current)
+                current = []
+            current.append(word)
+
+        if current:
+            groups.append(current)
+
+    groups.sort(
+        key=lambda group: (
+            group[0].block_num,
+            group[0].line_num,
+            group[0].word_num,
+        )
+    )
+    return groups
+
+
+def _is_pdf_geometry_word(value: str) -> bool:
+    compact = re.sub(r"[^A-Za-zА-ЯЁа-яё0-9]", "", value)
+    if not compact or any(character.islower() for character in compact):
+        return False
+    canonical = _canonical_symbol(compact)
+    return any(character.isalpha() for character in canonical)
+
+
+def _pdf_words_are_adjacent(left: _PdfWord, right: _PdfWord) -> bool:
+    height = max(left.y1 - left.y0, right.y1 - right.y0)
+    allowed_gap = max(3.5, height * 0.45)
+    return right.x0 - left.x1 <= allowed_gap
+
+
+def _indexed_pdf_group_symbol(
+    group: list[_PdfWord],
+    digits: list[_PdfDigit],
+) -> str:
+    parts = [_canonical_symbol(word.text) for word in group]
+    attachments: dict[int, list[_PdfDigit]] = defaultdict(list)
+
+    for digit in digits:
+        candidates: list[tuple[float, int]] = []
+        for index, word in enumerate(group):
+            if any(character.isdigit() for character in parts[index]):
+                continue
+            height = word.y1 - word.y0
+            digit_height = digit.y1 - digit.y0
+            allowed_gap = max(3.5, height * 0.45)
+            if digit_height >= height * 0.9:
+                continue
+            if abs(digit.x0 - word.x1) > allowed_gap:
+                continue
+            word_center = (word.y0 + word.y1) / 2
+            digit_center = (digit.y0 + digit.y1) / 2
+            if abs(digit_center - word_center) > height * 0.8:
+                continue
+            candidates.append((abs(digit.x0 - word.x1), index))
+
+        if candidates:
+            _, nearest_index = min(candidates)
+            attachments[nearest_index].append(digit)
+
+    for index, attached in attachments.items():
+        attached.sort(key=lambda item: item.x0)
+        parts[index] += "".join(item.value for item in attached)
+    return "".join(parts)
 
 
 def _geometry_tokens(value: str) -> list[_Token]:
