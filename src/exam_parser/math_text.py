@@ -9,6 +9,8 @@ from fractions import Fraction
 # A2BB2, A1B1C1D1, CC1. Обрабатываем только последовательности латинских
 # заглавных букв с индексами, чтобы не трогать обычные числа и русский текст.
 _LATEX_SPAN_PATTERN = re.compile(r"(\$\$.*?\$\$|\$.*?\$)", re.DOTALL)
+_LATEX_INLINE_PAREN_PATTERN = re.compile(r"\\\((.*?)\\\)", re.DOTALL)
+_LATEX_DISPLAY_BRACKET_PATTERN = re.compile(r"\\\[(.*?)\\\]", re.DOTALL)
 _GEOMETRY_TOKEN_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_])"
     r"(?=[A-Z0-9_]{2,24}(?![A-Za-z0-9_]))"
@@ -24,6 +26,23 @@ _PLAIN_FRACTION_PATTERN = re.compile(
     r"(?P<sign>[+-]?)\s*(?P<num>\d+)\s*/\s*(?P<den>\d+)"
 )
 _NUMBER_PATTERN = re.compile(r"[+-]?\d+(?:[.,]\d+)?")
+
+
+def normalize_latex_delimiters(value: str) -> str:
+    """Приводит стандартные LaTeX-разделители к долларовым.
+
+    Inline-формулы ``\\(...\\)`` преобразуются в ``$...$``, а блочные
+    ``\\[...\\]`` — в ``$$...$$``. Уже долларовые формулы не изменяются.
+    """
+
+    normalized = _LATEX_DISPLAY_BRACKET_PATTERN.sub(
+        lambda match: f"$${match.group(1)}$$",
+        value,
+    )
+    return _LATEX_INLINE_PAREN_PATTERN.sub(
+        lambda match: f"${match.group(1)}$",
+        normalized,
+    )
 
 
 def normalize_geometry_notation(value: str) -> str:
