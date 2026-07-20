@@ -21,7 +21,7 @@ _GEOMETRY_TOKEN_PATTERN = re.compile(
 )
 _INDEX_PATTERN = re.compile(r"([A-Z])_?(\d+)")
 _LATEX_FRACTION_PATTERN = re.compile(
-    r"(?P<sign>[+-]?)\s*\\frac\s*\{(?P<num>\d+)\}\s*\{(?P<den>\d+)\}"
+    r"(?P<sign>[+-]?)\s*\\(?:d|t)?frac\s*\{(?P<num>\d+)\}\s*\{(?P<den>\d+)\}"
 )
 _PLAIN_FRACTION_PATTERN = re.compile(
     r"(?P<sign>[+-]?)\s*(?P<num>\d+)\s*/\s*(?P<den>\d+)"
