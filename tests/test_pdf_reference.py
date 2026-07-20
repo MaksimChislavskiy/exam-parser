@@ -42,6 +42,28 @@ class PdfReferenceTests(unittest.TestCase):
         self.assertIn("$APQ$", repaired)
         self.assertEqual(changes, [("APO", "APQ")])
 
+    def test_repairs_one_missing_character_in_long_geometry_label(self) -> None:
+        markdown = (
+            "В кубе $ABCD_1B_1C_1D_1$ точка K — середина ребра $CC_1$."
+        )
+        pdf_text = (
+            "В кубе ABCDA1B1C1D1 точка K — середина ребра CC1."
+        )
+
+        repaired, changes = _reconcile_block_symbols(markdown, pdf_text)
+
+        self.assertIn("$ABCDA_1B_1C_1D_1$", repaired)
+        self.assertEqual(changes, [("ABCD1B1C1D1", "ABCDA1B1C1D1")])
+
+    def test_does_not_expand_short_geometry_label(self) -> None:
+        markdown = "Рассмотрите отрезок $AB$."
+        pdf_text = "Рассмотрите треугольник ABC."
+
+        repaired, changes = _reconcile_block_symbols(markdown, pdf_text)
+
+        self.assertEqual(repaired, markdown)
+        self.assertEqual(changes, [])
+
     def test_keeps_matching_geometry_labels(self) -> None:
         markdown = (
             "Основание призмы $ABCA_1B_1C_1$, стороны $AB=BC=2$, "
