@@ -10,6 +10,7 @@ from .models import (
     SolutionConfirmation,
     TaskSolution,
 )
+from .result_quality import complete_proof_subpart_answer
 from .task_prompts import (
     CONFIRMATION_PROMPT,
     PROOF_AUDIT_PROMPT,
@@ -54,10 +55,26 @@ class VerifiedDeepSeekTaskClient(DeepSeekTaskClient):
             thinking=True,
         )
         if not getattr(self, "verify_solutions", True):
-            return solved
+            return self._complete_safe_proof_answer(task, solved)
 
         candidate = self._apply_primary_verification(task, solved)
-        return self._audit_proof_if_needed(task, candidate)
+        audited = self._audit_proof_if_needed(task, candidate)
+        return self._complete_safe_proof_answer(task, audited)
+
+    def _complete_safe_proof_answer(
+        self,
+        task: ExtractedTask,
+        candidate: TaskSolution,
+    ) -> TaskSolution:
+        completed = complete_proof_subpart_answer(task.condition, candidate.answer)
+        if completed == candidate.answer:
+            return candidate
+        print(
+            f"{self.provider_name}: в ответ задачи {task.task_num} добавлен "
+            "доказательный подпункт",
+            flush=True,
+        )
+        return TaskSolution(solution=candidate.solution, answer=completed)
 
     def _apply_primary_verification(
         self,
