@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import re
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .math_text import normalize_geometry_notation, normalize_latex_delimiters
+from .result_quality import (
+    complete_proof_subpart_answer,
+    normalize_answer_text,
+    normalize_math_typography,
+)
 
 
 DEFAULT_MAX_SOLUTION_CHARS = 8000
@@ -44,7 +49,12 @@ def normalize_math_text(value: str) -> str:
     repaired = repair_latex_control_characters(value)
     without_empty_html = remove_empty_html_containers(repaired)
     delimited = normalize_latex_delimiters(without_empty_html)
-    return normalize_geometry_notation(delimited)
+    typographic = normalize_math_typography(delimited)
+    return normalize_geometry_notation(typographic)
+
+
+def normalize_result_answer(value: str) -> str:
+    return normalize_answer_text(normalize_math_text(value))
 
 
 class ExtractedTask(BaseModel):
@@ -69,7 +79,7 @@ class ExtractedAnswer(BaseModel):
     @field_validator("answer")
     @classmethod
     def normalize_answer(cls, value: str) -> str:
-        return normalize_math_text(value)
+        return normalize_result_answer(value)
 
 
 class DocumentAnswerExtraction(BaseModel):
@@ -83,10 +93,15 @@ class TaskSolution(BaseModel):
     )
     answer: str = Field(min_length=1)
 
-    @field_validator("solution", "answer")
+    @field_validator("solution")
     @classmethod
     def normalize_solution(cls, value: str) -> str:
         return normalize_math_text(value)
+
+    @field_validator("answer")
+    @classmethod
+    def normalize_answer(cls, value: str) -> str:
+        return normalize_result_answer(value)
 
 
 class SolutionVerification(BaseModel):
@@ -100,10 +115,15 @@ class SolutionVerification(BaseModel):
     )
     answer: str = Field(min_length=1)
 
-    @field_validator("solution", "answer")
+    @field_validator("solution")
     @classmethod
-    def normalize_verified_result(cls, value: str) -> str:
+    def normalize_verified_solution(cls, value: str) -> str:
         return normalize_math_text(value)
+
+    @field_validator("answer")
+    @classmethod
+    def normalize_verified_answer(cls, value: str) -> str:
+        return normalize_result_answer(value)
 
 
 class SolutionConfirmation(BaseModel):
@@ -124,10 +144,15 @@ class ProofAudit(BaseModel):
     )
     answer: str = Field(min_length=1)
 
-    @field_validator("solution", "answer")
+    @field_validator("solution")
     @classmethod
-    def normalize_audited_result(cls, value: str) -> str:
+    def normalize_audited_solution(cls, value: str) -> str:
         return normalize_math_text(value)
+
+    @field_validator("answer")
+    @classmethod
+    def normalize_audited_answer(cls, value: str) -> str:
+        return normalize_result_answer(value)
 
 
 class TaskDetailedSolution(BaseModel):
@@ -148,7 +173,7 @@ class GeneratedAnswer(BaseModel):
     @field_validator("answer")
     @classmethod
     def normalize_answer(cls, value: str) -> str:
-        return normalize_math_text(value)
+        return normalize_result_answer(value)
 
 
 class TaskRecord(BaseModel):
@@ -158,7 +183,17 @@ class TaskRecord(BaseModel):
     solution: str = ""
     answer: str = ""
 
-    @field_validator("condition", "solution", "answer")
+    @field_validator("condition", "solution")
     @classmethod
     def normalize_record_math(cls, value: str) -> str:
         return normalize_math_text(value)
+
+    @field_validator("answer")
+    @classmethod
+    def normalize_record_answer(cls, value: str) -> str:
+        return normalize_result_answer(value)
+
+    @model_validator(mode="after")
+    def complete_safe_proof_answer(self) -> "TaskRecord":
+        self.answer = complete_proof_subpart_answer(self.condition, self.answer)
+        return self
