@@ -32,6 +32,15 @@ _PART_HEADING_PATTERN = re.compile(
     r"(?im)(?:^|\n)\s*(?P<label>[A-Za-zА-Яа-яЁё])\s*[).]"
 )
 _PROOF_START_PATTERN = re.compile(r"(?i)^\s*(?:докаж|prove)\w*")
+_STANDALONE_LATEX_COMMAND_PATTERN = re.compile(
+    r"\\(?:d?frac|tfrac|sqrt|pi|infty|log|ln|sin|cos|tan|cot|"
+    r"arcsin|arccos|arctan|arccot|exp|cup|cap|pm|mp|leq?|geq?|neq|"
+    r"cdot|times|div|left|right|lvert|rvert|vert|overline|underline)\b"
+)
+_LATEX_COMMAND_PATTERN = re.compile(r"\\[A-Za-z]+")
+_ALLOWED_STANDALONE_MATH_PATTERN = re.compile(
+    r"[0-9A-Za-z\s{}\[\]()_^+\-*/=<>|,.;:]*"
+)
 _COMMON_TEXT_REPLACEMENTS = (
     (
         re.compile(r"(?i)\bпри\s+той\s+же\s+температура\b"),
@@ -76,8 +85,40 @@ def normalize_math_typography(value: str) -> str:
 
 
 def normalize_answer_text(value: str) -> str:
-    """Приводит десятичные дроби в ответе к русской записи с запятой."""
-    return _DECIMAL_DOT_PATTERN.sub(",", value)
+    """Нормализует десятичную запись и отдельный LaTeX-ответ."""
+    normalized = _DECIMAL_DOT_PATTERN.sub(",", value)
+    return _wrap_standalone_latex_answer(normalized)
+
+
+def _wrap_standalone_latex_answer(value: str) -> str:
+    """Оборачивает в ``$...$`` только ответ, целиком являющийся LaTeX-формулой."""
+    stripped = value.strip()
+    if not stripped or "$" in stripped:
+        return value
+
+    punctuation = ""
+    if stripped[-1:] in ".!?":
+        punctuation = stripped[-1]
+        stripped = stripped[:-1].rstrip()
+
+    if not _STANDALONE_LATEX_COMMAND_PATTERN.search(stripped):
+        return value
+    if re.search(r"[А-Яа-яЁё]", stripped):
+        return value
+    if stripped.count("{") != stripped.count("}"):
+        return value
+    if stripped.count("[") != stripped.count("]"):
+        return value
+    if stripped.count("(") != stripped.count(")"):
+        return value
+
+    without_commands = _LATEX_COMMAND_PATTERN.sub("", stripped)
+    if re.search(r"[A-Za-z]{2,}", without_commands):
+        return value
+    if not _ALLOWED_STANDALONE_MATH_PATTERN.fullmatch(without_commands):
+        return value
+
+    return f"${stripped}${punctuation}"
 
 
 def complete_proof_subpart_answer(condition: str, answer: str) -> str:
