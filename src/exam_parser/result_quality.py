@@ -31,6 +31,13 @@ _DECIMAL_DOT_PATTERN = re.compile(r"(?<=\d)\.(?=\d)")
 _PART_HEADING_PATTERN = re.compile(
     r"(?im)(?:^|\n)\s*(?P<label>[A-Za-zА-Яа-яЁё])\s*[).]"
 )
+_PART_ANSWER_SEGMENT_PATTERN = re.compile(
+    r"(?P<prefix>(?:^|;\s*|\n\s*)[A-Za-zА-Яа-яЁё]\s*[).]\s*)"
+    r"(?P<body>.*?)"
+    r"(?=(?:;\s*[A-Za-zА-Яа-яЁё]\s*[).])|"
+    r"(?:\n\s*[A-Za-zА-Яа-яЁё]\s*[).])|$)",
+    re.DOTALL,
+)
 _PROOF_START_PATTERN = re.compile(r"(?i)^\s*(?:докаж|prove)\w*")
 _STANDALONE_LATEX_COMMAND_PATTERN = re.compile(
     r"\\(?:d?frac|tfrac|sqrt|pi|infty|log|ln|sin|cos|tan|cot|"
@@ -85,13 +92,22 @@ def normalize_math_typography(value: str) -> str:
 
 
 def normalize_answer_text(value: str) -> str:
-    """Нормализует десятичную запись и отдельный LaTeX-ответ."""
+    """Нормализует десятичную запись и отдельные LaTeX-ответы."""
     normalized = _DECIMAL_DOT_PATTERN.sub(",", value)
+    normalized = _PART_ANSWER_SEGMENT_PATTERN.sub(
+        _wrap_labeled_latex_segment,
+        normalized,
+    )
     return _wrap_standalone_latex_answer(normalized)
 
 
+def _wrap_labeled_latex_segment(match: re.Match[str]) -> str:
+    wrapped = _wrap_standalone_latex_answer(match.group("body"))
+    return f"{match.group('prefix')}{wrapped}"
+
+
 def _wrap_standalone_latex_answer(value: str) -> str:
-    """Оборачивает в ``$...$`` только ответ, целиком являющийся LaTeX-формулой."""
+    """Оборачивает в ``$...$`` только текст, целиком являющийся LaTeX-формулой."""
     stripped = value.strip()
     if not stripped or "$" in stripped:
         return value
