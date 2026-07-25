@@ -96,6 +96,18 @@ class AnswerQualityTests(unittest.TestCase):
             r"А) доказано; Б) $\frac{1}{8}$",
         )
 
+    def test_repairs_labeled_bare_latex_in_existing_checkpoint(self) -> None:
+        record = TaskRecord(
+            task_num="17",
+            condition=self.CONDITION,
+            answer=r"А) доказано; Б) \frac{1}{8}",
+        )
+
+        self.assertEqual(
+            record.answer,
+            r"А) доказано; Б) $\frac{1}{8}$",
+        )
+
     def test_does_not_change_answer_with_existing_part_labels(self) -> None:
         answer = r"А) доказано; Б) $\frac{2\sqrt{14}}{7}$"
         self.assertEqual(
