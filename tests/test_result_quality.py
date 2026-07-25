@@ -63,6 +63,15 @@ class AnswerQualityTests(unittest.TestCase):
         result = TaskSolution(solution="Решение.", answer="17.1 млн рублей")
         self.assertEqual(result.answer, "17,1 млн рублей")
 
+    def test_wraps_standalone_latex_answer(self) -> None:
+        result = TaskSolution(solution="Решение.", answer=r"\frac{1}{8}")
+        self.assertEqual(result.answer, r"$\frac{1}{8}$")
+
+    def test_keeps_prose_answer_with_latex_command_unchanged(self) -> None:
+        answer = r"Ответ равен \frac{1}{8}"
+        result = TaskSolution(solution="Решение.", answer=answer)
+        self.assertEqual(result.answer, answer)
+
     def test_completes_safe_proof_subpart_answer_in_checkpoint(self) -> None:
         record = TaskRecord(
             task_num="14",
@@ -73,6 +82,18 @@ class AnswerQualityTests(unittest.TestCase):
         self.assertEqual(
             record.answer,
             r"А) доказано; Б) $\frac{2\sqrt{14}}{7}$",
+        )
+
+    def test_completes_proof_answer_with_bare_latex_result(self) -> None:
+        record = TaskRecord(
+            task_num="17",
+            condition=self.CONDITION,
+            answer=r"\frac{1}{8}",
+        )
+
+        self.assertEqual(
+            record.answer,
+            r"А) доказано; Б) $\frac{1}{8}$",
         )
 
     def test_does_not_change_answer_with_existing_part_labels(self) -> None:
