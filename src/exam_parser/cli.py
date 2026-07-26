@@ -242,6 +242,11 @@ def main() -> None:
         )
     processing_markdown_dir = bounded_markdown_dir
 
+    # Клиенту решения нужен точный каталог текущего результата, чтобы найти
+    # уже скопированное изображение конкретной задачи. Переменная действует только
+    # внутри текущего процесса и не является пользовательской настройкой.
+    os.environ["EXAM_PARSER_CURRENT_OUTPUT_DIR"] = str(output_dir.resolve())
+
     records = process_markdown(
         processing_markdown_dir,
         output_dir,
