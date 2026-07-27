@@ -124,32 +124,31 @@ def _excel_safe(value: str) -> str:
 
 
 def _condition_html(value: str) -> str:
-    """Оборачивает текст условия в блочные HTML-абзацы для импорта на сайт."""
+    """Оборачивает только подпункты условия в HTML-абзацы для импорта на сайт."""
     normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
     if not normalized or HTML_BLOCK_PATTERN.search(normalized):
         return normalized
 
-    paragraphs: list[str] = []
-    for block in re.split(r"\n\s*\n+", normalized):
-        joined = " ".join(line.strip() for line in block.splitlines() if line.strip())
-        if not joined:
-            continue
-        paragraphs.extend(_split_subparts(joined))
+    split = _split_subparts(normalized)
+    if split is None:
+        return normalized
 
-    return "\n".join(f"<p>{paragraph}</p>" for paragraph in paragraphs)
+    prefix, subparts = split
+    tagged_subparts = [f"<p>{subpart}</p>" for subpart in subparts]
+    if prefix:
+        return "\n".join((prefix, *tagged_subparts))
+    return "\n".join(tagged_subparts)
 
 
-def _split_subparts(value: str) -> list[str]:
+def _split_subparts(value: str) -> tuple[str, list[str]] | None:
     markers = list(SUBPART_MARKER_PATTERN.finditer(value))
     if len(markers) < 2:
-        return [value]
+        return None
 
-    parts: list[str] = []
     prefix = value[: markers[0].start()].strip()
-    if prefix:
-        parts.append(prefix)
-
+    subparts: list[str] = []
     for index, marker in enumerate(markers):
         end = markers[index + 1].start() if index + 1 < len(markers) else len(value)
-        parts.append(value[marker.start() : end].strip())
-    return parts
+        subpart = value[marker.start() : end].strip()
+        subparts.append(" ".join(line.strip() for line in subpart.splitlines()))
+    return prefix, subparts

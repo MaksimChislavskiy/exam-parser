@@ -11,10 +11,10 @@ from exam_parser.models import TaskRecord
 
 
 class ConditionHtmlTests(unittest.TestCase):
-    def test_wraps_single_condition_in_paragraph(self) -> None:
+    def test_leaves_single_condition_untagged(self) -> None:
         self.assertEqual(
             _condition_html("Найдите значение $x$."),
-            "<p>Найдите значение $x$.</p>",
+            "Найдите значение $x$.",
         )
 
     def test_wraps_subparts_in_separate_paragraphs(self) -> None:
@@ -42,12 +42,28 @@ class ConditionHtmlTests(unittest.TestCase):
             ),
         )
 
-    def test_joins_ocr_line_wraps_inside_one_paragraph(self) -> None:
+    def test_leaves_main_condition_outside_subpart_tags(self) -> None:
+        condition = (
+            "Функция задана формулой.\n"
+            "а) Докажите, что функция возрастает.\n"
+            "б) Найдите её наибольшее значение."
+        )
+
+        self.assertEqual(
+            _condition_html(condition),
+            (
+                "Функция задана формулой.\n"
+                "<p>а) Докажите, что функция возрастает.</p>\n"
+                "<p>б) Найдите её наибольшее значение.</p>"
+            ),
+        )
+
+    def test_preserves_line_wraps_without_subparts(self) -> None:
         condition = "Найдите наибольшее\nвозможное значение выражения."
 
         self.assertEqual(
             _condition_html(condition),
-            "<p>Найдите наибольшее возможное значение выражения.</p>",
+            condition,
         )
 
     def test_preserves_existing_block_html(self) -> None:
