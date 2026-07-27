@@ -42,6 +42,24 @@ class ConditionHtmlTests(unittest.TestCase):
             ),
         )
 
+    def test_does_not_split_on_formula_variable_before_closing_parenthesis(
+        self,
+    ) -> None:
+        condition = (
+            "a) Решите уравнение $(2\\sin x - \\cos x)(1 + \\cos\n"
+            "x) = \\sin^2 x.$\n"
+            "б) Найдите все корни этого уравнения."
+        )
+
+        self.assertEqual(
+            _condition_html(condition),
+            (
+                "<p>a) Решите уравнение $(2\\sin x - \\cos x)"
+                "(1 + \\cos x) = \\sin^2 x.$</p>\n"
+                "<p>б) Найдите все корни этого уравнения.</p>"
+            ),
+        )
+
     def test_leaves_main_condition_outside_subpart_tags(self) -> None:
         condition = (
             "Функция задана формулой.\n"

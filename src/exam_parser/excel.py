@@ -16,7 +16,8 @@ HTML_BLOCK_PATTERN = re.compile(
     re.IGNORECASE,
 )
 SUBPART_MARKER_PATTERN = re.compile(
-    r"(?<!\S)[A-Za-zА-Яа-яЁё]\)\s+",
+    r"(?<!\S)[a-eа-е]\)\s+",
+    re.IGNORECASE,
 )
 
 
