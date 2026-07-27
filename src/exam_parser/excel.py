@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -10,6 +11,13 @@ from .models import TaskRecord
 
 
 HEADERS = ("task_num", "condition", "image_name", "solution", "answer")
+HTML_BLOCK_PATTERN = re.compile(
+    r"</?(?:p|div|figure|center|ul|ol|li|table|thead|tbody|tr|td|th)\b",
+    re.IGNORECASE,
+)
+SUBPART_MARKER_PATTERN = re.compile(
+    r"(?<!\S)[A-Za-zА-Яа-яЁё]\)\s+",
+)
 
 
 def read_tasks_xlsx(input_path: str | Path) -> list[TaskRecord]:
@@ -84,7 +92,7 @@ def write_tasks_xlsx(records: list[TaskRecord], output_path: str | Path) -> Path
         sheet.append(
             (
                 record.task_num,
-                _excel_safe(record.condition),
+                _excel_safe(_condition_html(record.condition)),
                 record.image_name,
                 _excel_safe(record.solution),
                 _excel_safe(record.answer),
@@ -113,3 +121,35 @@ def _cell_text(value: object) -> str:
 
 def _excel_safe(value: str) -> str:
     return ILLEGAL_CHARACTERS_RE.sub("", value)
+
+
+def _condition_html(value: str) -> str:
+    """Оборачивает текст условия в блочные HTML-абзацы для импорта на сайт."""
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized or HTML_BLOCK_PATTERN.search(normalized):
+        return normalized
+
+    paragraphs: list[str] = []
+    for block in re.split(r"\n\s*\n+", normalized):
+        joined = " ".join(line.strip() for line in block.splitlines() if line.strip())
+        if not joined:
+            continue
+        paragraphs.extend(_split_subparts(joined))
+
+    return "\n".join(f"<p>{paragraph}</p>" for paragraph in paragraphs)
+
+
+def _split_subparts(value: str) -> list[str]:
+    markers = list(SUBPART_MARKER_PATTERN.finditer(value))
+    if len(markers) < 2:
+        return [value]
+
+    parts: list[str] = []
+    prefix = value[: markers[0].start()].strip()
+    if prefix:
+        parts.append(prefix)
+
+    for index, marker in enumerate(markers):
+        end = markers[index + 1].start() if index + 1 < len(markers) else len(value)
+        parts.append(value[marker.start() : end].strip())
+    return parts
