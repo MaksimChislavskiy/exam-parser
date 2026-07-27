@@ -4,10 +4,6 @@ import os
 import re
 from pathlib import Path
 
-from .coordinate_vector_context import (
-    combine_visual_context,
-    extract_coordinate_vector_context,
-)
 from .deepseek_client import DeepSeekTaskClient
 from .models import (
     ExtractedTask,
@@ -92,8 +88,6 @@ class VerifiedDeepSeekTaskClient(DeepSeekTaskClient):
         vision-модель Mistral. Описание кэшируется рядом с текущим результатом и
         повторно используется при ``--resume-results``. Условие в Excel при этом
         не изменяется: обогащённая копия существует только внутри LLM-запросов.
-        Для уверенно распознанных векторных сеток количественные данные независимо
-        перепроверяются по пикселям без участия LLM.
         """
 
         if _VISUAL_CONTEXT_MARKER in task.condition:
@@ -108,17 +102,6 @@ class VerifiedDeepSeekTaskClient(DeepSeekTaskClient):
         if not image_path.is_file():
             return task
 
-        instrumental_description = extract_coordinate_vector_context(
-            task.condition,
-            image_path,
-        )
-        if instrumental_description is not None:
-            print(
-                f"{self.provider_name}: координаты векторов задачи "
-                f"{task.task_num} проверены по пиксельной сетке",
-                flush=True,
-            )
-
         cache_path = output_dir / ".vision_context" / f"task_{task.task_num}.txt"
         description = read_cached_visual_context(cache_path)
         if description is not None:
@@ -127,11 +110,7 @@ class VerifiedDeepSeekTaskClient(DeepSeekTaskClient):
                 f"рисунка задачи {task.task_num}",
                 flush=True,
             )
-            combined = combine_visual_context(
-                description,
-                instrumental_description,
-            )
-            return enrich_task_with_visual_context(task, combined)
+            return enrich_task_with_visual_context(task, description)
 
         print(
             f"{self.provider_name}: анализ рисунка задачи {task.task_num} "
@@ -142,11 +121,7 @@ class VerifiedDeepSeekTaskClient(DeepSeekTaskClient):
             self._vision_provider = MistralVisionContextProvider()
         description = self._vision_provider.describe(task, image_path)
         write_visual_context(cache_path, description)
-        combined = combine_visual_context(
-            description,
-            instrumental_description,
-        )
-        return enrich_task_with_visual_context(task, combined)
+        return enrich_task_with_visual_context(task, description)
 
     def _complete_safe_proof_answer(
         self,
