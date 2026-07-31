@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from exam_parser.markdown_boundaries import _normalize_page
+from exam_parser.markdown_pipeline import _task_condition_blocks
 
 
 class MarkdownBoundaryTests(unittest.TestCase):
@@ -61,6 +62,28 @@ class MarkdownBoundaryTests(unittest.TestCase):
         self.assertIn("9. В боковой стенке бака", normalized)
         self.assertEqual(normalized.count("5. Три технологические линии"), 1)
         self.assertEqual(normalized.count("9. В боковой стенке бака"), 1)
+
+    def test_restores_first_unnumbered_task_on_continuation_page(self) -> None:
+        markdown = (
+            "Изготовление стеклянных колб завершается отжигом.\n"
+            "Ответ: ___.\n\n"
+            "6 Найдите корень уравнения.\n"
+            "Ответ: ___.\n"
+        )
+
+        normalized, next_task_num, active = _normalize_page(
+            markdown,
+            next_task_num=5,
+            in_short_answer_part=True,
+        )
+
+        self.assertTrue(active)
+        self.assertEqual(next_task_num, 7)
+        self.assertTrue(normalized.startswith("5. Изготовление"))
+        self.assertEqual(
+            _task_condition_blocks(normalized)["5"],
+            "Изготовление стеклянных колб завершается отжигом.",
+        )
 
     def test_removes_trailing_service_text_after_last_answer(self) -> None:
         markdown = (

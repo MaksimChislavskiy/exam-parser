@@ -151,8 +151,7 @@ def process_markdown(
     else:
         extracted: list[tuple[ExtractedTask, Path]] = []
         all_markdown: list[str] = []
-        source_blocks: dict[str, _SourceTaskBlock] = {}
-        ambiguous_source_numbers: set[str] = set()
+        source_blocks: dict[str, list[_SourceTaskBlock]] = {}
 
         for page_path in pages:
             page_num = _page_number(page_path)
@@ -162,17 +161,13 @@ def process_markdown(
             image_by_task = _associate_images_with_tasks(markdown)
             source_by_task = _task_condition_blocks(markdown)
             for task_num, condition in source_by_task.items():
-                if task_num in ambiguous_source_numbers:
-                    continue
-                if task_num in source_blocks:
-                    source_blocks.pop(task_num)
-                    ambiguous_source_numbers.add(task_num)
-                    continue
-                source_blocks[task_num] = _SourceTaskBlock(
-                    condition=condition,
-                    page_path=page_path,
-                    image_id=image_by_task.get(task_num),
-                    available_image_ids=tuple(image_ids),
+                source_blocks.setdefault(task_num, []).append(
+                    _SourceTaskBlock(
+                        condition=condition,
+                        page_path=page_path,
+                        image_id=image_by_task.get(task_num),
+                        available_image_ids=tuple(image_ids),
+                    )
                 )
 
             print(
@@ -670,7 +665,7 @@ def _deduplicate_tasks(
 def _recover_missing_expected_tasks(
     client: TaskClient,
     extracted: list[tuple[ExtractedTask, Path]],
-    source_blocks: dict[str, _SourceTaskBlock],
+    source_blocks: dict[str, list[_SourceTaskBlock]],
     expected_tasks: int | None,
 ) -> list[tuple[ExtractedTask, Path]]:
     """Восстанавливает задачи, пропущенные моделью, из точных OCR-блоков.
@@ -692,23 +687,44 @@ def _recover_missing_expected_tasks(
             return extracted
         actual_numbers.add(task.task_num)
 
-    missing = [
+    expected_missing = [
         str(number)
         for number in range(1, expected_tasks + 1)
-        if str(number) not in actual_numbers and str(number) in source_blocks
+        if str(number) not in actual_numbers
     ]
-    if not missing:
+    selected_sources: dict[str, _SourceTaskBlock] = {}
+    for task_num in expected_missing:
+        source = _select_source_task_block(
+            task_num,
+            source_blocks.get(task_num, []),
+            extracted,
+        )
+        if source is not None:
+            selected_sources[task_num] = source
+
+    unresolved = [
+        task_num
+        for task_num in expected_missing
+        if task_num not in selected_sources
+    ]
+    if unresolved:
+        print(
+            f"{client.provider_name}: для пропущенных задач "
+            f"{', '.join(unresolved)} не найден однозначный OCR-блок",
+            flush=True,
+        )
+
+    if not selected_sources:
         return extracted
 
     print(
         f"{client.provider_name}: модель пропустила задачи "
-        f"{', '.join(missing)}; изолированное восстановление",
+        f"{', '.join(selected_sources)}; изолированное восстановление",
         flush=True,
     )
 
     recovered_items = list(extracted)
-    for task_num in missing:
-        source = source_blocks[task_num]
+    for task_num, source in selected_sources.items():
         isolated_markdown = f"{task_num}. {source.condition}"
         retry_tasks = client.extract_markdown(isolated_markdown, [])
         recovered = next(
@@ -741,6 +757,56 @@ def _recover_missing_expected_tasks(
         recovered_items.append((recovered, source.page_path))
 
     return recovered_items
+
+
+def _select_source_task_block(
+    task_num: str,
+    candidates: list[_SourceTaskBlock],
+    extracted: list[tuple[ExtractedTask, Path]],
+) -> _SourceTaskBlock | None:
+    """Выбирает OCR-блок по положению между соседними заданиями.
+
+    Одинаковая цифра может встретиться в колонтитуле как номер страницы.
+    Поэтому при нескольких кандидатах блок считается достоверным, только если
+    его страница однозначно лежит между ближайшими извлечёнными номерами.
+    """
+
+    if not candidates:
+        return None
+
+    number = int(task_num)
+    numbered_pages = {
+        int(task.task_num): _page_number(page_path)
+        for task, page_path in extracted
+        if task.task_num.isdigit()
+    }
+    lower_numbers = [item for item in numbered_pages if item < number]
+    higher_numbers = [item for item in numbered_pages if item > number]
+    previous_page = (
+        numbered_pages[max(lower_numbers)] if lower_numbers else None
+    )
+    next_page = numbered_pages[min(higher_numbers)] if higher_numbers else None
+
+    if previous_page is not None and next_page is not None:
+        lower_page = min(previous_page, next_page)
+        upper_page = max(previous_page, next_page)
+        between = [
+            candidate
+            for candidate in candidates
+            if lower_page <= _page_number(candidate.page_path) <= upper_page
+        ]
+        return between[0] if len(between) == 1 else None
+
+    neighbour_page = previous_page if previous_page is not None else next_page
+    if neighbour_page is not None:
+        same_page = [
+            candidate
+            for candidate in candidates
+            if _page_number(candidate.page_path) == neighbour_page
+        ]
+        return same_page[0] if len(same_page) == 1 else None
+
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _validate_task_count(

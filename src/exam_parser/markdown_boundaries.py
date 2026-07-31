@@ -32,9 +32,10 @@ def normalize_task_boundaries(
 ) -> Path:
     """Восстанавливает потерянные OCR-границы заданий с кратким ответом.
 
-    Номер восстанавливается только после уже найденной строки ответа, где начало
-    следующего задания однозначно. Первый безномерной блок страницы не изменяется:
-    модель по-прежнему извлекает его сама, без риска включить общую инструкцию.
+    Номер восстанавливается только там, где начало следующего задания однозначно:
+    после уже найденной строки ответа или в первом блоке страницы-продолжения,
+    когда номер известен по предыдущей странице. Первый безномерной блок страницы
+    с инструкцией по-прежнему не изменяется.
     """
 
     markdown_dir = Path(markdown_dir)
@@ -115,6 +116,11 @@ def _normalize_page(
 ) -> tuple[str, int | None, bool]:
     part_one = PART_ONE_PATTERN.search(markdown)
     part_two = PART_TWO_PATTERN.search(markdown)
+    continues_previous_page = (
+        in_short_answer_part
+        and next_task_num is not None
+        and part_one is None
+    )
 
     if part_one is not None and (part_two is None or part_one.start() < part_two.start()):
         in_short_answer_part = True
@@ -146,7 +152,11 @@ def _normalize_page(
             heading_num = heading.group(1)
             if "." not in heading_num:
                 next_task_num = int(heading_num)
-        elif answer_index > 0 and next_task_num is not None and segment_content:
+        elif (
+            (answer_index > 0 or continues_previous_page)
+            and next_task_num is not None
+            and segment_content
+        ):
             insertions.append(
                 (previous_answer_end + leading_length, f"{next_task_num}. ")
             )

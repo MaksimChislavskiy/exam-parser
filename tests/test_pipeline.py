@@ -6,6 +6,7 @@ import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from PIL import Image
 from pydantic import ValidationError
@@ -17,7 +18,9 @@ from exam_parser.markdown_pipeline import (
     _copy_task_image,
     _populate_requested_results,
     _resolve_image_id,
+    process_markdown,
 )
+from exam_parser.markdown_boundaries import normalize_task_boundaries
 from exam_parser.math_text import normalize_geometry_notation
 from exam_parser.models import (
     ExtractedAnswer,
@@ -149,6 +152,97 @@ class MarkdownTests(unittest.TestCase):
 
             self.assertEqual(name, "task_1.png")
             self.assertTrue((output_dir / "task_1.png").is_file())
+
+    def test_pipeline_recovers_first_task_of_continuation_page(self) -> None:
+        class _ExtractionClient:
+            provider_name = "Test"
+
+            def extract_markdown(
+                self,
+                markdown: str,
+                image_ids: list[str],
+            ) -> list[ExtractedTask]:
+                if "Первая задача" in markdown:
+                    conditions = {
+                        "1": "Первая задача.",
+                        "2": "Задача 2.",
+                        "3": "Задача 3.",
+                        "4": "Задача 4.",
+                    }
+                    return [
+                        ExtractedTask(
+                            task_num=str(number),
+                            condition=conditions[str(number)],
+                        )
+                        for number in range(1, 5)
+                    ]
+                if (
+                    "Изготовление стеклянных колб" in markdown
+                    and "Шестая" in markdown
+                ):
+                    return [ExtractedTask(task_num="6", condition="Шестая задача.")]
+                return []
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            markdown_dir = root / "markdown"
+            page_7 = markdown_dir / "page_7" / "page_7.md"
+            page_8 = markdown_dir / "page_8" / "page_8.md"
+            page_9 = markdown_dir / "page_9" / "page_9.md"
+            for path in (page_7, page_8, page_9):
+                path.parent.mkdir(parents=True)
+
+            page_7.write_text(
+                "## Часть 1\n\n"
+                "1. Первая задача.\nОтвет: ___.\n\n"
+                "2. Задача 2.\nОтвет: ___.\n\n"
+                "3. Задача 3.\nОтвет: ___.\n\n"
+                "4. Задача 4.\nОтвет: ___.\n",
+                encoding="utf-8",
+            )
+            page_8.write_text(
+                "Изготовление стеклянных колб завершается отжигом.\n"
+                "Ответ: ___.\n\n"
+                "6. Шестая задача.\nОтвет: ___.\n",
+                encoding="utf-8",
+            )
+            page_9.write_text(
+                "5\nСлужебный колонтитул страницы.\n13. Часть 2.\n",
+                encoding="utf-8",
+            )
+
+            bounded_dir = normalize_task_boundaries(
+                markdown_dir,
+                root / "markdown_bounded",
+                page_groups=[(7, 8, 9)],
+            )
+            bounded_pages = [
+                bounded_dir / f"page_{number}" / f"page_{number}.md"
+                for number in (7, 8, 9)
+            ]
+
+            with patch(
+                "exam_parser.markdown_pipeline.create_task_client",
+                return_value=_ExtractionClient(),
+            ):
+                records = process_markdown(
+                    bounded_dir,
+                    root / "result",
+                    page_paths=bounded_pages,
+                    include_solutions=False,
+                    answer_source="none",
+                    provider="deepseek",
+                    expected_tasks=6,
+                )
+
+            self.assertEqual(
+                [record.task_num for record in records],
+                ["1", "2", "3", "4", "5", "6"],
+            )
+            self.assertEqual(
+                records[4].condition,
+                "Изготовление стеклянных колб завершается отжигом.",
+            )
 
 
 class DocumentAnswersTests(unittest.TestCase):

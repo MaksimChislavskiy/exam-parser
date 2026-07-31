@@ -193,12 +193,14 @@ class MissingTaskRecoveryTests(unittest.TestCase):
             (ExtractedTask(task_num="3", condition="Третья"), page_path),
         ]
         source_blocks = {
-            "2": _SourceTaskBlock(
-                condition="Найдите число 5.",
-                page_path=page_path,
-                image_id="two.jpg",
-                available_image_ids=("two.jpg",),
-            )
+            "2": [
+                _SourceTaskBlock(
+                    condition="Найдите число 5.",
+                    page_path=page_path,
+                    image_id="two.jpg",
+                    available_image_ids=("two.jpg",),
+                )
+            ]
         }
 
         result = _recover_missing_expected_tasks(
@@ -218,12 +220,14 @@ class MissingTaskRecoveryTests(unittest.TestCase):
         client = _MissingTaskClient([])
         page_path = Path("page_1.md")
         source_blocks = {
-            "2": _SourceTaskBlock(
-                condition="Точное условие 2.",
-                page_path=page_path,
-                image_id=None,
-                available_image_ids=(),
-            )
+            "2": [
+                _SourceTaskBlock(
+                    condition="Точное условие 2.",
+                    page_path=page_path,
+                    image_id=None,
+                    available_image_ids=(),
+                )
+            ]
         }
 
         result = _recover_missing_expected_tasks(
@@ -253,6 +257,76 @@ class MissingTaskRecoveryTests(unittest.TestCase):
             extracted,
             {},
             expected_tasks=1,
+        )
+
+        self.assertEqual(result, extracted)
+        self.assertEqual(client.calls, [])
+
+    def test_ignores_duplicate_number_from_later_page_header(self) -> None:
+        client = _MissingTaskClient([])
+        extracted = [
+            (
+                ExtractedTask(task_num=str(number), condition=f"Задача {number}"),
+                Path(f"page_{7 if number <= 4 else 8}.md"),
+            )
+            for number in (1, 2, 3, 4, 6)
+        ]
+        source_blocks = {
+            "5": [
+                _SourceTaskBlock(
+                    condition="Изготовление стеклянных колб завершается отжигом.",
+                    page_path=Path("page_8.md"),
+                    image_id=None,
+                    available_image_ids=(),
+                ),
+                _SourceTaskBlock(
+                    condition="Служебный колонтитул страницы.",
+                    page_path=Path("page_9.md"),
+                    image_id=None,
+                    available_image_ids=(),
+                ),
+            ]
+        }
+
+        result = _recover_missing_expected_tasks(
+            client,
+            extracted,
+            source_blocks,
+            expected_tasks=6,
+        )
+
+        recovered = next(task for task, _ in result if task.task_num == "5")
+        self.assertEqual(
+            recovered.condition,
+            "Изготовление стеклянных колб завершается отжигом.",
+        )
+        self.assertEqual(
+            client.calls[0][0],
+            "5. Изготовление стеклянных колб завершается отжигом.",
+        )
+
+    def test_rejects_only_candidate_when_it_is_after_next_task(self) -> None:
+        client = _MissingTaskClient([])
+        extracted = [
+            (ExtractedTask(task_num="4", condition="Четвёртая"), Path("page_7.md")),
+            (ExtractedTask(task_num="6", condition="Шестая"), Path("page_8.md")),
+        ]
+        source_blocks = {
+            "5": [
+                _SourceTaskBlock(
+                    condition="Служебный колонтитул страницы.",
+                    page_path=Path("page_9.md"),
+                    image_id=None,
+                    available_image_ids=(),
+                )
+            ]
+        }
+
+        result = _recover_missing_expected_tasks(
+            client,
+            extracted,
+            source_blocks,
+            expected_tasks=6,
         )
 
         self.assertEqual(result, extracted)
