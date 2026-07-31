@@ -213,6 +213,235 @@ class ConditionFidelityTests(unittest.TestCase):
 
         self.assertEqual(result.condition, source)
 
+    def test_accepts_obvious_text_only_ocr_correction(self) -> None:
+        source = "В основании ширамиды лежит треугольник."
+        corrected = ExtractedTask(
+            task_num="3",
+            condition="В основании пирамиды лежит треугольник.",
+        )
+        client = SimpleNamespace(
+            provider_name="Test",
+            extract_markdown=lambda markdown, image_ids: [corrected],
+        )
+
+        result = _ensure_condition_fidelity(client, corrected, source)
+
+        self.assertEqual(result.condition, corrected.condition)
+
+    def test_accepts_twice_confirmed_single_character_spelling_fix(self) -> None:
+        source = "Исследуйте функию на монотонность."
+        corrected = ExtractedTask(
+            task_num="8",
+            condition="Исследуйте функцию на монотонность.",
+        )
+        client = SimpleNamespace(
+            provider_name="Test",
+            extract_markdown=lambda markdown, image_ids: [corrected],
+        )
+
+        result = _ensure_condition_fidelity(client, corrected, source)
+
+        self.assertEqual(result.condition, corrected.condition)
+
+    def test_rejects_twice_repeated_meaning_sensitive_word_change(self) -> None:
+        source = "Укажите длину наибольшого из промежутков."
+        changed = ExtractedTask(
+            task_num="8",
+            condition="Укажите длину наибольшего из промежутков.",
+        )
+        client = SimpleNamespace(
+            provider_name="Test",
+            extract_markdown=lambda markdown, image_ids: [changed],
+        )
+
+        result = _ensure_condition_fidelity(client, changed, source)
+
+        self.assertEqual(result.condition, source)
+
+    def test_rejects_twice_repeated_number_change(self) -> None:
+        source = "Сила не превосходит 264 600 Н."
+        changed = ExtractedTask(
+            task_num="9",
+            condition="Сила не превосходит 264600 Н.",
+        )
+        client = SimpleNamespace(
+            provider_name="Test",
+            extract_markdown=lambda markdown, image_ids: [changed],
+        )
+
+        result = _ensure_condition_fidelity(client, changed, source)
+
+        self.assertEqual(result.condition, source)
+
+    def test_repairs_real_ocr_defects_from_all_four_variants(self) -> None:
+        cases = [
+            (
+                "0509-3",
+                "В основании ширамиды SABC. Объём ширамиды равен 24.",
+                ("пирамиды",),
+                ("ширамиды",),
+            ),
+            (
+                "0509-8",
+                (
+                    "На рисунке изображен график функции $y=f'(x)$ — "
+                    "производной функции $f(x)$. Найдите промежутки "
+                    "возрастания функции $f'(x)$."
+                ),
+                ("возрастания функции $f(x)$",),
+                ("возрастания функции $f'(x)$",),
+            ),
+            (
+                "0509-9",
+                (
+                    "Аппарат имеет форму сферы, выталкивающая (архимедова) "
+                    "сила определяется по формуле $F_A=\\frac{a}{r}r^3$, "
+                    "где a = 4, 2 — постоянная, r — радиус, $\\rho=1000$, "
+                    "a = 10 Н/кг — ускорение свободного падения."
+                ),
+                (r"F_A=\alpha\rho gr^3", r"$\alpha=4,2$", r"$g=10$"),
+                (r"\frac{a}{r}", "a = 4, 2", "a = 10"),
+            ),
+            (
+                "0509-14",
+                (
+                    "В правильной треугольной призме $ABC_1B_1C_1$ "
+                    "проведена плоскость. Сечением будет трапения."
+                ),
+                (r"$ABCA_1B_1C_1$", "трапеция"),
+                (r"$ABC_1B_1C_1$", "трапения"),
+            ),
+            (
+                "0509-16",
+                "<td>Долг (в мн рублей)</td>",
+                ("в млн рублей",),
+                ("в мн рублей",),
+            ),
+            (
+                "0510-4",
+                "Взятая из стопки тетрады окажется в косую линейку.",
+                ("тетрадь",),
+                ("тетрады",),
+            ),
+            (
+                "0510-2",
+                (
+                    "Даны векторы $\\vec{a}(-1,-3)$, "
+                    "$\\vec{b}(5,-3)$ и $\\vec{c}(1,6)$."
+                ),
+                ("(-1;-3)", "(5;-3)", "(1;6)"),
+                ("(-1,-3)", "(5,-3)", "(1,6)"),
+            ),
+            (
+                "0510-8",
+                "Функция определена на интервале $(-15, 4)$.",
+                ("$(-15;4)$",),
+                ("$(-15, 4)$",),
+            ),
+            (
+                "0510-9",
+                (
+                    "Аппарат имеет форму сферы, выталкивающая (архимедова) "
+                    "сила определяется по формуле $F_A=\\frac{a}{r_gr^3}$, "
+                    "где a = 3,1 — постоянная, r — радиус, $\\rho=1000$, "
+                    "a = 10 Н/кг — ускорение свободного падения."
+                ),
+                (r"F_A=\alpha\rho gr^3", r"$\alpha=3,1$", r"$g=10$"),
+                (r"\frac{a}{r_gr^3}", "a = 3,1", "a = 10"),
+            ),
+            (
+                "0510-14",
+                "В правильной треугольной призме $ABCDA_1B_1C_1$.",
+                (r"$ABCA_1B_1C_1$",),
+                (r"$ABCDA_1B_1C_1$",),
+            ),
+            (
+                "0510-16",
+                (
+                    "<td>Долг (в мин рублей)</td> Общая сумма вышлат "
+                    "по кредиту."
+                ),
+                ("в млн рублей", "сумма выплат"),
+                ("в мин рублей", "сумма вышлат"),
+            ),
+            (
+                "0510-17",
+                (
+                    "В треугольнике $ABC$ утопил С тупой. "
+                    "Докажите, что острые углы $AB$ и $ACH$ равны."
+                ),
+                ("угол С тупой", "углы $ABC$ и $ACH$"),
+                ("утопил", "углы $AB$ и $ACH$"),
+            ),
+            (
+                "0510-19",
+                (
+                    "<p>а) Может ли получиться число 3?  "
+                    "6) Может ли получиться число 17,5?</p>\n"
+                    "<p>в) Какое число наибольшее?</p>"
+                ),
+                ("<p>а) Может ли получиться число 3?</p>",
+                 "<p>б) Может ли получиться число 17,5?</p>"),
+                ("6)",),
+            ),
+            (
+                "0511-9",
+                "где $\\rho=1000$, $a$ $g = 9,8$ Н/кг — ускорение.",
+                ("а $g = 9,8$",),
+                ("$a$ $g",),
+            ),
+            (
+                "0511-14",
+                "В прямой треугольной призме $ABC_1B_1C_1$.",
+                (r"$ABCA_1B_1C_1$",),
+                (r"$ABC_1B_1C_1$",),
+            ),
+            (
+                "0512-14",
+                "Сечением призмы будет прямоугольная трапейка.",
+                ("прямоугольная трапеция",),
+                ("трапейка",),
+            ),
+        ]
+
+        for name, source, expected, forbidden in cases:
+            with self.subTest(case=name):
+                normalized = _normalize_condition_artifacts(
+                    source,
+                    task_num=name.split("-")[1],
+                )
+                for fragment in expected:
+                    self.assertIn(fragment, normalized)
+                for fragment in forbidden:
+                    self.assertNotIn(fragment, normalized)
+
+    def test_coordinate_cleanup_does_not_change_decimal_fraction(self) -> None:
+        condition = r"Найдите корень уравнения $(0,125)^{x+5}=4^{x+4}$."
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="6"),
+            condition,
+        )
+
+    def test_coordinate_cleanup_does_not_change_spaced_decimal_fraction(self) -> None:
+        condition = "Вероятность равна $(0, 125)$ при указанном условии."
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="5"),
+            condition,
+        )
+
+    def test_buoyancy_cleanup_keeps_other_valid_sphere_formula(self) -> None:
+        condition = (
+            "Тело имеет форму сферы, архимедова сила определяется по формуле "
+            r"$F_A=\frac{4}{3}\pi\rho gr^3$."
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="9"),
+            condition,
+        )
+
     def test_extracts_clean_source_block(self) -> None:
         blocks = _task_condition_blocks(
             '1. Найдите угол АСВ.\n<img src="imgs/one.jpg" />\n'

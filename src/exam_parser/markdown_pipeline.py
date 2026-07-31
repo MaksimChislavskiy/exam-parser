@@ -4,6 +4,7 @@ import re
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Literal
 
@@ -144,6 +145,36 @@ NORMALIZED_LATEX_COMMANDS = {
     "le": "leq",
     "ge": "geq",
 }
+SENSITIVE_WORD_PREFIXES = (
+    "больш",
+    "внешн",
+    "внутрен",
+    "возраста",
+    "восем",
+    "девят",
+    "десят",
+    "меньш",
+    "наибольш",
+    "наименьш",
+    "неравн",
+    "нул",
+    "один",
+    "отрицательн",
+    "остр",
+    "параллел",
+    "перв",
+    "перпендикуляр",
+    "положительн",
+    "пят",
+    "равн",
+    "сем",
+    "трет",
+    "туп",
+    "убыва",
+    "четвер",
+    "четн",
+    "шест",
+)
 
 
 def process_markdown(
@@ -596,6 +627,11 @@ def _ensure_condition_fidelity(
     task: ExtractedTask,
     source_condition: str,
 ) -> ExtractedTask:
+    source_condition = _normalize_condition_artifacts(
+        source_condition,
+        task_num=task.task_num,
+    )
+    task = _clean_extracted_task(task)
     issues = _condition_fidelity_issues(source_condition, task.condition)
     if not issues:
         return task
@@ -615,12 +651,26 @@ def _ensure_condition_fidelity(
         None,
     )
     if retry is not None:
+        retry = _clean_extracted_task(retry)
         retry.image_id = retry.image_id or task.image_id
         retry_issues = _condition_fidelity_issues(
             source_condition,
             retry.condition,
         )
         if not retry_issues:
+            return retry
+        if (
+            _conditions_match(task.condition, retry.condition)
+            and _is_safe_confirmed_spelling_correction(
+                source_condition,
+                retry.condition,
+            )
+        ):
+            print(
+                f"{client.provider_name}: очевидная OCR-опечатка в условии "
+                f"задачи {task.task_num} подтверждена повтором",
+                flush=True,
+            )
             return retry
         issues = retry_issues
 
@@ -633,6 +683,65 @@ def _ensure_condition_fidelity(
         task_num=task.task_num,
         condition=source_condition,
         image_id=task.image_id,
+    )
+
+
+def _conditions_match(first: str, second: str) -> bool:
+    return re.sub(r"\s+", " ", first).strip() == re.sub(
+        r"\s+",
+        " ",
+        second,
+    ).strip()
+
+
+def _is_safe_confirmed_spelling_correction(
+    source: str,
+    candidate: str,
+) -> bool:
+    issues = _condition_fidelity_issues(source, candidate)
+    if not issues or any(
+        not issue.startswith("изменен текст:") for issue in issues
+    ):
+        return False
+
+    source_words = _russian_word_tokens(source)
+    candidate_words = _russian_word_tokens(candidate)
+    matcher = SequenceMatcher(a=source_words, b=candidate_words, autojunk=False)
+    changed_words = 0
+    for tag, source_start, source_end, candidate_start, candidate_end in (
+        matcher.get_opcodes()
+    ):
+        if tag == "equal":
+            continue
+        old = source_words[source_start:source_end]
+        new = candidate_words[candidate_start:candidate_end]
+        if tag != "replace" or len(old) != len(new):
+            return False
+        for old_word, new_word in zip(old, new):
+            if min(len(old_word), len(new_word)) < 5:
+                return False
+            if _is_sensitive_word(old_word) or _is_sensitive_word(new_word):
+                return False
+            if not _is_single_character_word_edit(old_word, new_word):
+                return False
+            changed_words += 1
+
+    return 0 < changed_words <= 6
+
+
+def _is_sensitive_word(value: str) -> bool:
+    return value.startswith(SENSITIVE_WORD_PREFIXES)
+
+
+def _is_single_character_word_edit(old: str, new: str) -> bool:
+    if len(old) == len(new):
+        return sum(left != right for left, right in zip(old, new)) == 1
+    if abs(len(old) - len(new)) != 1:
+        return False
+    shorter, longer = (old, new) if len(old) < len(new) else (new, old)
+    return any(
+        longer[:index] + longer[index + 1 :] == shorter
+        for index in range(len(longer))
     )
 
 
@@ -807,6 +916,7 @@ def _normalize_condition_artifacts(value: str, *, task_num: str | None) -> str:
     cleaned = re.sub(r",(?=[A-Za-zА-Яа-яЁё])", ", ", cleaned)
     cleaned = re.sub(r"(?im)(^|<p>)(\s*)a\)", r"\1\2а)", cleaned)
     cleaned = re.sub(r"(?im)(^|<p>)(\s*)b\)", r"\1\2б)", cleaned)
+    cleaned = _repair_known_ocr_defects(cleaned)
     if task_num:
         repeated_prefix = re.compile(
             r"^\s*" + CHECKBOX_TASK_PREFIX_PATTERN.format(
@@ -822,6 +932,190 @@ def _normalize_condition_artifacts(value: str, *, task_num: str | None) -> str:
     cleaned = re.sub(r"(?<!\.)\.\.(?!\.)", ".", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
+
+def _repair_known_ocr_defects(value: str) -> str:
+    cleaned = value
+    cleaned = re.sub(
+        r"\bширамиды\b",
+        "пирамиды",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\b(?:трапения|трапейка)\b",
+        "трапеция",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\bтетрады(?=\s+окажется\b)",
+        "тетрадь",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\bв\s+(?:мн|мин)\s+рублей\b",
+        "в млн рублей",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\bсумма\s+вышлат\b",
+        "сумма выплат",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\bутопил\s+([СC])\s+тупой\b",
+        r"угол \1 тупой",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if re.search(r"треугольник\w*\s+\$ABC\$", cleaned, re.IGNORECASE):
+        cleaned = re.sub(
+            r"(острые\s+углы\s+)\$AB\$(\s+и\s+\$ACH\$)",
+            r"\1$ABC$\2",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+
+    cleaned = _repair_coordinate_separators(cleaned)
+    cleaned = _repair_derivative_graph_question(cleaned)
+    cleaned = _repair_spherical_buoyancy_formula(cleaned)
+    cleaned = _repair_triangular_prism_name(cleaned)
+    cleaned = _repair_subpart_marker(cleaned)
+    cleaned = re.sub(
+        r"\$a\$\s*\$(g\s*=\s*[^$]+)\$",
+        r"а $\1$",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return cleaned
+
+
+def _repair_coordinate_separators(value: str) -> str:
+    def replace_span(match: re.Match[str]) -> str:
+        body = match.group("body")
+        pair_pattern = r"\(\s*([+-]?\d+)\s*,\s*([+-]?\d+)\s*\)"
+        if r"\vec" in body:
+            body = re.sub(pair_pattern, r"(\1;\2)", body)
+        elif re.search(
+            r"(?:интервал|отрез)\w*\s*$",
+            value[max(0, match.start() - 80) : match.start()],
+            re.IGNORECASE,
+        ) and re.fullmatch(
+            r"\s*\(\s*[+-]?\d+\s*,\s+[+-]?\d+\s*\)\s*",
+            body,
+        ):
+            body = re.sub(pair_pattern, r"(\1;\2)", body)
+        return f"${body}$"
+
+    return LATEX_SPAN_PATTERN.sub(replace_span, value)
+
+
+def _repair_derivative_graph_question(value: str) -> str:
+    derivative_graph = re.search(
+        r"график(?:\s+функции)?\s+\$\s*y\s*=\s*f\s*['′]"
+        r"\s*\(\s*x\s*\)\s*\$",
+        value,
+        re.IGNORECASE,
+    )
+    if derivative_graph is None or not re.search(
+        r"производн\w*\s+функции",
+        value,
+        re.IGNORECASE,
+    ):
+        return value
+
+    return re.sub(
+        r"(возрастания\s+функции\s+\$\s*)f\s*['′]\s*"
+        r"\(\s*x\s*\)(\s*\$)",
+        r"\1f(x)\2",
+        value,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+
+def _repair_spherical_buoyancy_formula(value: str) -> str:
+    if not (
+        re.search(r"форм\w*\s+сферы", value, re.IGNORECASE)
+        and re.search(r"архимедов", value, re.IGNORECASE)
+    ):
+        return value
+
+    formula_repaired = False
+
+    def replace_formula(match: re.Match[str]) -> str:
+        nonlocal formula_repaired
+        body = match.group("body")
+        if (
+            re.search(r"F\s*_\s*\{?\s*A\s*\}?\s*=", body, re.IGNORECASE)
+            and re.search(r"\\frac\s*\{\s*a\s*\}", body, re.IGNORECASE)
+        ):
+            formula_repaired = True
+            return r"$F_A=\alpha\rho gr^3$"
+        return match.group(0)
+
+    cleaned = LATEX_SPAN_PATTERN.sub(replace_formula, value)
+    if not formula_repaired:
+        return value
+    cleaned = re.sub(
+        r"(\bгде\s+)(?:\$\s*)?a(?:\s*\$)?\s*=\s*"
+        r"(\d+)\s*,\s*(\d+)(\s*—\s*постоянн\w*)",
+        lambda match: (
+            f"{match.group(1)}$\\alpha={match.group(2)},{match.group(3)}$"
+            f"{match.group(4)}"
+        ),
+        cleaned,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"(?:\$\s*)?a(?:\s*\$)?\s*=\s*(\d+(?:\s*,\s*\d+)?)\s*"
+        r"(Н/кг\s*—\s*ускорение\s+свободного\s+падения)",
+        lambda match: (
+            "$g=" + re.sub(r"\s+", "", match.group(1)) + "$ " + match.group(2)
+        ),
+        cleaned,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    return cleaned
+
+
+def _repair_triangular_prism_name(value: str) -> str:
+    index = r"_\s*(?:\{\s*1\s*\}|1)"
+    missing_base_vertex = rf"ABC\s*{index}\s*B\s*{index}\s*C\s*{index}"
+    extra_base_vertex = rf"ABCD\s*A\s*{index}\s*B\s*{index}\s*C\s*{index}"
+    pattern = re.compile(
+        rf"(треугольн\w*\s+призм\w*\s+)\$\s*"
+        rf"(?:{missing_base_vertex}|{extra_base_vertex})\s*\$",
+        re.IGNORECASE,
+    )
+    return pattern.sub(r"\1$ABCA_1B_1C_1$", value)
+
+
+def _repair_subpart_marker(value: str) -> str:
+    has_first = re.search(r"(?:^|<p>)\s*а\)", value, re.IGNORECASE | re.MULTILINE)
+    has_third = re.search(r"(?:^|<p>)\s*в\)", value, re.IGNORECASE | re.MULTILINE)
+    if has_first is None or has_third is None:
+        return value
+
+    cleaned = re.sub(
+        r"(?<!\d)6\)(?=\s*[А-ЯЁ])",
+        "б)",
+        value,
+        count=1,
+    )
+    return re.sub(
+        r"<p>\s*(а\).*?[.!?])\s+(б\).*?)</p>",
+        r"<p>\1</p>\n<p>\2</p>",
+        cleaned,
+        count=1,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
 
 
 def _clean_extracted_task(task: ExtractedTask) -> ExtractedTask:
