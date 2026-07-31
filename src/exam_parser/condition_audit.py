@@ -8,15 +8,29 @@ import re
 import shutil
 import time
 from collections.abc import Callable
+from io import BytesIO
 from pathlib import Path
 from typing import TypeVar
 
 from dotenv import load_dotenv
 from mistralai.client import Mistral
+from PIL import Image
 from pydantic import BaseModel, Field
 
 
-AUDIT_CACHE_VERSION = "exam-parser-condition-audit-v1"
+AUDIT_CACHE_VERSION = "exam-parser-condition-audit-v2"
+
+TASK_HEADING_PATTERN = re.compile(
+    r"(?m)^[ \t]*(?P<num>(?:1[0-9]|[1-9])(?:\.\d+)*)"
+    r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-яЁё0-9])|[ \t]*$)"
+)
+ANSWER_FIELD_PATTERN = re.compile(
+    r"(?i)(?:\b(?:ответ|otvet)\s*:|_{2,})"
+)
+ANSWER_INSTRUCTION_PATTERN = re.compile(r"(?i)\bответ\s+выразите\b")
+LATEX_SIZE_COMMAND_PATTERN = re.compile(
+    r"\\(?:left|right|big|Big|bigg|Bigg|bigl|bigr|Bigl|Bigr)\b"
+)
 
 
 class ConditionCorrection(BaseModel):
@@ -31,7 +45,10 @@ class PageConditionCorrections(BaseModel):
 
 
 CONDITION_AUDIT_PROMPT = r"""
-Сверь OCR Markdown с изображением исходной экзаменационной страницы.
+Сверь OCR Markdown с изображениями исходной экзаменационной страницы. Если
+страница широкая, изображения показывают её увеличенные левую и правую половины
+в порядке слева направо.
+
 Проверь все условия задач на странице посимвольно, особенно:
 - числа, знаки, интервалы и разделители координат;
 - штрихи производных, степени, индексы и функции;
@@ -41,15 +58,24 @@ CONDITION_AUDIT_PROMPT = r"""
 - попадание текста следующей задачи в предыдущую.
 
 Верни только объективные ошибки, которые однозначно видны на изображении.
-Не исправляй стиль, пробелы и равносильное оформление LaTeX. Не решай задачи и
-не восстанавливай текст по смыслу, если символ нельзя уверенно прочитать.
+Если хоть один символ нельзя уверенно прочитать, не возвращай исправление.
+Не исправляй стиль, пробелы, размер скобок, равносильное оформление LaTeX или
+написание разрядов числа с пробелом. Не решай задачи и не восстанавливай текст
+по смыслу.
+
+Не изменяй поля для записи ответа вида «Ответ: ____» и не включай их в условия.
+Но фраза «Ответ выразите в ...» является частью условия: не удаляй и не добавляй
+её без буквального визуального подтверждения.
 
 Для каждой ошибки:
 1. task_num — номер задачи;
-2. source_fragment — дословный фрагмент из OCR Markdown. Он должен встречаться
-   на странице ровно один раз; если фрагмент повторяется, включи больше контекста;
-3. replacement — точная замена с сохранением подходящего LaTeX;
+2. source_fragment — минимальный дословный фрагмент из OCR Markdown. Он должен
+   встречаться ровно один раз внутри указанной задачи; не объединяй несколько
+   ошибок в одну длинную замену;
+3. replacement — минимальная точная замена с сохранением подходящего LaTeX;
 4. reason — кратко, что именно видно на изображении.
+
+Не возвращай одну ошибку дважды и не создавай пересекающиеся замены.
 
 OCR Markdown страницы:
 {markdown}
@@ -57,21 +83,22 @@ OCR Markdown страницы:
 
 
 CONDITION_AUDIT_CONFIRMATION_PROMPT = r"""
-Независимо перепроверь предложенные исправления OCR по изображению страницы.
-Сначала прочитай соответствующие места на изображении самостоятельно, затем
-сравни их с OCR и черновыми исправлениями.
+Выполни независимую повторную сверку OCR Markdown с изображениями исходной
+экзаменационной страницы. Не опирайся на результаты какого-либо другого прохода:
+прочитай страницу заново самостоятельно. Если страница широкая, изображения
+показывают её увеличенные левую и правую половины в порядке слева направо.
 
-Верни только подтверждённые исправления. Удали спорные и стилистические правки.
-Если черновая замена неточна, исправь её. source_fragment обязан быть дословно
-скопирован из OCR Markdown и встречаться в нём ровно один раз. replacement должен
-содержать только текст, действительно видимый на странице. Не решай задачи и не
-исправляй их по знаниям предмета без визуального подтверждения.
+Верни только объективные ошибки, которые однозначно видны на изображении. Если
+хоть один символ нельзя уверенно прочитать, не возвращай исправление. Не исправляй
+стиль, пробелы, размер скобок, равносильное оформление LaTeX или разряды числа.
+Не изменяй поля «Ответ: ____». Фразу «Ответ выразите в ...» считай частью условия.
+
+Для каждой ошибки верни номер задачи, минимальный уникальный внутри этой задачи
+дословный source_fragment, минимальный replacement и краткую причину. Не объединяй
+несколько ошибок в одну замену, не создавай пересекающиеся замены и не решай задачи.
 
 OCR Markdown страницы:
 {markdown}
-
-Черновые исправления:
-{draft}
 """.strip()
 
 
@@ -80,7 +107,7 @@ M = TypeVar("M", bound=BaseModel)
 
 
 class MistralConditionAuditor:
-    """Дважды сверяет OCR-условия с изображением полной страницы."""
+    """Дважды сверяет OCR-условия с увеличенными половинами страницы."""
 
     def __init__(
         self,
@@ -117,43 +144,43 @@ class MistralConditionAuditor:
                 f"Не найдено изображение страницы для сверки: {page_image}"
             )
 
-        data_url = _image_data_url(page_image)
+        data_urls = _page_image_data_urls(page_image)
         draft = self._request(
             model=self.model,
             prompt=CONDITION_AUDIT_PROMPT.format(markdown=markdown),
-            data_url=data_url,
+            data_urls=data_urls,
         )
         confirmed = self._request(
             model=self.confirmation_model,
             prompt=CONDITION_AUDIT_CONFIRMATION_PROMPT.format(
                 markdown=markdown,
-                draft=json.dumps(
-                    draft.model_dump(),
-                    ensure_ascii=False,
-                    indent=2,
-                ),
             ),
-            data_url=data_url,
+            data_urls=data_urls,
         )
-        return confirmed.corrections
+        return _exactly_confirmed_corrections(
+            draft.corrections,
+            confirmed.corrections,
+        )
 
     def _request(
         self,
         *,
         model: str,
         prompt: str,
-        data_url: str,
+        data_urls: list[str],
     ) -> PageConditionCorrections:
+        content = [{"type": "text", "text": prompt}]
+        content.extend(
+            {"type": "image_url", "image_url": data_url}
+            for data_url in data_urls
+        )
         response = _with_rate_limit_retry(
             lambda: self.client.chat.parse(
                 model=model,
                 messages=[
                     {
                         "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": data_url},
-                        ],
+                        "content": content,
                     }
                 ],
                 response_format=PageConditionCorrections,
@@ -259,30 +286,138 @@ def _apply_verified_corrections(
     *,
     page_num: int,
 ) -> tuple[str, int]:
-    corrected = markdown
-    applied = 0
-    for correction in corrections:
+    candidates: list[tuple[int, int, ConditionCorrection]] = []
+    seen: set[tuple[str, str, str]] = set()
+    task_spans = _task_spans(markdown)
+
+    for correction in sorted(
+        corrections,
+        key=lambda item: (len(item.source_fragment), item.task_num),
+    ):
         source = correction.source_fragment
         replacement = correction.replacement
-        occurrences = corrected.count(source)
-        if occurrences != 1:
+        identity = (correction.task_num, source, replacement)
+        if identity in seen:
+            continue
+        seen.add(identity)
+
+        declared_spans = task_spans.get(correction.task_num, [])
+        if not declared_spans:
+            print(
+                f"Визуальная сверка: страница {page_num}, задача "
+                f"{correction.task_num}: замена пропущена, задача не найдена",
+                flush=True,
+            )
+            continue
+
+        matches: list[tuple[int, str, int]] = []
+        occurrence_count = 0
+        for task_start, task_end in declared_spans:
+            task_block = markdown[task_start:task_end]
+            occurrences = task_block.count(source)
+            occurrence_count += occurrences
+            if occurrences == 1:
+                matches.append((task_start, task_block, task_block.index(source)))
+        if occurrence_count != 1 or len(matches) != 1:
             print(
                 f"Визуальная сверка: страница {page_num}, задача "
                 f"{correction.task_num}: замена пропущена, исходный фрагмент "
-                f"встречается {occurrences} раз",
+                f"встречается в задаче {occurrence_count} раз",
                 flush=True,
             )
             continue
         if source == replacement:
             continue
-        corrected = corrected.replace(source, replacement, 1)
-        applied += 1
+        if _is_unsafe_or_stylistic_correction(source, replacement):
+            print(
+                f"Визуальная сверка: страница {page_num}, задача "
+                f"{correction.task_num}: стилистическая или небезопасная "
+                "замена пропущена",
+                flush=True,
+            )
+            continue
+
+        task_start, _, source_offset = matches[0]
+        start = task_start + source_offset
+        end = start + len(source)
+        overlaps = any(
+            start < accepted_end and end > accepted_start
+            for accepted_start, accepted_end, _ in candidates
+        )
+        if overlaps:
+            print(
+                f"Визуальная сверка: страница {page_num}, задача "
+                f"{correction.task_num}: пересекающаяся замена пропущена",
+                flush=True,
+            )
+            continue
+        candidates.append((start, end, correction))
+
+    corrected = markdown
+    for start, end, correction in sorted(candidates, reverse=True):
+        corrected = corrected[:start] + correction.replacement + corrected[end:]
         print(
             f"Визуальная сверка: страница {page_num}, задача "
             f"{correction.task_num}: {correction.reason}",
             flush=True,
         )
-    return corrected, applied
+    return corrected, len(candidates)
+
+
+def _task_spans(markdown: str) -> dict[str, list[tuple[int, int]]]:
+    headings = list(TASK_HEADING_PATTERN.finditer(markdown))
+    result: dict[str, list[tuple[int, int]]] = {}
+    for index, heading in enumerate(headings):
+        task_num = heading.group("num")
+        end = (
+            headings[index + 1].start()
+            if index + 1 < len(headings)
+            else len(markdown)
+        )
+        result.setdefault(task_num, []).append((heading.end(), end))
+    return result
+
+
+def _is_unsafe_or_stylistic_correction(source: str, replacement: str) -> bool:
+    if ANSWER_FIELD_PATTERN.search(source) or ANSWER_FIELD_PATTERN.search(
+        replacement
+    ):
+        return True
+    source_has_instruction = bool(ANSWER_INSTRUCTION_PATTERN.search(source))
+    replacement_has_instruction = bool(
+        ANSWER_INSTRUCTION_PATTERN.search(replacement)
+    )
+    if source_has_instruction != replacement_has_instruction:
+        return True
+    if len(source) > 500 or len(replacement) > 500:
+        return True
+    if len(replacement) > len(source) * 4 + 120:
+        return True
+    return _surface_without_styling(source) == _surface_without_styling(replacement)
+
+
+def _surface_without_styling(value: str) -> str:
+    value = LATEX_SIZE_COMMAND_PATTERN.sub("", value)
+    return re.sub(r"\s+", "", value)
+
+
+def _exactly_confirmed_corrections(
+    draft: list[ConditionCorrection],
+    confirmed: list[ConditionCorrection],
+) -> list[ConditionCorrection]:
+    draft_keys = {
+        (item.task_num, item.source_fragment, item.replacement)
+        for item in draft
+    }
+    result: list[ConditionCorrection] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in confirmed:
+        key = (item.task_num, item.source_fragment, item.replacement)
+        if key not in draft_keys or key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
 
 
 def _read_cache(
@@ -329,6 +464,40 @@ def _write_cache(
 
 def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _page_image_data_urls(image_path: Path) -> list[str]:
+    """Возвращает страницу целиком либо две увеличенные половины.
+
+    Широкий PDF-лист в этом проекте содержит два книжных разворота. Передача
+    половин отдельными изображениями не даёт vision-модели уменьшить мелкий текст
+    обеих страниц до одного низкого разрешения.
+    """
+
+    try:
+        with Image.open(image_path) as source:
+            image = source.convert("RGB")
+    except OSError as error:
+        raise ValueError(
+            f"Не удалось прочитать изображение страницы: {image_path}"
+        ) from error
+
+    width, height = image.size
+    if width < height * 1.2:
+        return [_pil_image_data_url(image)]
+
+    middle = width // 2
+    return [
+        _pil_image_data_url(image.crop((0, 0, middle, height))),
+        _pil_image_data_url(image.crop((middle, 0, width, height))),
+    ]
+
+
+def _pil_image_data_url(image: Image.Image) -> str:
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    encoded = base64.b64encode(output.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
 
 
 def _image_data_url(image_path: Path) -> str:

@@ -11,6 +11,7 @@ from exam_parser.markdown_pipeline import (
     _condition_fidelity_issues,
     _ensure_condition_fidelity,
     _generate_solutions_and_answers,
+    _normalize_condition_artifacts,
     _recover_missing_expected_tasks,
     _remove_embedded_task_conditions,
     _task_condition_blocks,
@@ -240,6 +241,23 @@ class ConditionFidelityTests(unittest.TestCase):
         )
 
         self.assertEqual(blocks["15"], r"Решите неравенство $2^x\leq2$.")
+
+    def test_removes_transliterated_answer_field_and_ocr_artifacts(self) -> None:
+        condition = (
+            "<p>a) Найдите вероятность того, что в течение года в течение года "
+            "лампа перегорит， а другая не перегорит..\n\n"
+            "<p>b) Запишите результат.</p>\n"
+            "Otvet: ___"
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="5"),
+            (
+                "<p>а) Найдите вероятность того, что в течение года лампа "
+                "перегорит, а другая не перегорит.\n\n"
+                "<p>б) Запишите результат.</p>"
+            ),
+        )
 
     def test_removes_variant_footer_from_source_block(self) -> None:
         blocks = _task_condition_blocks(

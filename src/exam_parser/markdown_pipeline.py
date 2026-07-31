@@ -43,7 +43,9 @@ TASK_HEADING_PATTERN = re.compile(
     r"(?m)^[ \t]*((?:1[0-9]|[1-9])(?:\.\d+)*)"
     r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-яЁё0-9])|[ \t]*$)"
 )
-ANSWER_LINE_PATTERN = re.compile(r"(?im)^\s*Ответ\s*:.*$")
+ANSWER_LINE_PATTERN = re.compile(
+    r"(?im)^[ \t]*(?:Ответ|Otvet)[ \t]*:.*$"
+)
 SERVICE_LINE_PATTERN = re.compile(
     r"(?im)^[^\n]*(?:"
     r"Единый государственный экзамен|"
@@ -64,6 +66,20 @@ GEOMETRY_WORD_PATTERN = re.compile(
     r"(?![A-Za-zА-Яа-яЁё0-9_])"
 )
 CHECKBOX_TASK_PREFIX_PATTERN = r"[☐□▢◻◼▪■]+\s*{task_num}(?:[.)])?\s+"
+DUPLICATED_PHRASE_PATTERN = re.compile(
+    r"\b(?P<phrase>[А-Яа-яЁё]+(?:\s+[А-Яа-яЁё]+){1,5})"
+    r"\s+(?P=phrase)\b",
+    re.IGNORECASE,
+)
+FULLWIDTH_PUNCTUATION = str.maketrans(
+    {
+        "，": ",",
+        "；": ";",
+        "：": ":",
+        "（": "(",
+        "）": ")",
+    }
+)
 VISUAL_REFERENCE_PATTERN = re.compile(
     r"(?i)\b(?:на\s+рисунк\w*|на\s+график\w*|изображ[её]н\w*\s+график)\b"
 )
@@ -786,7 +802,11 @@ def _clean_source_condition(value: str, *, task_num: str | None = None) -> str:
 
 
 def _normalize_condition_artifacts(value: str, *, task_num: str | None) -> str:
-    cleaned = value
+    cleaned = ANSWER_LINE_PATTERN.sub(" ", value)
+    cleaned = cleaned.translate(FULLWIDTH_PUNCTUATION)
+    cleaned = re.sub(r",(?=[A-Za-zА-Яа-яЁё])", ", ", cleaned)
+    cleaned = re.sub(r"(?im)(^|<p>)(\s*)a\)", r"\1\2а)", cleaned)
+    cleaned = re.sub(r"(?im)(^|<p>)(\s*)b\)", r"\1\2б)", cleaned)
     if task_num:
         repeated_prefix = re.compile(
             r"^\s*" + CHECKBOX_TASK_PREFIX_PATTERN.format(
@@ -795,6 +815,12 @@ def _normalize_condition_artifacts(value: str, *, task_num: str | None) -> str:
         )
         cleaned = repeated_prefix.sub("", cleaned, count=1)
     cleaned = re.sub(r"(?<=\w)~(?=\s*\$)", " ", cleaned)
+    previous = None
+    while previous != cleaned:
+        previous = cleaned
+        cleaned = DUPLICATED_PHRASE_PATTERN.sub(r"\g<phrase>", cleaned)
+    cleaned = re.sub(r"(?<!\.)\.\.(?!\.)", ".", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
 
