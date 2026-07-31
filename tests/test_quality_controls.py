@@ -145,6 +145,24 @@ class ConditionFidelityTests(unittest.TestCase):
         self.assertEqual(blocks["8"], "Найдите параметр a.")
         self.assertEqual(blocks["9"], "Найдите процент.")
 
+    def test_numeric_condition_start_does_not_merge_next_task(self) -> None:
+        blocks = _task_condition_blocks(
+            "15 Решите неравенство $3^x \\leq 3$.\n\n"
+            "16 15 января планируется взять кредит на 6 месяцев.\n"
+            "Найдите наибольшее значение r.\n\n"
+            "17 В треугольнике ABC угол C тупой.\n"
+        )
+
+        self.assertEqual(blocks["15"], "Решите неравенство $3^x \\leq 3$.")
+        self.assertEqual(
+            blocks["16"],
+            (
+                "15 января планируется взять кредит на 6 месяцев.\n"
+                "Найдите наибольшее значение r."
+            ),
+        )
+        self.assertEqual(blocks["17"], "В треугольнике ABC угол C тупой.")
+
 
 class DeepSeekQualityTests(unittest.TestCase):
     def test_long_solution_retries_in_compact_mode(self) -> None:

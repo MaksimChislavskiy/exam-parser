@@ -7,7 +7,7 @@ from pathlib import Path
 
 TASK_HEADING_PATTERN = re.compile(
     r"(?m)^[ \t]*((?:1[0-9]|[1-9])(?:\.\d+)*)"
-    r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-я])|[ \t]*$)"
+    r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-яЁё0-9])|[ \t]*$)"
 )
 ANSWER_LINE_PATTERN = re.compile(
     r"(?im)^[ \t]*[ОOоo][ТтTt][ВвVv][ЕеEe][ТтTt][ \t]*:.*$"

@@ -31,7 +31,7 @@ HTML_WIDTH_PERCENT_PATTERN = re.compile(
 )
 TASK_HEADING_PATTERN = re.compile(
     r"(?m)^[ \t]*((?:1[0-9]|[1-9])(?:\.\d+)*)"
-    r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-я])|[ \t]*$)"
+    r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-яЁё0-9])|[ \t]*$)"
 )
 ANSWER_LINE_PATTERN = re.compile(r"(?im)^\s*Ответ\s*:.*$")
 SERVICE_LINE_PATTERN = re.compile(
@@ -163,11 +163,13 @@ def process_markdown(
                     task.image_id,
                     fallback,
                     image_ids,
+                    task_block_found=task.task_num in source_by_task,
                 )
                 extracted.append((task, page_path))
 
         extracted = _deduplicate_tasks(extracted)
         _validate_task_count(extracted, expected_tasks)
+        _remove_generated_task_images(images_dir)
 
         records = []
         for task, page_path in extracted:
@@ -698,13 +700,23 @@ def _resolve_image_id(
     model_image_id: str | None,
     fallback_image_id: str | None,
     available_image_ids: list[str],
+    *,
+    task_block_found: bool = False,
 ) -> str | None:
     available = {Path(item).name for item in available_image_ids}
-    if model_image_id and Path(model_image_id).name in available:
-        return Path(model_image_id).name
     if fallback_image_id and Path(fallback_image_id).name in available:
         return Path(fallback_image_id).name
+    if task_block_found:
+        return None
+    if model_image_id and Path(model_image_id).name in available:
+        return Path(model_image_id).name
     return None
+
+
+def _remove_generated_task_images(images_dir: Path) -> None:
+    for path in images_dir.glob("task_*.png"):
+        if path.is_file():
+            path.unlink()
 
 
 def _copy_task_image(
