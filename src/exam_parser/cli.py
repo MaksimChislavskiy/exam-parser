@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 from pathlib import Path
 from typing import Literal
 
-from .condition_audit import verify_markdown_conditions
 from .documents import prepare_pages
 from .llm_client import LLMProvider
 from .markdown_boundaries import normalize_task_boundaries
@@ -20,9 +18,8 @@ from .variants import detect_document_variants, variant_page_paths
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 INPUT_DIR = PROJECT_DIR / "output" / "input"
 AnswerSource = Literal["generated", "document", "none"]
-DEFAULT_PROVIDER = os.getenv("LLM_PROVIDER", "mistral").strip().lower()
+DEFAULT_PROVIDER = os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
 PROVIDER_LABELS = {
-    "mistral": "Mistral",
     "gigachat": "GigaChat",
     "deepseek": "DeepSeek",
 }
@@ -30,9 +27,6 @@ PROVIDER_LABELS = {
 HELP_EPILOG = """
 Примеры:
   uv run python main.py trvar540.pdf
-      Полный цикл через Mistral.
-
-  uv run python main.py trvar540.pdf --provider deepseek
       Полный цикл через DeepSeek.
 
   uv run python main.py variant_951.pdf --provider deepseek \
@@ -65,11 +59,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--provider",
-        choices=("mistral", "gigachat", "deepseek"),
+        choices=("gigachat", "deepseek"),
         default=DEFAULT_PROVIDER,
         help=(
-            "LLM-провайдер: mistral, gigachat или deepseek. "
-            "По умолчанию берётся LLM_PROVIDER или mistral."
+            "LLM-провайдер: gigachat или deepseek. "
+            "По умолчанию берётся LLM_PROVIDER или deepseek."
         ),
     )
     parser.add_argument(
@@ -128,14 +122,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--verify-conditions",
-        action="store_true",
-        help=(
-            "Дважды сверить OCR-условия с изображениями страниц через "
-            "Mistral Vision и закэшировать подтверждённые исправления."
-        ),
-    )
-    parser.add_argument(
         "--expected-tasks",
         type=int,
         default=19,
@@ -178,9 +164,7 @@ def _answer_source(args: argparse.Namespace) -> AnswerSource:
 def main() -> None:
     args = build_parser().parse_args()
     if args.provider not in PROVIDER_LABELS:
-        raise SystemExit(
-            "LLM_PROVIDER должен быть mistral, gigachat или deepseek"
-        )
+        raise SystemExit("LLM_PROVIDER должен быть gigachat или deepseek")
 
     provider: LLMProvider = args.provider
     provider_label = PROVIDER_LABELS[provider]
@@ -241,30 +225,6 @@ def main() -> None:
             f"Используется Markdown, сверенный с PDF: {processing_markdown_dir}",
             flush=True,
         )
-
-    if args.verify_conditions:
-        _ensure_page_images(
-            input_path,
-            pages_dir,
-            processing_markdown_dir,
-            dpi=args.dpi,
-        )
-        try:
-            visually_verified_dir = verify_markdown_conditions(
-                processing_markdown_dir,
-                pages_dir,
-                workspace / "markdown_visual_verified",
-                workspace / "condition_audit",
-            )
-        except (FileNotFoundError, ValueError) as error:
-            raise SystemExit(str(error)) from None
-        if visually_verified_dir != processing_markdown_dir:
-            print(
-                "Используется Markdown, визуально сверенный с PDF: "
-                f"{visually_verified_dir}",
-                flush=True,
-            )
-        processing_markdown_dir = visually_verified_dir
 
     variants = detect_document_variants(processing_markdown_dir)
     bounded_markdown_dir = normalize_task_boundaries(
@@ -349,10 +309,6 @@ def _process_variant(
     expected_tasks: int | None,
     resume_results: bool,
 ) -> list[TaskRecord]:
-    # Клиенту решения нужен точный каталог текущего результата, чтобы найти
-    # уже скопированное изображение конкретной задачи. Переменная действует только
-    # внутри текущего процесса и не является пользовательской настройкой.
-    os.environ["EXAM_PARSER_CURRENT_OUTPUT_DIR"] = str(output_dir.resolve())
     return process_markdown(
         markdown_dir,
         output_dir,
@@ -375,28 +331,6 @@ def _format_page_numbers(page_numbers: tuple[int, ...]) -> str:
     if consecutive:
         return f"{page_numbers[0]}-{page_numbers[-1]}"
     return ", ".join(map(str, page_numbers))
-
-
-def _ensure_page_images(
-    input_path: Path,
-    pages_dir: Path,
-    markdown_dir: Path,
-    *,
-    dpi: int,
-) -> list[Path]:
-    expected_numbers = {
-        int(match.group(1))
-        for path in markdown_dir.glob("page_*/page_*.md")
-        if (match := re.search(r"page_(\d+)", path.stem))
-    }
-    existing = {
-        int(match.group(1)): path
-        for path in pages_dir.glob("page_*.png")
-        if (match := re.search(r"page_(\d+)", path.stem))
-    }
-    if expected_numbers and expected_numbers.issubset(existing):
-        return [existing[number] for number in sorted(expected_numbers)]
-    return prepare_pages(input_path, pages_dir, dpi=dpi)
 
 
 def _remove_legacy_single_result(output_dir: Path) -> None:

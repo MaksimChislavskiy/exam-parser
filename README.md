@@ -7,7 +7,7 @@ PDF/изображение
       ↓
 PaddleOCR-VL → Markdown + изображения
       ↓
-Mistral, GigaChat или DeepSeek → условия задач
+DeepSeek или GigaChat → условия задач
       ↓
 независимо настраиваемые результаты
       ├── подробное решение: выбранная LLM или пусто
@@ -35,16 +35,15 @@ uv run python main.py trvar540.pdf
 
 ## Выбор LLM-провайдера
 
-По умолчанию используется Mistral:
+По умолчанию используется DeepSeek:
 
 ```powershell
 uv run python main.py trvar540.pdf
 ```
 
-DeepSeek и GigaChat выбираются отдельным параметром:
+GigaChat выбирается отдельным параметром:
 
 ```powershell
-uv run python main.py trvar540.pdf --provider deepseek
 uv run python main.py trvar540.pdf --provider gigachat
 ```
 
@@ -57,30 +56,11 @@ LLM_PROVIDER=deepseek
 Поддерживаемые значения:
 
 ```text
-mistral
-gigachat
 deepseek
+gigachat
 ```
 
 Параметр `--model` относится к выбранному провайдеру.
-
-## Настройка Mistral
-
-```env
-MISTRAL_API_KEY=ваш_ключ
-MISTRAL_MODEL=mistral-large-2512
-MISTRAL_CONDITION_AUDIT_MODEL=mistral-large-2512
-MISTRAL_CONDITION_CONFIRMATION_MODEL=mistral-large-2512
-```
-
-Флаг `--verify-conditions` включает два независимых прохода Mistral Vision по
-увеличенным половинам каждой широкой страницы. Второй проход может только
-подтвердить точную замену первого, но не изменить её и не добавить новую.
-Программа применяет непересекающуюся замену лишь тогда, когда исходный
-OCR-фрагмент встречается ровно один раз внутри указанной задачи; правки пробелов,
-размера скобок и полей `Ответ: ___` отбрасываются. Результаты сохраняются в
-`output/work/<имя>/condition_audit/` и повторно не запрашиваются, пока Markdown,
-изображение страницы или версия проверки не изменились.
 
 ## Настройка DeepSeek
 
@@ -166,16 +146,16 @@ uv sync
 
 ## Примеры
 
-Вариант 540 с подробными решениями и ответами Mistral:
+Вариант 540 с подробными решениями и ответами DeepSeek:
 
 ```powershell
 uv run python main.py trvar540.pdf
 ```
 
-Тот же документ через DeepSeek:
+Тот же документ через GigaChat:
 
 ```powershell
-uv run python main.py trvar540.pdf --provider deepseek
+uv run python main.py trvar540.pdf --provider gigachat
 ```
 
 Вариант 951 с ответами из документа, без решений и без повторного OCR:
@@ -276,20 +256,6 @@ output/result/36533_36533Z/
 uv run python main.py variant_951.pdf --reuse-markdown
 ```
 
-Для точной визуальной сверки условий без повторного PaddleOCR:
-
-```powershell
-uv run python main.py variant_951.pdf `
-  --provider deepseek `
-  --no-solutions `
-  --no-answers `
-  --reuse-markdown `
-  --verify-conditions
-```
-
-Если сохранённых PNG-страниц нет, программа только заново отрисует PDF в PNG.
-Это не запускает PaddleOCR. Для визуальной сверки нужен `MISTRAL_API_KEY`.
-
 При сравнении провайдеров рекомендуется задавать разные итоговые папки:
 
 ```powershell
@@ -355,14 +321,13 @@ uv run python main.py --help
 
 ```text
 FILE                     имя файла из output/input
---provider PROVIDER      mistral, gigachat или deepseek
+--provider PROVIDER      deepseek или gigachat
 --no-solutions           не создавать подробные решения
 --document-answers       брать короткие ответы из документа
 --no-answers             не создавать короткие ответы
 --reuse-markdown         не запускать OCR повторно
 --run-ocr                явно запустить OCR заново
 --resume-results          продолжить по существующему tasks.xlsx
---verify-conditions      дважды сверить OCR-условия с изображениями страниц
 --device gpu:0|cpu|auto
 --allow-cpu-fallback
 --expected-tasks 19

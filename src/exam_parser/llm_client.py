@@ -11,7 +11,7 @@ from .models import (
 )
 
 
-LLMProvider = Literal["mistral", "gigachat", "deepseek"]
+LLMProvider = Literal["gigachat", "deepseek"]
 
 
 class TaskClient(Protocol):
@@ -37,10 +37,6 @@ def create_task_client(
     *,
     model: str | None = None,
 ) -> TaskClient:
-    if provider == "mistral":
-        from .mistral_client import MistralTaskClient
-
-        return MistralTaskClient(model=model)
     if provider == "gigachat":
         from .gigachat_client import GigaChatTaskClient
 

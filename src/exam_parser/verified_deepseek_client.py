@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import os
 import re
-from pathlib import Path
 
 from .deepseek_client import DeepSeekTaskClient
 from .models import (
     ExtractedTask,
-    GeneratedAnswer,
     ProofAudit,
     SolutionConfirmation,
-    TaskDetailedSolution,
     TaskSolution,
 )
 from .result_quality import complete_proof_subpart_answer
@@ -18,12 +15,6 @@ from .task_prompts import (
     CONFIRMATION_PROMPT,
     PROOF_AUDIT_PROMPT,
     SOLUTION_PROMPT,
-)
-from .vision_context import (
-    MistralVisionContextProvider,
-    enrich_task_with_visual_context,
-    read_cached_visual_context,
-    write_visual_context,
 )
 
 
@@ -36,9 +27,6 @@ _PROOF_AUDIT_PATTERN = re.compile(
     r"\bminimum\b|\bfor\s+all\b|\bevery\b|\bunique"
     r")",
     re.IGNORECASE,
-)
-_VISUAL_CONTEXT_MARKER = (
-    "Данные рисунка, извлечённые vision-моделью и являющиеся частью условия:"
 )
 
 
@@ -58,10 +46,8 @@ class VerifiedDeepSeekTaskClient(DeepSeekTaskClient):
             self.compact_max_tokens = self.max_tokens
         if "DEEPSEEK_MINIMAL_MAX_TOKENS" not in os.environ:
             self.minimal_max_tokens = self.compact_max_tokens
-        self._vision_provider: MistralVisionContextProvider | None = None
 
     def solve_task(self, task: ExtractedTask) -> TaskSolution:
-        task = self._prepare_task_with_image(task)
         solved = self._request_task_result(
             task,
             SOLUTION_PROMPT,
@@ -74,54 +60,6 @@ class VerifiedDeepSeekTaskClient(DeepSeekTaskClient):
         candidate = self._apply_primary_verification(task, solved)
         audited = self._audit_proof_if_needed(task, candidate)
         return self._complete_safe_proof_answer(task, audited)
-
-    def generate_solution(self, task: ExtractedTask) -> TaskDetailedSolution:
-        return super().generate_solution(self._prepare_task_with_image(task))
-
-    def generate_answer(self, task: ExtractedTask) -> GeneratedAnswer:
-        return super().generate_answer(self._prepare_task_with_image(task))
-
-    def _prepare_task_with_image(self, task: ExtractedTask) -> ExtractedTask:
-        """Добавляет текстовое описание связанного рисунка в запросы DeepSeek.
-
-        DeepSeek V4 получает текст, поэтому изображение один раз анализирует
-        vision-модель Mistral. Описание кэшируется рядом с текущим результатом и
-        повторно используется при ``--resume-results``. Условие в Excel при этом
-        не изменяется: обогащённая копия существует только внутри LLM-запросов.
-        """
-
-        if _VISUAL_CONTEXT_MARKER in task.condition:
-            return task
-
-        output_dir_value = os.getenv("EXAM_PARSER_CURRENT_OUTPUT_DIR")
-        if not output_dir_value:
-            return task
-
-        output_dir = Path(output_dir_value)
-        image_path = output_dir / "images" / f"task_{task.task_num}.png"
-        if not image_path.is_file():
-            return task
-
-        cache_path = output_dir / ".vision_context" / f"task_{task.task_num}.txt"
-        description = read_cached_visual_context(cache_path)
-        if description is not None:
-            print(
-                f"{self.provider_name}: используется сохранённое описание "
-                f"рисунка задачи {task.task_num}",
-                flush=True,
-            )
-            return enrich_task_with_visual_context(task, description)
-
-        print(
-            f"{self.provider_name}: анализ рисунка задачи {task.task_num} "
-            "через Mistral Vision",
-            flush=True,
-        )
-        if self._vision_provider is None:
-            self._vision_provider = MistralVisionContextProvider()
-        description = self._vision_provider.describe(task, image_path)
-        write_visual_context(cache_path, description)
-        return enrich_task_with_visual_context(task, description)
 
     def _complete_safe_proof_answer(
         self,

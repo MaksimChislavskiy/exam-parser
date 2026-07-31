@@ -17,7 +17,6 @@ dependencies = [
     "pillow>=12.2.0",
     "pymupdf>=1.27.2.3",
     "gigachat==0.2.1",
-    "mistralai>=2.5.0",
     "openai>=1.0.0",
     "openpyxl>=3.1.5",
     "pydantic>=2.10.0",

@@ -153,7 +153,7 @@ def process_markdown(
     page_paths: Iterable[str | Path] | None = None,
     include_solutions: bool = True,
     answer_source: AnswerSource = "generated",
-    provider: LLMProvider = "mistral",
+    provider: LLMProvider = "deepseek",
     model: str | None = None,
     expected_tasks: int | None = 19,
     resume_results: bool = False,

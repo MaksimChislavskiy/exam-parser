@@ -197,68 +197,6 @@ class VariantBoundaryTests(unittest.TestCase):
 
 
 class MultiVariantCliTests(unittest.TestCase):
-    def test_visual_condition_audit_runs_on_reused_markdown(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            markdown_dir = root / "markdown"
-            output_dir = root / "result"
-            pages_dir = root / "pages"
-            input_path = root / "document.pdf"
-            input_path.write_bytes(b"pdf")
-            _write_page(
-                markdown_dir,
-                1,
-                "Вариант 951\nИнструкция по выполнению работы\n1 Первая",
-            )
-            pages_dir.mkdir()
-            (pages_dir / "page_1.png").write_bytes(b"png")
-            fake_records = [TaskRecord(task_num="1", condition="Условие")]
-
-            with (
-                patch(
-                    "sys.argv",
-                    [
-                        "main.py",
-                        "document.pdf",
-                        "--reuse-markdown",
-                        "--verify-conditions",
-                        "--no-solutions",
-                        "--no-answers",
-                        "--markdown-dir",
-                        str(markdown_dir),
-                        "--pages-dir",
-                        str(pages_dir),
-                        "--output-dir",
-                        str(output_dir),
-                    ],
-                ),
-                patch(
-                    "exam_parser.cli.resolve_input_path",
-                    return_value=input_path,
-                ),
-                patch(
-                    "exam_parser.cli.repair_markdown_from_pdf",
-                    return_value=markdown_dir,
-                ),
-                patch(
-                    "exam_parser.cli.verify_markdown_conditions",
-                    return_value=markdown_dir,
-                ) as verify,
-                patch(
-                    "exam_parser.cli.normalize_task_boundaries",
-                    return_value=markdown_dir,
-                ),
-                patch(
-                    "exam_parser.cli.process_markdown",
-                    return_value=fake_records,
-                ),
-                redirect_stdout(StringIO()),
-            ):
-                main()
-
-        self.assertEqual(verify.call_count, 1)
-        self.assertEqual(verify.call_args.args[:2], (markdown_dir, pages_dir))
-
     def test_successful_multi_variant_run_removes_only_legacy_root_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             output_dir = Path(temp)
