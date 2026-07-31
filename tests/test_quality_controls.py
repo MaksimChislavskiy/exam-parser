@@ -7,8 +7,10 @@ from unittest.mock import patch
 
 from exam_parser.deepseek_client import DeepSeekTaskClient
 from exam_parser.markdown_pipeline import (
+    _SourceTaskBlock,
     _condition_fidelity_issues,
     _generate_solutions_and_answers,
+    _recover_missing_expected_tasks,
     _task_condition_blocks,
 )
 from exam_parser.math_text import normalize_ege_short_answer
@@ -162,6 +164,99 @@ class ConditionFidelityTests(unittest.TestCase):
             ),
         )
         self.assertEqual(blocks["17"], "В треугольнике ABC угол C тупой.")
+
+
+class _MissingTaskClient:
+    provider_name = "Test"
+
+    def __init__(self, retry_tasks: list[ExtractedTask]) -> None:
+        self.retry_tasks = retry_tasks
+        self.calls: list[tuple[str, list[str]]] = []
+
+    def extract_markdown(
+        self,
+        markdown: str,
+        image_ids: list[str],
+    ) -> list[ExtractedTask]:
+        self.calls.append((markdown, image_ids))
+        return self.retry_tasks
+
+
+class MissingTaskRecoveryTests(unittest.TestCase):
+    def test_recovers_model_omission_from_isolated_source_block(self) -> None:
+        client = _MissingTaskClient(
+            [ExtractedTask(task_num="2", condition="Найдите число $5$.")]
+        )
+        page_path = Path("page_1.md")
+        extracted = [
+            (ExtractedTask(task_num="1", condition="Первая"), page_path),
+            (ExtractedTask(task_num="3", condition="Третья"), page_path),
+        ]
+        source_blocks = {
+            "2": _SourceTaskBlock(
+                condition="Найдите число 5.",
+                page_path=page_path,
+                image_id="two.jpg",
+                available_image_ids=("two.jpg",),
+            )
+        }
+
+        result = _recover_missing_expected_tasks(
+            client,
+            extracted,
+            source_blocks,
+            expected_tasks=3,
+        )
+
+        by_number = {task.task_num: task for task, _ in result}
+        self.assertEqual(set(by_number), {"1", "2", "3"})
+        self.assertEqual(by_number["2"].condition, "Найдите число $5$.")
+        self.assertEqual(by_number["2"].image_id, "two.jpg")
+        self.assertEqual(client.calls, [("2. Найдите число 5.", [])])
+
+    def test_uses_source_block_when_isolated_retry_also_omits_task(self) -> None:
+        client = _MissingTaskClient([])
+        page_path = Path("page_1.md")
+        source_blocks = {
+            "2": _SourceTaskBlock(
+                condition="Точное условие 2.",
+                page_path=page_path,
+                image_id=None,
+                available_image_ids=(),
+            )
+        }
+
+        result = _recover_missing_expected_tasks(
+            client,
+            [
+                (ExtractedTask(task_num="1", condition="Первая"), page_path),
+                (ExtractedTask(task_num="3", condition="Третья"), page_path),
+            ],
+            source_blocks,
+            expected_tasks=3,
+        )
+
+        recovered = next(task for task, _ in result if task.task_num == "2")
+        self.assertEqual(recovered.condition, "Точное условие 2.")
+
+    def test_does_not_guess_for_nonstandard_task_numbering(self) -> None:
+        client = _MissingTaskClient(
+            [ExtractedTask(task_num="2", condition="Вторая")]
+        )
+        page_path = Path("page_1.md")
+        extracted = [
+            (ExtractedTask(task_num="1.1", condition="Подзадача"), page_path)
+        ]
+
+        result = _recover_missing_expected_tasks(
+            client,
+            extracted,
+            {},
+            expected_tasks=1,
+        )
+
+        self.assertEqual(result, extracted)
+        self.assertEqual(client.calls, [])
 
 
 class DeepSeekQualityTests(unittest.TestCase):

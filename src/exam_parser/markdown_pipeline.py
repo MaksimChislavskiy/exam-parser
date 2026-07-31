@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -15,6 +16,15 @@ from .models import ExtractedAnswer, ExtractedTask, TaskRecord
 
 
 AnswerSource = Literal["generated", "document", "none"]
+
+
+@dataclass(frozen=True)
+class _SourceTaskBlock:
+    condition: str
+    page_path: Path
+    image_id: str | None
+    available_image_ids: tuple[str, ...]
+
 
 IMAGE_PATTERN = re.compile(
     r"(?P<html><img\b[^>]*>)|"
@@ -141,6 +151,8 @@ def process_markdown(
     else:
         extracted: list[tuple[ExtractedTask, Path]] = []
         all_markdown: list[str] = []
+        source_blocks: dict[str, _SourceTaskBlock] = {}
+        ambiguous_source_numbers: set[str] = set()
 
         for page_path in pages:
             page_num = _page_number(page_path)
@@ -149,6 +161,19 @@ def process_markdown(
             image_ids = _image_ids(markdown)
             image_by_task = _associate_images_with_tasks(markdown)
             source_by_task = _task_condition_blocks(markdown)
+            for task_num, condition in source_by_task.items():
+                if task_num in ambiguous_source_numbers:
+                    continue
+                if task_num in source_blocks:
+                    source_blocks.pop(task_num)
+                    ambiguous_source_numbers.add(task_num)
+                    continue
+                source_blocks[task_num] = _SourceTaskBlock(
+                    condition=condition,
+                    page_path=page_path,
+                    image_id=image_by_task.get(task_num),
+                    available_image_ids=tuple(image_ids),
+                )
 
             print(
                 f"{client.provider_name}: извлечение задач со страницы {page_num}",
@@ -172,6 +197,13 @@ def process_markdown(
                 )
                 extracted.append((task, page_path))
 
+        extracted = _deduplicate_tasks(extracted)
+        extracted = _recover_missing_expected_tasks(
+            client,
+            extracted,
+            source_blocks,
+            expected_tasks,
+        )
         extracted = _deduplicate_tasks(extracted)
         _validate_task_count(extracted, expected_tasks)
         _remove_generated_task_images(images_dir)
@@ -633,6 +665,82 @@ def _deduplicate_tasks(
         result.append(item)
     result.sort(key=lambda item: _task_sort_key(item[0].task_num))
     return result
+
+
+def _recover_missing_expected_tasks(
+    client: TaskClient,
+    extracted: list[tuple[ExtractedTask, Path]],
+    source_blocks: dict[str, _SourceTaskBlock],
+    expected_tasks: int | None,
+) -> list[tuple[ExtractedTask, Path]]:
+    """Восстанавливает задачи, пропущенные моделью, из точных OCR-блоков.
+
+    Автовосстановление применяется только к стандартной последовательности
+    простых номеров 1..N. Для документов с составными или нестандартными номерами
+    сохраняется прежнее поведение: итоговую полноту проверит валидатор.
+    """
+
+    if expected_tasks is None or expected_tasks < 1:
+        return extracted
+
+    actual_numbers: set[str] = set()
+    for task, _ in extracted:
+        if not task.task_num.isdigit():
+            return extracted
+        number = int(task.task_num)
+        if task.task_num != str(number):
+            return extracted
+        actual_numbers.add(task.task_num)
+
+    missing = [
+        str(number)
+        for number in range(1, expected_tasks + 1)
+        if str(number) not in actual_numbers and str(number) in source_blocks
+    ]
+    if not missing:
+        return extracted
+
+    print(
+        f"{client.provider_name}: модель пропустила задачи "
+        f"{', '.join(missing)}; изолированное восстановление",
+        flush=True,
+    )
+
+    recovered_items = list(extracted)
+    for task_num in missing:
+        source = source_blocks[task_num]
+        isolated_markdown = f"{task_num}. {source.condition}"
+        retry_tasks = client.extract_markdown(isolated_markdown, [])
+        recovered = next(
+            (item for item in retry_tasks if item.task_num == task_num),
+            None,
+        )
+        if recovered is None:
+            print(
+                f"{client.provider_name}: задача {task_num} повторно пропущена; "
+                "используется исходный OCR-блок",
+                flush=True,
+            )
+            recovered = ExtractedTask(
+                task_num=task_num,
+                condition=source.condition,
+            )
+        else:
+            recovered = _ensure_condition_fidelity(
+                client,
+                recovered,
+                source.condition,
+            )
+
+        recovered.image_id = _resolve_image_id(
+            recovered.image_id,
+            source.image_id,
+            list(source.available_image_ids),
+            task_block_found=True,
+        )
+        recovered_items.append((recovered, source.page_path))
+
+    return recovered_items
 
 
 def _validate_task_count(
