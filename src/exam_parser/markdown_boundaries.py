@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
 
 
@@ -26,6 +27,8 @@ TRAILING_SERVICE_PATTERN = re.compile(
 def normalize_task_boundaries(
     markdown_dir: str | Path,
     normalized_dir: str | Path,
+    *,
+    page_groups: Iterable[Iterable[int]] | None = None,
 ) -> Path:
     """Восстанавливает потерянные OCR-границы заданий с кратким ответом.
 
@@ -40,19 +43,21 @@ def normalize_task_boundaries(
     if not pages:
         return markdown_dir
 
+    grouped_pages = _resolve_page_groups(pages, page_groups)
     replacements: dict[Path, str] = {}
-    next_task_num: int | None = None
-    in_short_answer_part = False
 
-    for page_path in pages:
-        markdown = page_path.read_text(encoding="utf-8")
-        normalized, next_task_num, in_short_answer_part = _normalize_page(
-            markdown,
-            next_task_num=next_task_num,
-            in_short_answer_part=in_short_answer_part,
-        )
-        if normalized != markdown:
-            replacements[page_path] = normalized
+    for group in grouped_pages:
+        next_task_num: int | None = None
+        in_short_answer_part = False
+        for page_path in group:
+            markdown = page_path.read_text(encoding="utf-8")
+            normalized, next_task_num, in_short_answer_part = _normalize_page(
+                markdown,
+                next_task_num=next_task_num,
+                in_short_answer_part=in_short_answer_part,
+            )
+            if normalized != markdown:
+                replacements[page_path] = normalized
 
     if not replacements:
         return markdown_dir
@@ -66,6 +71,40 @@ def normalize_task_boundaries(
         (normalized_dir / relative).write_text(normalized, encoding="utf-8")
 
     return normalized_dir
+
+
+def _resolve_page_groups(
+    pages: list[Path],
+    page_groups: Iterable[Iterable[int]] | None,
+) -> list[list[Path]]:
+    if page_groups is None:
+        return [pages]
+
+    page_by_number = {_page_number(path): path for path in pages}
+    resolved: list[list[Path]] = []
+    used: set[int] = set()
+    for numbers in page_groups:
+        group: list[Path] = []
+        for page_num in numbers:
+            if page_num in used:
+                raise ValueError(f"Страница {page_num} указана в двух вариантах")
+            try:
+                group.append(page_by_number[page_num])
+            except KeyError:
+                raise ValueError(
+                    f"Для варианта не найдена Markdown-страница {page_num}"
+                ) from None
+            used.add(page_num)
+        if group:
+            resolved.append(group)
+
+    missing = sorted(page_by_number.keys() - used)
+    if missing:
+        raise ValueError(
+            "Страницы не распределены по вариантам: "
+            + ", ".join(map(str, missing))
+        )
+    return resolved
 
 
 def _normalize_page(

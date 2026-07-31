@@ -73,6 +73,7 @@ def process_markdown(
     markdown_dir: str | Path,
     output_dir: str | Path,
     *,
+    page_paths: Iterable[str | Path] | None = None,
     include_solutions: bool = True,
     answer_source: AnswerSource = "generated",
     provider: LLMProvider = "mistral",
@@ -86,7 +87,11 @@ def process_markdown(
     images_dir.mkdir(parents=True, exist_ok=True)
 
     pages = sorted(
-        markdown_dir.glob("page_*/page_*.md"),
+        (
+            [Path(path) for path in page_paths]
+            if page_paths is not None
+            else markdown_dir.glob("page_*/page_*.md")
+        ),
         key=_page_number,
     )
     if not pages:

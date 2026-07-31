@@ -9,8 +9,10 @@ from .documents import prepare_pages
 from .llm_client import LLMProvider
 from .markdown_boundaries import normalize_task_boundaries
 from .markdown_pipeline import process_markdown
+from .models import TaskRecord
 from .paddle import PaddleDeviceError, recognize_pages
 from .pdf_reference import repair_markdown_from_pdf
+from .variants import detect_document_variants, variant_page_paths
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -230,9 +232,11 @@ def main() -> None:
             flush=True,
         )
 
+    variants = detect_document_variants(processing_markdown_dir)
     bounded_markdown_dir = normalize_task_boundaries(
         processing_markdown_dir,
         workspace / "markdown_bounded",
+        page_groups=(variant.page_numbers for variant in variants),
     )
     if bounded_markdown_dir != processing_markdown_dir:
         print(
@@ -242,22 +246,115 @@ def main() -> None:
         )
     processing_markdown_dir = bounded_markdown_dir
 
+    if len(variants) == 1:
+        records = _process_variant(
+            processing_markdown_dir,
+            output_dir,
+            page_paths=variant_page_paths(processing_markdown_dir, variants[0]),
+            include_solutions=include_solutions,
+            answer_source=answer_source,
+            provider=provider,
+            model=args.model,
+            expected_tasks=args.expected_tasks or None,
+            resume_results=args.resume_results,
+        )
+        print(
+            f"Готово: {len(records)} задач, файл {output_dir / 'tasks.xlsx'}",
+            flush=True,
+        )
+        return
+
+    print(
+        "Найдено вариантов: "
+        f"{len(variants)} ({', '.join(item.display_name for item in variants)})",
+        flush=True,
+    )
+    total_records = 0
+    for variant in variants:
+        variant_output_dir = output_dir / variant.output_name
+        pages_text = _format_page_numbers(variant.page_numbers)
+        print(
+            f"Вариант {variant.display_name}: страницы {pages_text}",
+            flush=True,
+        )
+        records = _process_variant(
+            processing_markdown_dir,
+            variant_output_dir,
+            page_paths=variant_page_paths(processing_markdown_dir, variant),
+            include_solutions=include_solutions,
+            answer_source=answer_source,
+            provider=provider,
+            model=args.model,
+            expected_tasks=args.expected_tasks or None,
+            resume_results=args.resume_results,
+        )
+        total_records += len(records)
+        print(
+            f"Готово: вариант {variant.display_name}, {len(records)} задач, "
+            f"файл {variant_output_dir / 'tasks.xlsx'}",
+            flush=True,
+        )
+
+    _remove_legacy_single_result(output_dir)
+    print(
+        f"Готово: {len(variants)} вариантов, {total_records} задач, "
+        f"каталог {output_dir}",
+        flush=True,
+    )
+
+
+def _process_variant(
+    markdown_dir: Path,
+    output_dir: Path,
+    *,
+    page_paths: list[Path],
+    include_solutions: bool,
+    answer_source: AnswerSource,
+    provider: LLMProvider,
+    model: str | None,
+    expected_tasks: int | None,
+    resume_results: bool,
+) -> list[TaskRecord]:
     # Клиенту решения нужен точный каталог текущего результата, чтобы найти
     # уже скопированное изображение конкретной задачи. Переменная действует только
     # внутри текущего процесса и не является пользовательской настройкой.
     os.environ["EXAM_PARSER_CURRENT_OUTPUT_DIR"] = str(output_dir.resolve())
-
-    records = process_markdown(
-        processing_markdown_dir,
+    return process_markdown(
+        markdown_dir,
         output_dir,
+        page_paths=page_paths,
         include_solutions=include_solutions,
         answer_source=answer_source,
         provider=provider,
-        model=args.model,
-        expected_tasks=args.expected_tasks or None,
-        resume_results=args.resume_results,
+        model=model,
+        expected_tasks=expected_tasks,
+        resume_results=resume_results,
     )
-    print(
-        f"Готово: {len(records)} задач, файл {output_dir / 'tasks.xlsx'}",
-        flush=True,
+
+
+def _format_page_numbers(page_numbers: tuple[int, ...]) -> str:
+    if len(page_numbers) == 1:
+        return str(page_numbers[0])
+    consecutive = page_numbers == tuple(
+        range(page_numbers[0], page_numbers[-1] + 1)
     )
+    if consecutive:
+        return f"{page_numbers[0]}-{page_numbers[-1]}"
+    return ", ".join(map(str, page_numbers))
+
+
+def _remove_legacy_single_result(output_dir: Path) -> None:
+    legacy_xlsx = output_dir / "tasks.xlsx"
+    if legacy_xlsx.is_file():
+        legacy_xlsx.unlink()
+
+    legacy_images = output_dir / "images"
+    if not legacy_images.is_dir():
+        return
+    for path in legacy_images.glob("task_*.png"):
+        if path.is_file():
+            path.unlink()
+    try:
+        legacy_images.rmdir()
+    except OSError:
+        pass
