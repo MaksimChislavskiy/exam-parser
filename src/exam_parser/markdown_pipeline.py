@@ -53,6 +53,20 @@ SERVICE_LINE_PATTERN = re.compile(
     r"Математика,\s*11 класс"
     r")[^\n]*$"
 )
+HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+LATEX_SPAN_PATTERN = re.compile(r"\$(?P<body>.*?)\$", re.DOTALL)
+LATEX_COMMAND_PATTERN = re.compile(r"\\(?P<name>[A-Za-z]+)")
+LATEX_TEXT_PATTERN = re.compile(r"\\text\s*\{[^{}]*\}")
+RUSSIAN_WORD_PATTERN = re.compile(r"[А-Яа-яЁё]{2,}")
+GEOMETRY_WORD_PATTERN = re.compile(
+    r"(?<![A-Za-zА-Яа-яЁё0-9_])"
+    r"(?:[A-ZА-ЯЁ](?:\s*_?\s*(?:\{\s*\d+\s*\}|\d+))?){2,16}"
+    r"(?![A-Za-zА-Яа-яЁё0-9_])"
+)
+CHECKBOX_TASK_PREFIX_PATTERN = r"[☐□▢◻◼▪■]+\s*{task_num}(?:[.)])?\s+"
+VISUAL_REFERENCE_PATTERN = re.compile(
+    r"(?i)\b(?:на\s+рисунк\w*|на\s+график\w*|изображ[её]н\w*\s+график)\b"
+)
 PROTECTED_SYMBOL_PATTERN = re.compile(
     r"(?<![A-Z0-9])(?:[A-Z](?:\d+)?){2,16}(?![A-Z0-9])"
 )
@@ -77,6 +91,43 @@ CONFUSABLE_LETTERS = str.maketrans(
         "У": "Y",
     }
 )
+GREEK_MATH_SYMBOLS = {
+    "α": "alpha",
+    "β": "beta",
+    "γ": "gamma",
+    "δ": "delta",
+    "ε": "epsilon",
+    "θ": "theta",
+    "λ": "lambda",
+    "μ": "mu",
+    "π": "pi",
+    "ρ": "rho",
+    "σ": "sigma",
+    "φ": "phi",
+    "ω": "omega",
+}
+IGNORED_LATEX_COMMANDS = {
+    "big",
+    "bigg",
+    "bigl",
+    "bigr",
+    "left",
+    "mathit",
+    "mathbf",
+    "mathrm",
+    "operatorname",
+    "overline",
+    "right",
+    "text",
+    "underline",
+    "vec",
+}
+NORMALIZED_LATEX_COMMANDS = {
+    "dfrac": "frac",
+    "tfrac": "frac",
+    "le": "leq",
+    "ge": "geq",
+}
 
 
 def process_markdown(
@@ -176,6 +227,7 @@ def process_markdown(
             )
             tasks = client.extract_markdown(markdown, image_ids)
             for task in tasks:
+                task = _clean_extracted_task(task)
                 source_condition = source_by_task.get(task.task_num)
                 if source_condition:
                     task = _ensure_condition_fidelity(
@@ -200,6 +252,7 @@ def process_markdown(
             expected_tasks,
         )
         extracted = _deduplicate_tasks(extracted)
+        extracted = _remove_embedded_task_conditions(extracted)
         _validate_task_count(extracted, expected_tasks)
         _remove_generated_task_images(images_dir)
 
@@ -572,19 +625,53 @@ def _condition_fidelity_issues(source: str, candidate: str) -> list[str]:
 
     source_symbols = Counter(_protected_symbols(source))
     candidate_symbols = Counter(_protected_symbols(candidate))
-    missing_symbols = source_symbols - candidate_symbols
-    if missing_symbols:
-        formatted = ", ".join(sorted(missing_symbols.elements()))
-        issues.append(f"изменены обозначения: {formatted}")
+    symbol_changes = _format_counter_changes(source_symbols, candidate_symbols)
+    if symbol_changes:
+        issues.append(f"изменены обозначения: {symbol_changes}")
 
     source_numbers = Counter(_numeric_tokens(source))
     candidate_numbers = Counter(_numeric_tokens(candidate))
-    missing_numbers = source_numbers - candidate_numbers
-    if missing_numbers:
-        formatted = ", ".join(sorted(missing_numbers.elements()))
-        issues.append(f"изменены числа: {formatted}")
+    number_changes = _format_counter_changes(source_numbers, candidate_numbers)
+    if number_changes:
+        issues.append(f"изменены числа: {number_changes}")
+
+    source_words = Counter(_russian_word_tokens(source))
+    candidate_words = Counter(_russian_word_tokens(candidate))
+    word_changes = _format_counter_changes(source_words, candidate_words)
+    if word_changes:
+        issues.append(f"изменен текст: {word_changes}")
+
+    source_math = Counter(_math_fidelity_tokens(source))
+    candidate_math = Counter(_math_fidelity_tokens(candidate))
+    if source_math and candidate_math:
+        math_changes = _format_counter_changes(source_math, candidate_math)
+        if math_changes:
+            issues.append(f"изменена формула: {math_changes}")
+
+    source_punctuation = Counter(_sentence_punctuation_tokens(source))
+    candidate_punctuation = Counter(_sentence_punctuation_tokens(candidate))
+    punctuation_changes = _format_counter_changes(
+        source_punctuation,
+        candidate_punctuation,
+    )
+    if punctuation_changes:
+        issues.append(f"изменена пунктуация: {punctuation_changes}")
 
     return issues
+
+
+def _format_counter_changes(
+    source: Counter[str],
+    candidate: Counter[str],
+) -> str:
+    parts: list[str] = []
+    missing = source - candidate
+    added = candidate - source
+    if missing:
+        parts.append("утрачено " + ", ".join(sorted(missing.elements())))
+    if added:
+        parts.append("добавлено " + ", ".join(sorted(added.elements())))
+    return "; ".join(parts)
 
 
 def _protected_symbols(value: str) -> list[str]:
@@ -602,6 +689,57 @@ def _numeric_tokens(value: str) -> list[str]:
         match.group(0).replace(",", ".")
         for match in NUMBER_PATTERN.finditer(without_symbols)
     ]
+
+
+def _russian_word_tokens(value: str) -> list[str]:
+    text = HTML_TAG_PATTERN.sub(" ", value)
+    text = LATEX_COMMAND_PATTERN.sub(" ", text)
+    text = GEOMETRY_WORD_PATTERN.sub(" ", text)
+    return [
+        match.group(0).lower().replace("ё", "е")
+        for match in RUSSIAN_WORD_PATTERN.finditer(text)
+    ]
+
+
+def _math_fidelity_tokens(value: str) -> list[str]:
+    fragments = [match.group("body") for match in LATEX_SPAN_PATTERN.finditer(value)]
+    if not fragments:
+        return []
+
+    result: list[str] = []
+    for fragment in fragments:
+        fragment = LATEX_TEXT_PATTERN.sub(" ", fragment)
+
+        def replace_command(match: re.Match[str]) -> str:
+            name = match.group("name").lower()
+            name = NORMALIZED_LATEX_COMMANDS.get(name, name)
+            if name not in IGNORED_LATEX_COMMANDS:
+                result.append(f"\\{name}")
+            return " "
+
+        plain = LATEX_COMMAND_PATTERN.sub(replace_command, fragment)
+        plain = plain.translate(CONFUSABLE_LETTERS)
+        for character in plain:
+            if character in GREEK_MATH_SYMBOLS:
+                result.append(f"\\{GREEK_MATH_SYMBOLS[character]}")
+            elif character.isascii() and character.isalpha():
+                result.append(character)
+            elif character in "=+-<>;,":
+                result.append(character)
+            elif character in {"'", "′"}:
+                result.append("prime")
+    return result
+
+
+def _sentence_punctuation_tokens(value: str) -> list[str]:
+    def keep_sentence_marks(match: re.Match[str]) -> str:
+        body = re.sub(r"(?<=\d)\.(?=\d)", "", match.group("body"))
+        return "".join(character for character in body if character in ".!?")
+
+    text = LATEX_SPAN_PATTERN.sub(keep_sentence_marks, value)
+    text = HTML_TAG_PATTERN.sub(" ", text)
+    text = re.sub(r"(?<=\d)\.(?=\d)", "", text)
+    return [character for character in text if character in ".!?"]
 
 
 def _canonical_fidelity_text(value: str) -> str:
@@ -632,18 +770,46 @@ def _task_condition_blocks(markdown: str) -> dict[str, str]:
             else len(markdown)
         )
         body = markdown[heading.end() : block_end]
-        condition = _clean_source_condition(body)
+        task_num = heading.group(1)
+        condition = _clean_source_condition(body, task_num=task_num)
         if condition:
-            result[heading.group(1)] = condition
+            result[task_num] = condition
     return result
 
 
-def _clean_source_condition(value: str) -> str:
+def _clean_source_condition(value: str, *, task_num: str | None = None) -> str:
     cleaned = SERVICE_LINE_PATTERN.sub(" ", value)
     cleaned = IMAGE_PATTERN.sub(" ", cleaned)
     cleaned = ANSWER_LINE_PATTERN.sub(" ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return _normalize_condition_artifacts(cleaned.strip(), task_num=task_num)
+
+
+def _normalize_condition_artifacts(value: str, *, task_num: str | None) -> str:
+    cleaned = value
+    if task_num:
+        repeated_prefix = re.compile(
+            r"^\s*" + CHECKBOX_TASK_PREFIX_PATTERN.format(
+                task_num=re.escape(task_num)
+            )
+        )
+        cleaned = repeated_prefix.sub("", cleaned, count=1)
+    cleaned = re.sub(r"(?<=\w)~(?=\s*\$)", " ", cleaned)
     return cleaned.strip()
+
+
+def _clean_extracted_task(task: ExtractedTask) -> ExtractedTask:
+    condition = _normalize_condition_artifacts(
+        task.condition,
+        task_num=task.task_num,
+    )
+    if condition == task.condition:
+        return task
+    return ExtractedTask(
+        task_num=task.task_num,
+        condition=condition,
+        image_id=task.image_id,
+    )
 
 
 def _deduplicate_tasks(
@@ -659,6 +825,51 @@ def _deduplicate_tasks(
         seen.add(task.task_num)
         result.append(item)
     result.sort(key=lambda item: _task_sort_key(item[0].task_num))
+    return result
+
+
+def _remove_embedded_task_conditions(
+    extracted: list[tuple[ExtractedTask, Path]],
+) -> list[tuple[ExtractedTask, Path]]:
+    """Удаляет полный дубликат другого условия из конца текущего условия.
+
+    Такая склейка возникает при нарушенном порядке колонок OCR: модель находит
+    обе задачи, но точный исходный блок предыдущей заканчивается текстом следующей.
+    Короткие совпадающие фразы не изменяются.
+    """
+
+    result: list[tuple[ExtractedTask, Path]] = []
+    conditions = [task.condition.strip() for task, _ in extracted]
+    for index, (task, page_path) in enumerate(extracted):
+        condition = task.condition.strip()
+        replacement = condition
+        embedded_task_num: str | None = None
+        for other_index, (other_task, _) in enumerate(extracted):
+            if other_index == index:
+                continue
+            embedded = conditions[other_index]
+            if len(embedded) < 80 or len(embedded) >= len(replacement):
+                continue
+            if not replacement.endswith(embedded):
+                continue
+            prefix = replacement[: -len(embedded)].rstrip()
+            if not prefix:
+                continue
+            replacement = prefix
+            embedded_task_num = other_task.task_num
+
+        if replacement != condition:
+            print(
+                f"Из условия задачи {task.task_num} удален дубликат условия "
+                f"задачи {embedded_task_num}",
+                flush=True,
+            )
+            task = ExtractedTask(
+                task_num=task.task_num,
+                condition=replacement,
+                image_id=task.image_id,
+            )
+        result.append((task, page_path))
     return result
 
 
@@ -862,6 +1073,8 @@ def _is_small_decorative_image(html_tag: str) -> bool:
 def _associate_images_with_tasks(markdown: str) -> dict[str, str]:
     headings = list(TASK_HEADING_PATTERN.finditer(markdown))
     associations: dict[str, str] = {}
+    visual_tasks: set[str] = set()
+    ordered_task_nums: list[str] = []
     for index, heading in enumerate(headings):
         block_end = (
             headings[index + 1].start()
@@ -869,9 +1082,25 @@ def _associate_images_with_tasks(markdown: str) -> dict[str, str]:
             else len(markdown)
         )
         block = markdown[heading.end() : block_end]
+        task_num = heading.group(1)
+        ordered_task_nums.append(task_num)
+        condition = _clean_source_condition(block, task_num=task_num)
+        if VISUAL_REFERENCE_PATTERN.search(condition):
+            visual_tasks.add(task_num)
         images = _image_ids(block)
         if images:
-            associations[heading.group(1)] = images[0]
+            associations[task_num] = images[0]
+
+    for index in range(1, len(ordered_task_nums)):
+        current = ordered_task_nums[index]
+        previous = ordered_task_nums[index - 1]
+        if (
+            current in associations
+            and current not in visual_tasks
+            and previous in visual_tasks
+            and previous not in associations
+        ):
+            associations[previous] = associations.pop(current)
     return associations
 
 

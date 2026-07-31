@@ -69,7 +69,15 @@ deepseek
 ```env
 MISTRAL_API_KEY=ваш_ключ
 MISTRAL_MODEL=mistral-large-2512
+MISTRAL_CONDITION_AUDIT_MODEL=mistral-large-2512
+MISTRAL_CONDITION_CONFIRMATION_MODEL=mistral-large-2512
 ```
+
+Флаг `--verify-conditions` включает два независимых прохода Mistral Vision по
+изображению каждой страницы. Модель возвращает только точечные замены, а программа
+применяет замену лишь тогда, когда исходный OCR-фрагмент встречается на странице
+ровно один раз. Результаты сохраняются в `output/work/<имя>/condition_audit/` и
+повторно не запрашиваются, пока Markdown и изображение страницы не изменились.
 
 ## Настройка DeepSeek
 
@@ -265,6 +273,20 @@ output/result/36533_36533Z/
 uv run python main.py variant_951.pdf --reuse-markdown
 ```
 
+Для точной визуальной сверки условий без повторного PaddleOCR:
+
+```powershell
+uv run python main.py variant_951.pdf `
+  --provider deepseek `
+  --no-solutions `
+  --no-answers `
+  --reuse-markdown `
+  --verify-conditions
+```
+
+Если сохранённых PNG-страниц нет, программа только заново отрисует PDF в PNG.
+Это не запускает PaddleOCR. Для визуальной сверки нужен `MISTRAL_API_KEY`.
+
 При сравнении провайдеров рекомендуется задавать разные итоговые папки:
 
 ```powershell
@@ -337,6 +359,7 @@ FILE                     имя файла из output/input
 --reuse-markdown         не запускать OCR повторно
 --run-ocr                явно запустить OCR заново
 --resume-results          продолжить по существующему tasks.xlsx
+--verify-conditions      дважды сверить OCR-условия с изображениями страниц
 --device gpu:0|cpu|auto
 --allow-cpu-fallback
 --expected-tasks 19

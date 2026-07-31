@@ -9,8 +9,10 @@ from exam_parser.deepseek_client import DeepSeekTaskClient
 from exam_parser.markdown_pipeline import (
     _SourceTaskBlock,
     _condition_fidelity_issues,
+    _ensure_condition_fidelity,
     _generate_solutions_and_answers,
     _recover_missing_expected_tasks,
+    _remove_embedded_task_conditions,
     _task_condition_blocks,
 )
 from exam_parser.math_text import normalize_ege_short_answer
@@ -130,6 +132,86 @@ class ConditionFidelityTests(unittest.TestCase):
             [],
         )
 
+    def test_detects_added_geometry_letter(self) -> None:
+        issues = _condition_fidelity_issues(
+            "В призме ABCA1B1C1 проведена плоскость.",
+            "В призме $ABCDA_1B_1C_1$ проведена плоскость.",
+        )
+
+        self.assertTrue(issues)
+
+    def test_detects_replaced_russian_words(self) -> None:
+        issues = _condition_fidelity_issues(
+            "В треугольнике ABC угол C тупой. Сумма выплат указана в млн рублей.",
+            "В треугольнике $ABC$ утопил C тупой. Сумма вышлат указана в мин рублей.",
+        )
+
+        self.assertTrue(any("текст" in issue for issue in issues))
+
+    def test_accepts_yo_and_e_as_the_same_russian_letter(self) -> None:
+        self.assertEqual(
+            _condition_fidelity_issues(
+                "На рисунке изображён график.",
+                "На рисунке изображен график.",
+            ),
+            [],
+        )
+
+    def test_detects_changed_formula_variables(self) -> None:
+        issues = _condition_fidelity_issues(
+            r"Сила равна $F_A=\alpha\rho gr^3$.",
+            r"Сила равна $F_A=\frac{a}{r}r^3$.",
+        )
+
+        self.assertTrue(any("формул" in issue for issue in issues))
+
+    def test_detects_added_derivative_prime(self) -> None:
+        issues = _condition_fidelity_issues(
+            r"Найдите промежутки возрастания функции $f(x)$.",
+            r"Найдите промежутки возрастания функции $f'(x)$.",
+        )
+
+        self.assertTrue(any("формул" in issue for issue in issues))
+
+    def test_detects_changed_coordinate_separator(self) -> None:
+        issues = _condition_fidelity_issues(
+            r"Дан вектор $a(-1;-3)$.",
+            r"Дан вектор $a(-1,-3)$.",
+        )
+
+        self.assertTrue(any("формул" in issue for issue in issues))
+
+    def test_detects_number_added_by_misread_subpart_label(self) -> None:
+        issues = _condition_fidelity_issues(
+            "а) Первый вопрос. б) Второй вопрос.",
+            "a) Первый вопрос. 6) Второй вопрос.",
+        )
+
+        self.assertTrue(any("числа" in issue for issue in issues))
+
+    def test_detects_dropped_sentence_terminator(self) -> None:
+        issues = _condition_fidelity_issues(
+            "а) Докажите равенство. б) Найдите длину.",
+            "a) Докажите равенство б) Найдите длину.",
+        )
+
+        self.assertTrue(any("пунктуац" in issue for issue in issues))
+
+    def test_falls_back_to_source_when_retry_repeats_corruption(self) -> None:
+        source = r"Сила равна $F_A=\alpha\rho gr^3$."
+        corrupted = ExtractedTask(
+            task_num="9",
+            condition=r"Сила равна $F_A=\frac{a}{r}r^3$.",
+        )
+        client = SimpleNamespace(
+            provider_name="Test",
+            extract_markdown=lambda markdown, image_ids: [corrupted],
+        )
+
+        result = _ensure_condition_fidelity(client, corrupted, source)
+
+        self.assertEqual(result.condition, source)
+
     def test_extracts_clean_source_block(self) -> None:
         blocks = _task_condition_blocks(
             '1. Найдите угол АСВ.\n<img src="imgs/one.jpg" />\n'
@@ -137,6 +219,27 @@ class ConditionFidelityTests(unittest.TestCase):
         )
         self.assertEqual(blocks["1"], "Найдите угол АСВ.")
         self.assertEqual(blocks["2"], "Найдите число 5.")
+
+    def test_removes_checkbox_and_repeated_task_number(self) -> None:
+        blocks = _task_condition_blocks(
+            "2. ☐ 2 Даны три вектора.\nОтвет: ___"
+        )
+
+        self.assertEqual(blocks["2"], "Даны три вектора.")
+
+    def test_keeps_legitimate_number_at_start_of_condition(self) -> None:
+        blocks = _task_condition_blocks(
+            "2. 2 рабочих выполняют заказ.\nОтвет: ___"
+        )
+
+        self.assertEqual(blocks["2"], "2 рабочих выполняют заказ.")
+
+    def test_replaces_markdown_nonbreaking_space_before_formula(self) -> None:
+        blocks = _task_condition_blocks(
+            r"15. Решите неравенство~$2^x\leq2$."
+        )
+
+        self.assertEqual(blocks["15"], r"Решите неравенство $2^x\leq2$.")
 
     def test_removes_variant_footer_from_source_block(self) -> None:
         blocks = _task_condition_blocks(
@@ -331,6 +434,50 @@ class MissingTaskRecoveryTests(unittest.TestCase):
 
         self.assertEqual(result, extracted)
         self.assertEqual(client.calls, [])
+
+
+class EmbeddedTaskConditionTests(unittest.TestCase):
+    def test_removes_exact_condition_of_another_task_from_suffix(self) -> None:
+        page_path = Path("page_9.md")
+        task_19 = (
+            "Юра и Полина играют в числа. "
+            "а) Может ли получиться число 2? "
+            "б) Какое число наибольшее?"
+        )
+        extracted = [
+            (
+                ExtractedTask(
+                    task_num="18",
+                    condition="Найдите значения параметра.\n\n" + task_19,
+                ),
+                page_path,
+            ),
+            (ExtractedTask(task_num="19", condition=task_19), page_path),
+        ]
+
+        cleaned = _remove_embedded_task_conditions(extracted)
+        by_number = {task.task_num: task for task, _ in cleaned}
+
+        self.assertEqual(by_number["18"].condition, "Найдите значения параметра.")
+        self.assertEqual(by_number["19"].condition, task_19)
+
+    def test_does_not_remove_short_common_phrase(self) -> None:
+        page_path = Path("page_1.md")
+        extracted = [
+            (
+                ExtractedTask(
+                    task_num="1",
+                    condition="Найдите значение функции.",
+                ),
+                page_path,
+            ),
+            (
+                ExtractedTask(task_num="2", condition="Найдите значение."),
+                page_path,
+            ),
+        ]
+
+        self.assertEqual(_remove_embedded_task_conditions(extracted), extracted)
 
 
 class DeepSeekQualityTests(unittest.TestCase):

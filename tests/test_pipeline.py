@@ -11,7 +11,7 @@ from unittest.mock import patch
 from PIL import Image
 from pydantic import ValidationError
 
-from exam_parser.cli import build_parser, resolve_input_path
+from exam_parser.cli import _ensure_page_images, build_parser, resolve_input_path
 from exam_parser.markdown_pipeline import (
     _apply_document_answers,
     _associate_images_with_tasks,
@@ -78,6 +78,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("--no-solutions", help_text)
         self.assertIn("--document-answers", help_text)
         self.assertIn("--no-answers", help_text)
+        self.assertIn("--verify-conditions", help_text)
         self.assertIn("uv run python main.py trvar540.pdf", help_text)
 
     def test_input_is_resolved_inside_standard_directory(self) -> None:
@@ -95,6 +96,53 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaisesRegex(ValueError, "только имя файла"):
                 resolve_input_path("output/input/sample.pdf", Path(temp))
+
+    def test_visual_audit_reuses_existing_rendered_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            markdown_page = root / "markdown" / "page_1" / "page_1.md"
+            markdown_page.parent.mkdir(parents=True)
+            markdown_page.write_text("1 Задача", encoding="utf-8")
+            page_image = root / "pages" / "page_1.png"
+            page_image.parent.mkdir()
+            page_image.write_bytes(b"png")
+
+            with patch("exam_parser.cli.prepare_pages") as prepare:
+                result = _ensure_page_images(
+                    root / "document.pdf",
+                    root / "pages",
+                    root / "markdown",
+                    dpi=300,
+                )
+
+        self.assertEqual(result, [page_image])
+        prepare.assert_not_called()
+
+    def test_visual_audit_renders_missing_pages_without_running_ocr(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            markdown_page = root / "markdown" / "page_1" / "page_1.md"
+            markdown_page.parent.mkdir(parents=True)
+            markdown_page.write_text("1 Задача", encoding="utf-8")
+            rendered = [root / "pages" / "page_1.png"]
+
+            with patch(
+                "exam_parser.cli.prepare_pages",
+                return_value=rendered,
+            ) as prepare:
+                result = _ensure_page_images(
+                    root / "document.pdf",
+                    root / "pages",
+                    root / "markdown",
+                    dpi=240,
+                )
+
+        self.assertEqual(result, rendered)
+        prepare.assert_called_once_with(
+            root / "document.pdf",
+            root / "pages",
+            dpi=240,
+        )
 
 
 class ModelsTests(unittest.TestCase):

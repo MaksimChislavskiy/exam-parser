@@ -39,6 +39,38 @@ class MarkdownImageTests(unittest.TestCase):
         self.assertEqual(_image_ids(markdown), ["diagram.jpg"])
         self.assertEqual(_associate_images_with_tasks(markdown), {"1": "diagram.jpg"})
 
+    def test_moves_image_from_nonvisual_task_to_previous_visual_task(self) -> None:
+        markdown = '''
+11. На рисунке изображены графики функций. Найдите ординату точки A.
+
+12. Найдите наибольшее значение функции.
+
+<img src="imgs/diagram.jpg" width="40%" />
+
+13. Решите уравнение.
+'''
+
+        self.assertEqual(
+            _associate_images_with_tasks(markdown),
+            {"11": "diagram.jpg"},
+        )
+
+    def test_keeps_image_with_current_visual_task(self) -> None:
+        markdown = '''
+11. Найдите значение функции.
+
+12. На рисунке изображён график функции.
+
+<img src="imgs/diagram.jpg" width="40%" />
+
+13. Решите уравнение.
+'''
+
+        self.assertEqual(
+            _associate_images_with_tasks(markdown),
+            {"12": "diagram.jpg"},
+        )
+
     def test_accepts_available_model_image(self) -> None:
         result = _resolve_image_id(
             "model.jpg",
