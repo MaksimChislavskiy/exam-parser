@@ -90,6 +90,17 @@ class ShortAnswerTests(unittest.TestCase):
         answer = "А) нет; Б) да; В) 6"
         self.assertEqual(normalize_ege_short_answer("19", answer), answer)
 
+    def test_normalizes_latin_second_part_labels(self) -> None:
+        answer = "a) да;\nb) нет;\nc) 931"
+        self.assertEqual(
+            normalize_ege_short_answer("19", answer),
+            "а) да;\nб) нет;\nв) 931",
+        )
+
+    def test_does_not_treat_single_latin_marker_as_subpart_sequence(self) -> None:
+        answer = "a) — значение параметра"
+        self.assertEqual(normalize_ege_short_answer("18", answer), answer)
+
 
 class ConditionFidelityTests(unittest.TestCase):
     def test_separately_checks_unchanged_two_letter_angle_notation(self) -> None:
@@ -971,6 +982,118 @@ class ConditionArtifactRepairTests(unittest.TestCase):
                 "<p>б) Может ли результат увеличиться в пять раз?</p>\n"
                 "<p>в) В какое наибольшее число раз он может увеличиться?</p>"
             ),
+        )
+
+    def test_removes_mixed_alphabet_answer_field(self) -> None:
+        condition = "Найдите вероятность.\n\nOтвет: ___."
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="4"),
+            "Найдите вероятность.",
+        )
+
+    def test_removes_trailing_answer_instruction_inside_subpart(self) -> None:
+        condition = (
+            "<p>а) Может ли число встретиться?</p>\n"
+            "<p>б) Найдите наибольшее число. Проверьте, чтобы каждый ответ "
+            "был записан рядом с номером\n"
+            "соответствующего задания.</p>"
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="19"),
+            (
+                "<p>а) Может ли число встретиться?</p>\n"
+                "<p>б) Найдите наибольшее число.</p>"
+            ),
+        )
+
+    def test_repairs_prism_name_from_repeated_vertex_structure(self) -> None:
+        condition = (
+            "В правильной треугольной призме $ABCD_{1}B_{1}C_{1}$ "
+            "проведена плоскость."
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="14"),
+            (
+                "В правильной треугольной призме $ABCA_1B_1C_1$ "
+                "проведена плоскость."
+            ),
+        )
+
+    def test_repairs_same_prism_defect_with_arbitrary_vertex_names(self) -> None:
+        condition = "В призме $MNKP_2N_2K_2$ выбрана точка."
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="14"),
+            "В призме $MNKM_2N_2K_2$ выбрана точка.",
+        )
+
+    def test_does_not_change_non_triangular_prism_name(self) -> None:
+        condition = "В призме $ABCDA_1B_1C_1D_1$ выбрана точка."
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="14"),
+            condition,
+        )
+
+    def test_preserves_already_correct_triangular_prism_formatting(self) -> None:
+        condition = "В призме $ ABCA_1B_1C_1 $ выбрана точка."
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="14"),
+            condition,
+        )
+
+    def test_restores_period_before_new_task_instruction(self) -> None:
+        condition = (
+            "Период полураспада составляет 7 минут "
+            "Найдите, через сколько минут останется половина массы."
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="9"),
+            (
+                "Период полураспада составляет 7 минут. "
+                "Найдите, через сколько минут останется половина массы."
+            ),
+        )
+
+    def test_does_not_invent_punctuation_missing_in_source_subpart(self) -> None:
+        condition = (
+            "<p>а) Докажите, что углы равны</p>\n"
+            "<p>б) Найдите длину стороны.</p>"
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="17"),
+            condition,
+        )
+
+    def test_repairs_cyrillic_parameter_confirmed_by_formula(self) -> None:
+        condition = (
+            "Найдите все значения р, при каждом из которых уравнение "
+            "$x^2-p=0$ имеет корень."
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="18"),
+            (
+                "Найдите все значения $p$, при каждом из которых уравнение "
+                "$x^2-p=0$ имеет корень."
+            ),
+        )
+
+    def test_keeps_cyrillic_letter_without_matching_formula_variable(self) -> None:
+        condition = (
+            "Найдите все значения р, при каждом из которых уравнение "
+            "$x^2-a=0$ имеет корень."
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="18"),
+            condition,
         )
 
 

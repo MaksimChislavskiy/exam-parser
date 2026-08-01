@@ -96,6 +96,20 @@ _PLAIN_FRACTION_PATTERN = re.compile(
     r"(?P<sign>[+-]?)\s*(?P<num>\d+)\s*/\s*(?P<den>\d+)"
 )
 _NUMBER_PATTERN = re.compile(r"[+-]?\d+(?:[.,]\d+)?")
+_ANSWER_SUBPART_PATTERN = re.compile(
+    r"(?P<prefix>^|[;\n]\s*)"
+    r"(?P<label>[a-fvа-е])\)(?=\s)",
+    re.IGNORECASE,
+)
+_LATIN_SUBPART_ALIASES = {
+    "a": "а",
+    "b": "б",
+    "c": "в",
+    "v": "в",
+    "d": "г",
+    "e": "д",
+    "f": "е",
+}
 
 
 def normalize_latex_delimiters(value: str) -> str:
@@ -149,7 +163,7 @@ def normalize_ege_short_answer(task_num: str, answer: str) -> str:
     """
 
     if not _is_first_part_task(task_num):
-        return answer.strip()
+        return _normalize_answer_subpart_labels(answer.strip())
 
     cleaned = _clean_short_answer_text(answer)
 
@@ -191,6 +205,35 @@ def normalize_ege_short_answer(task_num: str, answer: str) -> str:
         fraction = fraction.rstrip("0")
         number = integer if not fraction else f"{integer},{fraction}"
     return "0" if number in {"-0", "+0"} else number.lstrip("+")
+
+
+def _normalize_answer_subpart_labels(value: str) -> str:
+    """Заменяет латинские метки последовательных подпунктов на русские.
+
+    Одиночная конструкция вида ``a)`` не меняется: это может быть переменная,
+    а не подпункт. Последовательность распознаётся только когда первые две метки
+    однозначно соответствуют подпунктам ``а)`` и ``б)``.
+    """
+
+    matches = list(_ANSWER_SUBPART_PATTERN.finditer(value))
+    labels = [
+        _LATIN_SUBPART_ALIASES.get(
+            match.group("label").lower(),
+            match.group("label").lower(),
+        )
+        for match in matches
+    ]
+    if len(matches) < 2 or labels[:2] != ["а", "б"]:
+        return value
+
+    def replace_marker(match: re.Match[str]) -> str:
+        label = match.group("label")
+        replacement = _LATIN_SUBPART_ALIASES.get(label.lower())
+        if replacement is None:
+            return match.group(0)
+        return f"{match.group('prefix')}{replacement})"
+
+    return _ANSWER_SUBPART_PATTERN.sub(replace_marker, value)
 
 
 def _merge_split_geometry_subscripts(value: str) -> str:

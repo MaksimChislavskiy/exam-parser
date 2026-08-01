@@ -54,7 +54,7 @@ TASK_HEADING_PATTERN = re.compile(
     r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-яЁё0-9])|[ \t]*$)"
 )
 ANSWER_LINE_PATTERN = re.compile(
-    r"(?im)^[ \t]*(?:Ответ|Otvet)[ \t]*:.*$"
+    r"(?im)^[ \t]*[ОOоo][ТTтt][ВVвv][ЕEеe][ТTтt][ \t]*:.*$"
 )
 SERVICE_LINE_PATTERN = re.compile(
     r"(?im)^[^\n]*(?:"
@@ -64,6 +64,15 @@ SERVICE_LINE_PATTERN = re.compile(
     r"Разрешается свободное копирование|"
     r"Математика,\s*11 класс"
     r")[^\n]*$"
+)
+TRAILING_SERVICE_INSTRUCTION_PATTERN = re.compile(
+    r"(?i)[ \t]*(?:"
+    r"Не\s+забудьте\s+перенести\b|"
+    r"Проверьте,?\s*чтобы\s+(?:"
+    r"каждый\s+ответ\b|"
+    r"ответ\s+на\s+каждое\s+задание\b"
+    r")"
+    r")[^<]*(?=</p>|\Z)"
 )
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
 LATEX_SPAN_PATTERN = re.compile(r"\$(?P<body>.*?)\$", re.DOTALL)
@@ -90,6 +99,13 @@ FULLWIDTH_PUNCTUATION = str.maketrans(
         "）": ")",
     }
 )
+CYRILLIC_PARAMETER_TO_LATIN = {
+    "а": "a",
+    "с": "c",
+    "р": "p",
+    "х": "x",
+    "у": "y",
+}
 VISUAL_REFERENCE_PATTERN = re.compile(
     r"(?i)\b(?:на\s+рисунк\w*|на\s+график\w*|изображ[её]н\w*\s+график)\b"
 )
@@ -1130,6 +1146,8 @@ def _clean_source_condition(value: str, *, task_num: str | None = None) -> str:
 
 def _normalize_condition_artifacts(value: str, *, task_num: str | None) -> str:
     cleaned = ANSWER_LINE_PATTERN.sub(" ", value)
+    cleaned = SERVICE_LINE_PATTERN.sub(" ", cleaned)
+    cleaned = TRAILING_SERVICE_INSTRUCTION_PATTERN.sub("", cleaned)
     cleaned = cleaned.translate(FULLWIDTH_PUNCTUATION)
     cleaned = re.sub(r",(?=[A-Za-zА-Яа-яЁё])", ", ", cleaned)
     cleaned = re.sub(r"(?im)(^|<p>)(\s*)a\)", r"\1\2а)", cleaned)
@@ -1196,7 +1214,9 @@ def _repair_known_ocr_defects(value: str) -> str:
     cleaned = _repair_derivative_graph_question(cleaned)
     cleaned = _repair_spherical_buoyancy_formula(cleaned)
     cleaned = _repair_triangular_prism_name(cleaned)
+    cleaned = _repair_parameter_letter(cleaned)
     cleaned = _repair_subpart_marker(cleaned)
+    cleaned = _repair_missing_sentence_punctuation(cleaned)
     cleaned = re.sub(
         r"\$a\$\s*\$(g\s*=\s*[^$]+)\$",
         r"а $\1$",
@@ -1325,15 +1345,153 @@ def _repair_spherical_buoyancy_formula(value: str) -> str:
 
 
 def _repair_triangular_prism_name(value: str) -> str:
-    index = r"_\s*(?:\{\s*1\s*\}|1)"
-    missing_base_vertex = rf"ABC\s*{index}\s*B\s*{index}\s*C\s*{index}"
-    extra_base_vertex = rf"ABCD\s*A\s*{index}\s*B\s*{index}\s*C\s*{index}"
-    pattern = re.compile(
-        rf"(треугольн\w*\s+призм\w*\s+)\$\s*"
-        rf"(?:{missing_base_vertex}|{extra_base_vertex})\s*\$",
+    prism_name_pattern = re.compile(
+        r"(?P<prefix>\bпризм\w*\s+)\$\s*"
+        r"(?P<name>[A-ZА-ЯЁ0-9_{}\s]+?)\s*\$",
         re.IGNORECASE,
     )
-    return pattern.sub(r"\1$ABCA_1B_1C_1$", value)
+    atom_pattern = re.compile(
+        r"(?P<letter>[A-ZА-ЯЁ])"
+        r"(?:_?(?:\{(?P<braced>\d+)\}|(?P<plain>\d+)))?",
+        re.IGNORECASE,
+    )
+
+    def replace_name(match: re.Match[str]) -> str:
+        compact = re.sub(r"\s+", "", match.group("name"))
+        atoms = list(atom_pattern.finditer(compact))
+        if not atoms or "".join(atom.group(0) for atom in atoms) != compact:
+            return match.group(0)
+
+        parsed = [
+            (
+                atom.group("letter").upper().translate(CONFUSABLE_LETTERS),
+                atom.group("braced") or atom.group("plain"),
+            )
+            for atom in atoms
+        ]
+        repaired = _repeated_triangular_prism_name(parsed)
+        if repaired is None:
+            return match.group(0)
+        return f"{match.group('prefix')}${repaired}$"
+
+    return prism_name_pattern.sub(replace_name, value)
+
+
+def _repeated_triangular_prism_name(
+    atoms: list[tuple[str, str | None]],
+) -> str | None:
+    """Восстанавливает имя призмы по повторяющейся тройке вершин."""
+
+    base: list[str]
+    upper: list[tuple[str, str | None]]
+
+    if (
+        len(atoms) == 5
+        and all(index is None for _, index in atoms[:3])
+        and all(index is not None for _, index in atoms[3:])
+    ):
+        base = [letter for letter, _ in atoms[:3]]
+        upper = [
+            (base[0], atoms[3][1]),
+            atoms[3],
+            atoms[4],
+        ]
+    elif (
+        len(atoms) == 5
+        and all(index is None for _, index in atoms[:2])
+        and all(index is not None for _, index in atoms[2:])
+    ):
+        base = [atoms[0][0], atoms[1][0], atoms[2][0]]
+        upper = [
+            (base[0], atoms[2][1]),
+            atoms[3],
+            atoms[4],
+        ]
+    elif (
+        len(atoms) == 6
+        and all(index is None for _, index in atoms[:3])
+        and all(index is not None for _, index in atoms[3:])
+    ):
+        base = [letter for letter, _ in atoms[:3]]
+        upper = atoms[3:]
+        if [letter for letter, _ in upper] == base:
+            return None
+    elif (
+        len(atoms) == 7
+        and all(index is None for _, index in atoms[:4])
+        and all(index is not None for _, index in atoms[4:])
+        and [letter for letter, _ in atoms[4:]]
+        == [letter for letter, _ in atoms[:3]]
+    ):
+        base = [letter for letter, _ in atoms[:3]]
+        upper = atoms[4:]
+    else:
+        return None
+
+    indices = [index for _, index in upper]
+    if (
+        any(index is None for index in indices)
+        or len(set(indices)) != 1
+        or [letter for letter, _ in upper[1:]] != base[1:]
+    ):
+        return None
+
+    index = indices[0]
+    if index is None:
+        return None
+    formatted_index = index if len(index) == 1 else "{" + index + "}"
+    return "".join(base) + "".join(
+        f"{letter}_{formatted_index}" for letter in base
+    )
+
+
+def _repair_parameter_letter(value: str) -> str:
+    parameter_pattern = re.compile(
+        r"(?P<prefix>\bзначени\w*\s+)"
+        r"(?P<letter>[асрху])(?=\s*,?\s*при\b)",
+        re.IGNORECASE,
+    )
+    formula_variables: set[str] = set()
+    for formula_match in LATEX_SPAN_PATTERN.finditer(value):
+        without_commands = LATEX_COMMAND_PATTERN.sub(
+            " ",
+            formula_match.group("body"),
+        )
+        formula_variables.update(
+            re.findall(
+                r"(?<![A-Za-z])([a-z])(?![A-Za-z])",
+                without_commands,
+            )
+        )
+
+    def replace_parameter(match: re.Match[str]) -> str:
+        latin = CYRILLIC_PARAMETER_TO_LATIN.get(
+            match.group("letter").lower()
+        )
+        if latin is None or latin not in formula_variables:
+            return match.group(0)
+        return f"{match.group('prefix')}${latin}$"
+
+    return parameter_pattern.sub(replace_parameter, value)
+
+
+def _repair_missing_sentence_punctuation(value: str) -> str:
+    instruction_pattern = re.compile(
+        r"(?P<before>[А-Яа-яЁё0-9])"
+        r"(?P<space>\s+)"
+        r"(?P<instruction>"
+        r"Найдите|Определите|Вычислите|Докажите|Укажите|"
+        r"Ответьте|Решите|Постройте|Исследуйте"
+        r")\b"
+    )
+    cleaned = instruction_pattern.sub(
+        lambda match: (
+            f"{match.group('before')}. "
+            f"{match.group('instruction')}"
+        ),
+        value,
+    )
+    return cleaned
 
 
 def _repair_subpart_marker(value: str) -> str:
