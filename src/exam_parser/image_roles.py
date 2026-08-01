@@ -56,26 +56,63 @@ def _is_boxed_number(image: Image.Image) -> bool:
         for x in range(width)
     ]
 
-    top = _strongest_edge(row_coverage, 0, max(1, round(height * 0.14)))
-    bottom = _strongest_edge(
-        row_coverage,
-        max(0, round(height * 0.86)),
-        height,
-    )
-    left = _strongest_edge(column_coverage, 0, max(1, round(width * 0.14)))
-    right = _strongest_edge(
-        column_coverage,
-        max(0, round(width * 0.86)),
-        width,
-    )
-    if min(top[1], bottom[1], left[1], right[1]) < 0.72:
+    edges = {
+        "top": _strongest_edge(
+            row_coverage,
+            0,
+            max(1, round(height * 0.14)),
+        ),
+        "bottom": _strongest_edge(
+            row_coverage,
+            max(0, round(height * 0.86)),
+            height,
+        ),
+        "left": _strongest_edge(
+            column_coverage,
+            0,
+            max(1, round(width * 0.14)),
+        ),
+        "right": _strongest_edge(
+            column_coverage,
+            max(0, round(width * 0.86)),
+            width,
+        ),
+    }
+    strong_edges = {
+        name: edge[1] >= 0.72
+        for name, edge in edges.items()
+    }
+    # Layout detection can crop a task marker flush with one side of its
+    # rectangular frame. Three surviving sides are still enough to establish
+    # the frame; requiring all four makes the role depend on crop rounding.
+    if sum(strong_edges.values()) < 3:
         return False
 
     border_margin = max(3, round(min(width, height) * 0.045))
-    x0 = left[0] + border_margin
-    x1 = right[0] - border_margin
-    y0 = top[0] + border_margin
-    y1 = bottom[0] - border_margin
+    left = edges["left"]
+    right = edges["right"]
+    top = edges["top"]
+    bottom = edges["bottom"]
+    x0 = (
+        left[0] + border_margin
+        if strong_edges["left"]
+        else border_margin
+    )
+    x1 = (
+        right[0] - border_margin
+        if strong_edges["right"]
+        else width - 1 - border_margin
+    )
+    y0 = (
+        top[0] + border_margin
+        if strong_edges["top"]
+        else border_margin
+    )
+    y1 = (
+        bottom[0] - border_margin
+        if strong_edges["bottom"]
+        else height - 1 - border_margin
+    )
     if x1 <= x0 or y1 <= y0:
         return False
 
@@ -100,7 +137,9 @@ def _is_boxed_number(image: Image.Image) -> bool:
         return False
 
     ink_center = (ink_x0 + ink_x1) / 2
-    frame_center = (left[0] + right[0]) / 2
+    frame_left = left[0] if strong_edges["left"] else 0
+    frame_right = right[0] if strong_edges["right"] else width - 1
+    frame_center = (frame_left + frame_right) / 2
     if abs(ink_center - frame_center) > width * 0.16:
         return False
 

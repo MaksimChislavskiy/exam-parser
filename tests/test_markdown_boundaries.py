@@ -21,6 +21,16 @@ def _draw_boxed_marker(path: Path) -> None:
     image.save(path)
 
 
+def _draw_cropped_boxed_marker(path: Path) -> None:
+    image = Image.new("RGB", (150, 90), "white")
+    draw = ImageDraw.Draw(image)
+    draw.line((5, 5, 145, 5), fill="black", width=4)
+    draw.line((5, 5, 5, 89), fill="black", width=4)
+    draw.line((145, 5, 145, 89), fill="black", width=4)
+    draw.rectangle((70, 27, 79, 65), fill="black")
+    image.save(path)
+
+
 class MarkdownBoundaryTests(unittest.TestCase):
     def test_counts_unnumbered_first_page_without_marking_instruction_as_task(self) -> None:
         markdown = (
@@ -156,6 +166,40 @@ class MarkdownBoundaryTests(unittest.TestCase):
             self.assertLess(normalized.index("diagram.jpg"), normalized.index("2. "))
             self.assertNotIn("number-1.jpg", normalized)
             self.assertNotIn("number-2.jpg", normalized)
+            self.assertEqual(
+                _associate_images_with_tasks(normalized, image_dir=image_dir),
+                {"1": "diagram.jpg"},
+            )
+
+    def test_cropped_boxed_number_still_becomes_a_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            image_dir = Path(temp)
+            _draw_cropped_boxed_marker(image_dir / "number-1.jpg")
+            diagram = Image.new("RGB", (300, 160), "white")
+            ImageDraw.Draw(diagram).line(
+                (10, 145, 290, 15),
+                fill="black",
+                width=5,
+            )
+            diagram.save(image_dir / "diagram.jpg")
+            markdown = (
+                "## Часть 1\n\n"
+                '<div><img src="imgs/number-1.jpg" width="5%" /></div>\n\n'
+                "Первая задача с чертежом.\n"
+                '<div><img src="imgs/diagram.jpg" width="25%" /></div>\n\n'
+                "Ответ: ___.\n"
+            )
+
+            normalized, next_task_num, active = _normalize_page(
+                markdown,
+                next_task_num=None,
+                in_short_answer_part=False,
+                image_dir=image_dir,
+            )
+
+            self.assertTrue(active)
+            self.assertEqual(next_task_num, 2)
+            self.assertNotIn("number-1.jpg", normalized)
             self.assertEqual(
                 _associate_images_with_tasks(normalized, image_dir=image_dir),
                 {"1": "diagram.jpg"},

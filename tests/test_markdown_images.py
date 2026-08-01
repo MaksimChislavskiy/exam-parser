@@ -22,6 +22,16 @@ def _draw_boxed_marker(path: Path) -> None:
     image.save(path)
 
 
+def _draw_cropped_boxed_marker(path: Path) -> None:
+    image = Image.new("RGB", (150, 90), "white")
+    draw = ImageDraw.Draw(image)
+    draw.line((5, 5, 145, 5), fill="black", width=4)
+    draw.line((5, 5, 5, 89), fill="black", width=4)
+    draw.line((145, 5, 145, 89), fill="black", width=4)
+    draw.rectangle((70, 27, 79, 65), fill="black")
+    image.save(path)
+
+
 def _draw_exclamation(path: Path) -> None:
     image = Image.new("RGB", (200, 200), "white")
     draw = ImageDraw.Draw(image)
@@ -65,6 +75,27 @@ class MarkdownImageTests(unittest.TestCase):
             self.assertEqual(
                 _image_ids(markdown, image_dir=images_dir),
                 ["small-diagram.jpg"],
+            )
+
+    def test_ignores_boxed_number_cropped_on_one_side(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            images_dir = Path(temp)
+            _draw_cropped_boxed_marker(images_dir / "number.jpg")
+            diagram = Image.new("RGB", (120, 90), "white")
+            ImageDraw.Draw(diagram).line(
+                (10, 75, 110, 15),
+                fill="black",
+                width=4,
+            )
+            diagram.save(images_dir / "diagram.jpg")
+            markdown = '''
+<img src="imgs/number.jpg" width="5%" />
+<img src="imgs/diagram.jpg" width="25%" />
+'''
+
+            self.assertEqual(
+                _image_ids(markdown, image_dir=images_dir),
+                ["diagram.jpg"],
             )
 
     def test_associates_image_inside_task_block(self) -> None:
