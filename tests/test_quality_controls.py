@@ -779,7 +779,7 @@ class ConditionFidelityTests(unittest.TestCase):
         )
         self.assertEqual(
             blocks["17"],
-            "В треугольнике ABC угол $C$ тупой.",
+            "В треугольнике $ABC$ угол $C$ тупой.",
         )
 
 
@@ -1044,6 +1044,50 @@ class ConditionArtifactRepairTests(unittest.TestCase):
 
         self.assertEqual(
             _normalize_condition_artifacts(condition, task_num="14"),
+            condition,
+        )
+
+    def test_repairs_geometry_labels_lost_outside_latex(self) -> None:
+        condition = (
+            "Докажите, что острые углы АВC и АСН равны. "
+            "Найдите длину стороны АС, если АК = 10, ВК = 30."
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="17"),
+            (
+                "Докажите, что острые углы $ABC$ и $ACH$ равны. "
+                "Найдите длину стороны $AC$, если $AK$ = 10, $BK$ = 30."
+            ),
+        )
+
+    def test_repairs_point_list_while_preserving_existing_latex(self) -> None:
+        condition = (
+            "Точки $K$, М и P — середины сторон $AB$, $BC$ и $AC$ "
+            "соответственно."
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="3"),
+            (
+                "Точки $K$, $M$ и $P$ — середины сторон $AB$, $BC$ и $AC$ "
+                "соответственно."
+            ),
+        )
+
+    def test_repairs_two_point_list(self) -> None:
+        condition = "Точки А и B лежат на окружности."
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="14"),
+            "Точки $A$ и $B$ лежат на окружности.",
+        )
+
+    def test_keeps_uppercase_abbreviations_outside_geometry_context(self) -> None:
+        condition = "ООО РОМ зарегистрировано в Москве. С вершиной всё верно."
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="5"),
             condition,
         )
 

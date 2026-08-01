@@ -1280,6 +1280,7 @@ def _repair_known_ocr_defects(value: str) -> str:
     cleaned = _repair_spherical_buoyancy_formula(cleaned)
     cleaned = _repair_triangular_prism_name(cleaned)
     cleaned = _repair_single_geometry_letter(cleaned)
+    cleaned = _repair_geometry_labels_outside_latex(cleaned)
     cleaned = _repair_parameter_letter(cleaned)
     cleaned = _repair_subpart_marker(cleaned)
     cleaned = _repair_missing_sentence_punctuation(cleaned)
@@ -1532,6 +1533,113 @@ def _repair_single_geometry_letter(value: str) -> str:
         return f"{match.group('prefix')}${label}$"
 
     return label_pattern.sub(replace_label, value)
+
+
+def _repair_geometry_labels_outside_latex(value: str) -> str:
+    """Восстанавливает LaTeX у геометрических обозначений в обычном тексте.
+
+    Модель иногда оставляет ``ABC`` без ``$`` или записывает его визуально
+    похожими кириллическими буквами: ``АВС``. Замена ограничена явным
+    геометрическим контекстом и не заходит внутрь уже готовых LaTeX-фрагментов.
+    """
+
+    label_source = r"[A-ZАВСДЕНКМОРТХУ]{1,16}"
+
+    def format_label(label: str) -> str:
+        return f"${label.translate(CONFUSABLE_LETTERS)}$"
+
+    point_atom_source = (
+        rf"(?:\$\s*{label_source}\s*\$|{label_source})"
+    )
+
+    def format_point_atom(atom: str) -> str:
+        if atom.startswith("$") and atom.endswith("$"):
+            body = atom[1:-1].strip().translate(CONFUSABLE_LETTERS)
+            return f"${body}$"
+        return format_label(atom)
+
+    point_triple_pattern = re.compile(
+        rf"(?P<prefix>\b(?i:точк[а-яё]*)\s+)"
+        rf"(?P<first>{point_atom_source})(?P<comma>\s*,\s*)"
+        rf"(?P<second>{point_atom_source})(?P<and>\s+и\s+)"
+        rf"(?P<third>{point_atom_source})(?=\s+[—–-])"
+    )
+
+    def replace_point_triple(match: re.Match[str]) -> str:
+        return (
+            match.group("prefix")
+            + format_point_atom(match.group("first"))
+            + match.group("comma")
+            + format_point_atom(match.group("second"))
+            + match.group("and")
+            + format_point_atom(match.group("third"))
+        )
+
+    point_pair_pattern = re.compile(
+        rf"(?P<prefix>\b(?i:точк[а-яё]*)\s+)"
+        rf"(?P<first>{point_atom_source})(?P<and>\s+и\s+)"
+        rf"(?P<second>{point_atom_source})"
+        rf"(?=\s+(?:леж|наход|соедин|явля|—|–|-))",
+    )
+
+    def replace_point_pair(match: re.Match[str]) -> str:
+        return (
+            match.group("prefix")
+            + format_point_atom(match.group("first"))
+            + match.group("and")
+            + format_point_atom(match.group("second"))
+        )
+
+    cleaned = point_triple_pattern.sub(replace_point_triple, value)
+    cleaned = point_pair_pattern.sub(replace_point_pair, cleaned)
+
+    angle_pair_pattern = re.compile(
+        rf"(?P<prefix>\b(?i:(?:остр[а-яё]*\s+)?угл[а-яё]*)\s+)"
+        rf"(?P<first>{label_source})(?P<and>\s+и\s+)"
+        rf"(?P<second>{label_source})(?![A-Za-zА-Яа-яЁё0-9_])"
+    )
+    geometry_noun_pattern = re.compile(
+        rf"(?P<prefix>\b(?i:угл[а-яё]*|сторон[а-яё]*|ребр[а-яё]*|"
+        rf"отрезк[а-яё]*|треугольник[а-яё]*|вершин[а-яё]*|"
+        rf"точк[а-яё]*)\s+)"
+        rf"(?P<label>{label_source})(?![A-Za-zА-Яа-яЁё0-9_])"
+    )
+    assignment_pattern = re.compile(
+        rf"(?<![A-Za-zА-Яа-яЁё0-9_$])(?P<label>{label_source})"
+        rf"(?=\s*=\s*[+-]?\d)"
+    )
+
+    def normalize_plain_text(text: str) -> str:
+        text = angle_pair_pattern.sub(
+            lambda match: (
+                match.group("prefix")
+                + format_label(match.group("first"))
+                + match.group("and")
+                + format_label(match.group("second"))
+            ),
+            text,
+        )
+        text = geometry_noun_pattern.sub(
+            lambda match: (
+                match.group("prefix") + format_label(match.group("label"))
+            ),
+            text,
+        )
+        return assignment_pattern.sub(
+            lambda match: format_label(match.group("label")),
+            text,
+        )
+
+    parts: list[str] = []
+    previous_end = 0
+    for latex_match in LATEX_SPAN_PATTERN.finditer(cleaned):
+        parts.append(
+            normalize_plain_text(cleaned[previous_end : latex_match.start()])
+        )
+        parts.append(latex_match.group(0))
+        previous_end = latex_match.end()
+    parts.append(normalize_plain_text(cleaned[previous_end:]))
+    return "".join(parts)
 
 
 def _repair_parameter_letter(value: str) -> str:
