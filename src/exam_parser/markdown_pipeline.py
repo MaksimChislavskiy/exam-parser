@@ -87,6 +87,11 @@ VISUAL_REFERENCE_PATTERN = re.compile(
 PROTECTED_SYMBOL_PATTERN = re.compile(
     r"(?<![A-Z0-9])(?:[A-Z](?:\d+)?){2,16}(?![A-Z0-9])"
 )
+AMBIGUOUS_ANGLE_NOTATION_PATTERN = re.compile(
+    r"\b(?i:угл[а-яё]*)\s+(?:\$\s*)?"
+    r"(?P<symbol>[A-ZА-ЯЁ][ \t]*[A-ZА-ЯЁ])"
+    r"(?![ \t]*[A-ZА-ЯЁ])(?![a-zа-яё0-9_])"
+)
 NUMBER_PATTERN = re.compile(
     r"(?<![A-Za-zА-Яа-яЁё0-9_])\d+(?:[.,]\d+)?"
     r"(?![A-Za-zА-Яа-яЁё0-9_])"
@@ -634,7 +639,10 @@ def _ensure_condition_fidelity(
     task = _clean_extracted_task(task)
     issues = _condition_fidelity_issues(source_condition, task.condition)
     if not issues:
-        return task
+        return _check_ambiguous_angle_notations(
+            client,
+            task,
+        )
 
     print(
         f"{client.provider_name}: условие задачи {task.task_num} изменено моделью "
@@ -658,7 +666,7 @@ def _ensure_condition_fidelity(
             retry.condition,
         )
         if not retry_issues:
-            return retry
+            return _check_ambiguous_angle_notations(client, retry)
         repeated_correction = _conditions_match(
             task.condition,
             retry.condition,
@@ -688,7 +696,7 @@ def _ensure_condition_fidelity(
                 f"задачи {task.task_num} подтверждена повтором",
                 flush=True,
             )
-            return retry
+            return _check_ambiguous_angle_notations(client, retry)
         issues = retry_issues
 
     print(
@@ -696,11 +704,115 @@ def _ensure_condition_fidelity(
         f"не подтверждена ({'; '.join(issues)}); используется исходный OCR-блок",
         flush=True,
     )
-    return ExtractedTask(
+    fallback = ExtractedTask(
         task_num=task.task_num,
         condition=source_condition,
         image_id=task.image_id,
     )
+    return _check_ambiguous_angle_notations(client, fallback)
+
+
+def _check_ambiguous_angle_notations(
+    client: TaskClient,
+    task: ExtractedTask,
+) -> ExtractedTask:
+    source_condition = task.condition
+    matches = list(
+        AMBIGUOUS_ANGLE_NOTATION_PATTERN.finditer(source_condition)
+    )
+    if not matches:
+        return task
+
+    corrected_condition = source_condition
+    changed = False
+    for match in reversed(matches):
+        start, end = match.span("symbol")
+        source_notation = _canonical_angle_notation(match.group("symbol"))
+        if source_notation is None:
+            continue
+
+        marked_condition = (
+            corrected_condition[:start]
+            + "<angle_to_check>"
+            + corrected_condition[start:end]
+            + "</angle_to_check>"
+            + corrected_condition[end:]
+        )
+        print(
+            f"{client.provider_name}: в условии задачи {task.task_num} "
+            f"обнаружено двухбуквенное обозначение угла {source_notation}; "
+            "две отдельные проверки",
+            flush=True,
+        )
+        try:
+            first = client.check_angle_notation(marked_condition)
+            second = client.check_angle_notation(marked_condition)
+        except Exception as error:
+            print(
+                f"{client.provider_name}: отдельная проверка обозначения "
+                f"{source_notation} в задаче {task.task_num} не завершена "
+                f"({type(error).__name__}: {error}); сохранён исходный OCR-текст",
+                flush=True,
+            )
+            continue
+
+        first_notation = _canonical_angle_notation(
+            first.corrected_notation
+        )
+        second_notation = _canonical_angle_notation(
+            second.corrected_notation
+        )
+        if first_notation is None or first_notation != second_notation:
+            print(
+                f"{client.provider_name}: исправление обозначения "
+                f"{source_notation} в задаче {task.task_num} не подтверждено "
+                "двумя совпавшими проверками; сохранён исходный OCR-текст",
+                flush=True,
+            )
+            continue
+
+        candidate = (
+            corrected_condition[:start]
+            + first_notation
+            + corrected_condition[end:]
+        )
+        if not _is_safe_confirmed_angle_correction(
+            corrected_condition,
+            candidate,
+        ):
+            print(
+                f"{client.provider_name}: предложенное исправление "
+                f"{source_notation} -> {first_notation} в задаче "
+                f"{task.task_num} отклонено контролем точности",
+                flush=True,
+            )
+            continue
+
+        print(
+            f"{client.provider_name}: пропущенная вершина в обозначении угла "
+            f"задачи {task.task_num} подтверждена двумя отдельными проверками "
+            f"({source_notation} -> {first_notation})",
+            flush=True,
+        )
+        corrected_condition = candidate
+        changed = True
+
+    if not changed:
+        return task
+    return ExtractedTask(
+        task_num=task.task_num,
+        condition=corrected_condition,
+        image_id=task.image_id,
+    )
+
+
+def _canonical_angle_notation(value: str | None) -> str | None:
+    if value is None:
+        return None
+    notation = re.sub(r"\s+", "", value).translate(CONFUSABLE_LETTERS).upper()
+    if re.fullmatch(r"[A-Z]{2,3}", notation) is None:
+        return None
+    return notation
 
 
 def _conditions_match(first: str, second: str) -> bool:

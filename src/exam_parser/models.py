@@ -72,6 +72,24 @@ class PageExtraction(BaseModel):
     tasks: list[ExtractedTask]
 
 
+class AngleNotationCheck(BaseModel):
+    """Результат отдельной проверки подозрительного обозначения угла."""
+
+    corrected_notation: str | None = None
+
+    @field_validator("corrected_notation")
+    @classmethod
+    def normalize_corrected_notation(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = re.sub(r"[\s$]", "", value).upper()
+        if re.fullmatch(r"[A-ZА-ЯЁ]{3}", normalized) is None:
+            raise ValueError(
+                "исправленное обозначение угла должно состоять из трёх букв"
+            )
+        return normalized
+
+
 class ExtractedAnswer(BaseModel):
     task_num: str = Field(min_length=1)
     answer: str = Field(min_length=1)

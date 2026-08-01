@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal, Protocol
 
 from .models import (
+    AngleNotationCheck,
     ExtractedAnswer,
     ExtractedTask,
     GeneratedAnswer,
@@ -22,6 +23,11 @@ class TaskClient(Protocol):
         markdown: str,
         image_ids: list[str],
     ) -> list[ExtractedTask]: ...
+
+    def check_angle_notation(
+        self,
+        marked_condition: str,
+    ) -> AngleNotationCheck: ...
 
     def extract_document_answers(self, markdown: str) -> list[ExtractedAnswer]: ...
 

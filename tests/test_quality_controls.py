@@ -92,6 +92,115 @@ class ShortAnswerTests(unittest.TestCase):
 
 
 class ConditionFidelityTests(unittest.TestCase):
+    def test_separately_checks_unchanged_two_letter_angle_notation(self) -> None:
+        source = (
+            "В тупоугольном треугольнике $ ABC $ угол C тупой. "
+            "Докажите, что острые углы $ AB $ и $ ACH $ равны."
+        )
+        task = ExtractedTask(task_num="17", condition=source)
+
+        class _AngleCheckClient:
+            provider_name = "Test"
+
+            def __init__(self) -> None:
+                self.marked_conditions: list[str] = []
+
+            def check_angle_notation(self, marked_condition: str) -> object:
+                self.marked_conditions.append(marked_condition)
+                return SimpleNamespace(corrected_notation="ABC")
+
+        client = _AngleCheckClient()
+
+        result = _ensure_condition_fidelity(client, task, source)
+
+        self.assertEqual(
+            result.condition,
+            "В тупоугольном треугольнике $ ABC $ угол C тупой. "
+            "Докажите, что острые углы $ ABC $ и $ ACH $ равны.",
+        )
+        self.assertEqual(len(client.marked_conditions), 2)
+        self.assertTrue(
+            all(
+                "<angle_to_check>AB</angle_to_check>" in condition
+                for condition in client.marked_conditions
+            )
+        )
+
+    def test_checks_angle_after_accepting_unrelated_spelling_fix(self) -> None:
+        source = (
+            "Рассмотрите функию. Докажите, что углы $PR$ и $QST$ равны."
+        )
+        corrected = ExtractedTask(
+            task_num="14",
+            condition=(
+                "Рассмотрите функцию. Докажите, что углы $PR$ и $QST$ равны."
+            ),
+        )
+
+        class _SpellingAndAngleClient:
+            provider_name = "Test"
+
+            def extract_markdown(
+                self,
+                markdown: str,
+                image_ids: list[str],
+            ) -> list[ExtractedTask]:
+                return [corrected]
+
+            def check_angle_notation(self, marked_condition: str) -> object:
+                return SimpleNamespace(corrected_notation="PQR")
+
+        result = _ensure_condition_fidelity(
+            _SpellingAndAngleClient(),
+            corrected,
+            source,
+        )
+
+        self.assertEqual(
+            result.condition,
+            "Рассмотрите функцию. Докажите, что углы $PQR$ и $QST$ равны.",
+        )
+
+    def test_preserves_angle_when_separate_checks_disagree(self) -> None:
+        source = "Докажите, что углы $PR$ и $QST$ равны."
+        task = ExtractedTask(task_num="14", condition=source)
+        replies = iter(("PQR", "PSR"))
+        client = SimpleNamespace(
+            provider_name="Test",
+            check_angle_notation=lambda marked_condition: SimpleNamespace(
+                corrected_notation=next(replies)
+            ),
+        )
+
+        result = _ensure_condition_fidelity(client, task, source)
+
+        self.assertEqual(result.condition, source)
+
+    def test_preserves_angle_when_separate_check_fails(self) -> None:
+        source = "Докажите, что углы $PR$ и $QST$ равны."
+        task = ExtractedTask(task_num="14", condition=source)
+
+        def fail(marked_condition: str) -> object:
+            raise RuntimeError("service unavailable")
+
+        client = SimpleNamespace(
+            provider_name="Test",
+            check_angle_notation=fail,
+        )
+
+        result = _ensure_condition_fidelity(client, task, source)
+
+        self.assertEqual(result.condition, source)
+
+    def test_does_not_check_two_letter_side_name_as_angle(self) -> None:
+        source = "В треугольнике $ABC$ сторона $AB$ равна 5."
+        task = ExtractedTask(task_num="3", condition=source)
+        client = SimpleNamespace(provider_name="Test")
+
+        result = _ensure_condition_fidelity(client, task, source)
+
+        self.assertEqual(result.condition, source)
+
     def test_detects_reordered_angle_letters(self) -> None:
         issues = _condition_fidelity_issues(
             "Найдите угол АСВ, если А1В1 = 4.",

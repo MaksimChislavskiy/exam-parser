@@ -59,6 +59,27 @@ def _client_with_responses(
 
 
 class DeepSeekStructuredOutputTests(unittest.TestCase):
+    def test_angle_check_uses_dedicated_reasoning_request(self) -> None:
+        client, completions = _client_with_responses(
+            [_response('{"corrected_notation":"ABC"}')]
+        )
+
+        result = client.check_angle_notation(
+            "Углы $<angle_to_check>AB</angle_to_check>$ и $ACH$ равны."
+        )
+
+        self.assertEqual(result.corrected_notation, "ABC")
+        self.assertEqual(
+            completions.calls[0]["extra_body"],
+            {
+                "thinking": {"type": "enabled"},
+                "reasoning_effort": "high",
+            },
+        )
+        prompt = completions.calls[0]["messages"][0]["content"]
+        self.assertIn("<angle_to_check>AB</angle_to_check>", prompt)
+        self.assertIn("corrected_notation=null", prompt)
+
     def test_parses_plain_json(self) -> None:
         parsed = _parse_structured_content(
             '{"tasks":[{"task_num":"1","condition":"Условие","image_id":null}]}',

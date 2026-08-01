@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
 from .models import (
+    AngleNotationCheck,
     DEFAULT_MAX_SOLUTION_CHARS,
     DocumentAnswerExtraction,
     ExtractedAnswer,
@@ -24,6 +25,7 @@ from .task_prompts import (
     SOLUTION_ONLY_PROMPT,
     SOLUTION_PROMPT,
     VERIFICATION_PROMPT,
+    build_angle_notation_check_prompt,
     build_document_answers_prompt,
     build_task_extraction_prompt,
 )
@@ -87,6 +89,17 @@ class DeepSeekTaskClient:
             PageExtraction,
             thinking=False,
         ).tasks
+
+    def check_angle_notation(
+        self,
+        marked_condition: str,
+    ) -> AngleNotationCheck:
+        prompt = build_angle_notation_check_prompt(marked_condition)
+        return self._request_structured(
+            prompt,
+            AngleNotationCheck,
+            thinking=True,
+        )
 
     def extract_document_answers(self, markdown: str) -> list[ExtractedAnswer]:
         prompt = build_document_answers_prompt(markdown)

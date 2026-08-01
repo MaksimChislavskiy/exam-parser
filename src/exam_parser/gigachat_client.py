@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
 from .models import (
+    AngleNotationCheck,
     DocumentAnswerExtraction,
     ExtractedAnswer,
     ExtractedTask,
@@ -21,6 +22,7 @@ from .task_prompts import (
     ANSWER_ONLY_PROMPT,
     SOLUTION_ONLY_PROMPT,
     SOLUTION_PROMPT,
+    build_angle_notation_check_prompt,
     build_document_answers_prompt,
     build_task_extraction_prompt,
 )
@@ -74,6 +76,13 @@ class GigaChatTaskClient:
     ) -> list[ExtractedTask]:
         prompt = build_task_extraction_prompt(markdown, image_ids)
         return self._request_structured(prompt, PageExtraction).tasks
+
+    def check_angle_notation(
+        self,
+        marked_condition: str,
+    ) -> AngleNotationCheck:
+        prompt = build_angle_notation_check_prompt(marked_condition)
+        return self._request_structured(prompt, AngleNotationCheck)
 
     def extract_document_answers(self, markdown: str) -> list[ExtractedAnswer]:
         prompt = build_document_answers_prompt(markdown)
