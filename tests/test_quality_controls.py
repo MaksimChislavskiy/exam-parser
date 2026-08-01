@@ -1310,6 +1310,54 @@ class ConditionArtifactRepairTests(unittest.TestCase):
             ),
         )
 
+    def test_repairs_latin_parameter_confirmed_by_formula(self) -> None:
+        condition = (
+            "Долг увеличивается на $r\\%$. "
+            "Найдите наибольшее значение r, при котором условие выполнено."
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="16"),
+            (
+                "Долг увеличивается на $r\\%$. "
+                "Найдите наибольшее значение $r$, при котором условие "
+                "выполнено."
+            ),
+        )
+
+    def test_repairs_plain_greek_plane_symbol(self) -> None:
+        condition = (
+            "Проведена плоскость α.\n"
+            "<p>а) Докажите, что сечением плоскостью α будет трапеция.</p>\n"
+            "<p>б) Найдите расстояние до плоскости α.</p>"
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="14"),
+            (
+                "Проведена плоскость $\\alpha$.\n"
+                "<p>а) Докажите, что сечением плоскостью $\\alpha$ будет "
+                "трапеция.</p>\n"
+                "<p>б) Найдите расстояние до плоскости $\\alpha$.</p>"
+            ),
+        )
+
+    def test_repairs_plain_radius_definition(self) -> None:
+        condition = "Формула задана, где r — радиус сферы в метрах."
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="9"),
+            "Формула задана, где $r$ — радиус сферы в метрах.",
+        )
+
+    def test_keeps_greek_symbol_outside_plane_context(self) -> None:
+        condition = "Коэффициент α указан в справочных материалах."
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="5"),
+            condition,
+        )
+
     def test_keeps_cyrillic_letter_without_matching_formula_variable(self) -> None:
         condition = (
             "Найдите все значения р, при каждом из которых уравнение "

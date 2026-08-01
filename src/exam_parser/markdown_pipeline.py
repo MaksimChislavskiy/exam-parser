@@ -1281,6 +1281,8 @@ def _repair_known_ocr_defects(value: str) -> str:
     cleaned = _repair_triangular_prism_name(cleaned)
     cleaned = _repair_single_geometry_letter(cleaned)
     cleaned = _repair_geometry_labels_outside_latex(cleaned)
+    cleaned = _repair_plane_symbol(cleaned)
+    cleaned = _repair_radius_definition(cleaned)
     cleaned = _repair_parameter_letter(cleaned)
     cleaned = _repair_subpart_marker(cleaned)
     cleaned = _repair_missing_sentence_punctuation(cleaned)
@@ -1676,7 +1678,7 @@ def _repair_geometry_labels_outside_latex(value: str) -> str:
 def _repair_parameter_letter(value: str) -> str:
     parameter_pattern = re.compile(
         r"(?P<prefix>\bзначени\w*\s+)"
-        r"(?P<letter>[асрху])(?=\s*,?\s*при\b)",
+        r"(?P<letter>[a-zасрху])(?=\s*,?\s*при\b)",
         re.IGNORECASE,
     )
     formula_variables: set[str] = set()
@@ -1693,14 +1695,45 @@ def _repair_parameter_letter(value: str) -> str:
         )
 
     def replace_parameter(match: re.Match[str]) -> str:
-        latin = CYRILLIC_PARAMETER_TO_LATIN.get(
-            match.group("letter").lower()
+        letter = match.group("letter").lower()
+        latin = (
+            letter
+            if letter.isascii()
+            else CYRILLIC_PARAMETER_TO_LATIN.get(letter)
         )
         if latin is None or latin not in formula_variables:
             return match.group(0)
         return f"{match.group('prefix')}${latin}$"
 
     return parameter_pattern.sub(replace_parameter, value)
+
+
+def _repair_plane_symbol(value: str) -> str:
+    """Оборачивает греческое имя плоскости в LaTeX по явному контексту."""
+
+    plane_pattern = re.compile(
+        r"(?P<prefix>\bплоскост[а-яё]*\s+)"
+        r"(?P<symbol>[αβγ])(?![A-Za-zА-Яа-яЁё0-9_])",
+        re.IGNORECASE,
+    )
+
+    def replace_symbol(match: re.Match[str]) -> str:
+        command = GREEK_MATH_SYMBOLS[match.group("symbol").lower()]
+        return f"{match.group('prefix')}$\\{command}$"
+
+    return plane_pattern.sub(replace_symbol, value)
+
+
+def _repair_radius_definition(value: str) -> str:
+    """Восстанавливает LaTeX у определения вида ``r — радиус``."""
+
+    return re.sub(
+        r"(?<![A-Za-zА-Яа-яЁё0-9_$])r"
+        r"(?P<suffix>\s*[—–-]\s*радиус\b)",
+        r"$r$\g<suffix>",
+        value,
+        flags=re.IGNORECASE,
+    )
 
 
 def _repair_missing_sentence_punctuation(value: str) -> str:
