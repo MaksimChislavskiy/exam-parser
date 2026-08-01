@@ -4,12 +4,31 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from PIL import Image, ImageDraw
+
 from exam_parser.markdown_pipeline import (
     _associate_images_with_tasks,
     _image_ids,
     _remove_generated_task_images,
     _resolve_image_id,
 )
+
+
+def _draw_boxed_marker(path: Path) -> None:
+    image = Image.new("RGB", (150, 90), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((5, 5, 145, 85), outline="black", width=4)
+    draw.rectangle((70, 27, 79, 65), fill="black")
+    image.save(path)
+
+
+def _draw_exclamation(path: Path) -> None:
+    image = Image.new("RGB", (200, 200), "white")
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((10, 10, 190, 190), outline="black", width=10)
+    draw.rounded_rectangle((91, 45, 109, 125), radius=8, fill="black")
+    draw.ellipse((91, 142, 109, 160), fill="black")
+    image.save(path)
 
 
 class MarkdownImageTests(unittest.TestCase):
@@ -26,6 +45,27 @@ class MarkdownImageTests(unittest.TestCase):
 
         self.assertEqual(_image_ids(markdown), [])
         self.assertEqual(_associate_images_with_tasks(markdown), {})
+
+    def test_uses_image_content_instead_of_width_when_files_are_available(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            images_dir = Path(temp)
+            _draw_boxed_marker(images_dir / "number.jpg")
+            _draw_exclamation(images_dir / "warning.jpg")
+            diagram = Image.new("RGB", (120, 90), "white")
+            ImageDraw.Draw(diagram).line((10, 75, 110, 15), fill="black", width=4)
+            diagram.save(images_dir / "small-diagram.jpg")
+            markdown = '''
+<img src="imgs/number.jpg" width="7%" />
+<img src="imgs/warning.jpg" width="9%" />
+<img src="imgs/small-diagram.jpg" width="3%" />
+'''
+
+            self.assertEqual(
+                _image_ids(markdown, image_dir=images_dir),
+                ["small-diagram.jpg"],
+            )
 
     def test_associates_image_inside_task_block(self) -> None:
         markdown = '''

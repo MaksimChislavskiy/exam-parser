@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from typing import Literal
 from PIL import Image
 
 from .excel import read_tasks_xlsx, write_tasks_xlsx
+from .image_roles import is_non_content_image
 from .llm_client import LLMProvider, TaskClient, create_task_client
 from .math_text import normalize_ege_short_answer
 from .models import ExtractedAnswer, ExtractedTask, TaskRecord
@@ -25,6 +27,13 @@ class _SourceTaskBlock:
     page_path: Path
     image_id: str | None
     available_image_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ComparableToken:
+    start: int
+    end: int
+    canonical: str
 
 
 IMAGE_PATTERN = re.compile(
@@ -260,8 +269,12 @@ def process_markdown(
             page_num = _page_number(page_path)
             markdown = page_path.read_text(encoding="utf-8")
             all_markdown.append(f"\n\n<!-- PAGE {page_num} -->\n{markdown}")
-            image_ids = _image_ids(markdown)
-            image_by_task = _associate_images_with_tasks(markdown)
+            image_dir = page_path.parent / "imgs"
+            image_ids = _image_ids(markdown, image_dir=image_dir)
+            image_by_task = _associate_images_with_tasks(
+                markdown,
+                image_dir=image_dir,
+            )
             source_by_task = _task_condition_blocks(markdown)
             for task_num, condition in source_by_task.items():
                 source_blocks.setdefault(task_num, []).append(
@@ -1179,6 +1192,7 @@ def _repair_known_ocr_defects(value: str) -> str:
     )
 
     cleaned = _repair_coordinate_separators(cleaned)
+    cleaned = _repair_latex_prose_dash(cleaned)
     cleaned = _repair_derivative_graph_question(cleaned)
     cleaned = _repair_spherical_buoyancy_formula(cleaned)
     cleaned = _repair_triangular_prism_name(cleaned)
@@ -1190,6 +1204,33 @@ def _repair_known_ocr_defects(value: str) -> str:
         flags=re.IGNORECASE,
     )
     return cleaned
+
+
+def _repair_latex_prose_dash(value: str) -> str:
+    """Выносит поясняющий русский текст из ошибочно расширенной формулы."""
+
+    pattern = re.compile(
+        r"^(?P<formula>.+?)\s*[-–—]\s*"
+        r"\\text\s*\{(?P<prose>[^{}]*[А-Яа-яЁё][^{}]*)\}"
+        r"\s*(?P<trailing>.*)$",
+        re.DOTALL,
+    )
+
+    def replace_span(match: re.Match[str]) -> str:
+        body = match.group("body")
+        prose_match = pattern.fullmatch(body.strip())
+        if prose_match is None:
+            return match.group(0)
+
+        formula = prose_match.group("formula").strip()
+        prose = re.sub(r"\s+", " ", prose_match.group("prose")).strip()
+        trailing = prose_match.group("trailing").strip()
+        result = f"${formula}$ — {prose}"
+        if trailing:
+            result += f" ${trailing}$"
+        return result
+
+    return LATEX_SPAN_PATTERN.sub(replace_span, value)
 
 
 def _repair_coordinate_separators(value: str) -> str:
@@ -1296,24 +1337,85 @@ def _repair_triangular_prism_name(value: str) -> str:
 
 
 def _repair_subpart_marker(value: str) -> str:
-    has_first = re.search(r"(?:^|<p>)\s*а\)", value, re.IGNORECASE | re.MULTILINE)
-    has_third = re.search(r"(?:^|<p>)\s*в\)", value, re.IGNORECASE | re.MULTILINE)
+    cleaned = _normalize_subpart_letters(value)
+    has_first = re.search(
+        r"(?:^|<p>)\s*а\)",
+        cleaned,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    has_third = re.search(
+        r"(?:^|<p>|[.!?]\s+)\s*в\)",
+        cleaned,
+        re.IGNORECASE | re.MULTILINE,
+    )
     if has_first is None or has_third is None:
-        return value
+        return cleaned
 
     cleaned = re.sub(
         r"(?<!\d)6\)(?=\s*[А-ЯЁ])",
         "б)",
-        value,
-        count=1,
-    )
-    return re.sub(
-        r"<p>\s*(а\).*?[.!?])\s+(б\).*?)</p>",
-        r"<p>\1</p>\n<p>\2</p>",
         cleaned,
         count=1,
-        flags=re.IGNORECASE | re.DOTALL,
     )
+    return _split_html_subparts(cleaned)
+
+
+def _normalize_subpart_letters(value: str) -> str:
+    aliases = {
+        "a": "а",
+        "b": "б",
+        "c": "в",
+        "v": "в",
+        "d": "г",
+        "e": "д",
+        "f": "е",
+    }
+    marker_pattern = re.compile(
+        r"(?P<prefix>^|<p>\s*|(?<=[.!?])\s+)"
+        r"(?P<label>[a-fvа-е])\)\s+(?=[А-ЯЁ])",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    matches = list(marker_pattern.finditer(value))
+    normalized_labels = [
+        aliases.get(match.group("label").lower(), match.group("label").lower())
+        for match in matches
+    ]
+    if len(matches) < 2 or normalized_labels[:2] != ["а", "б"]:
+        return value
+
+    def replace_marker(match: re.Match[str]) -> str:
+        label = aliases.get(
+            match.group("label").lower(),
+            match.group("label").lower(),
+        )
+        return f"{match.group('prefix')}{label}) "
+
+    return marker_pattern.sub(replace_marker, value)
+
+
+def _split_html_subparts(value: str) -> str:
+    paragraph_pattern = re.compile(r"<p>(?P<body>.*?)</p>", re.IGNORECASE | re.DOTALL)
+    marker_pattern = re.compile(
+        r"(?<!\S)[а-е]\)\s+(?=[А-ЯЁ])",
+        re.IGNORECASE,
+    )
+
+    def split_paragraph(match: re.Match[str]) -> str:
+        body = match.group("body").strip()
+        markers = list(marker_pattern.finditer(body))
+        if len(markers) < 2:
+            return match.group(0)
+
+        parts: list[str] = []
+        prefix = body[: markers[0].start()].strip()
+        if prefix:
+            parts.append(prefix)
+        for index, marker in enumerate(markers):
+            end = markers[index + 1].start() if index + 1 < len(markers) else len(body)
+            parts.append(body[marker.start() : end].strip())
+        return "\n".join(f"<p>{part}</p>" for part in parts if part)
+
+    return paragraph_pattern.sub(split_paragraph, value)
 
 
 def _clean_extracted_task(task: ExtractedTask) -> ExtractedTask:
@@ -1368,9 +1470,10 @@ def _remove_embedded_task_conditions(
             embedded = conditions[other_index]
             if len(embedded) < 80 or len(embedded) >= len(replacement):
                 continue
-            if not replacement.endswith(embedded):
+            cut = _embedded_condition_start(replacement, embedded)
+            if cut is None:
                 continue
-            prefix = replacement[: -len(embedded)].rstrip()
+            prefix = _close_open_paragraphs(replacement[:cut].rstrip())
             if not prefix:
                 continue
             replacement = prefix
@@ -1389,6 +1492,85 @@ def _remove_embedded_task_conditions(
             )
         result.append((task, page_path))
     return result
+
+
+def _embedded_condition_start(value: str, embedded: str) -> int | None:
+    """Находит длинное условие-дубликат при различиях только в разметке.
+
+    DeepSeek может добавить или убрать ``$``/``<p>`` и по-другому оформить
+    градусы. Поэтому сравниваются последовательности слов, обозначений и чисел,
+    а не исходные строки. Короткое частичное совпадение не считается дубликатом.
+    """
+
+    if value.endswith(embedded):
+        return len(value) - len(embedded)
+
+    value_tokens = _comparison_tokens(value)
+    embedded_tokens = _comparison_tokens(embedded)
+    if len(embedded_tokens) < 12 or len(value_tokens) <= len(embedded_tokens):
+        return None
+
+    embedded_values = [token.canonical for token in embedded_tokens]
+    best: tuple[float, int] | None = None
+    for index, token in enumerate(value_tokens):
+        if token.canonical != embedded_values[0]:
+            continue
+        suffix = value_tokens[index:]
+        suffix_values = [item.canonical for item in suffix]
+        matcher = SequenceMatcher(
+            a=suffix_values,
+            b=embedded_values,
+            autojunk=False,
+        )
+        matching = sum(block.size for block in matcher.get_matching_blocks())
+        embedded_coverage = matching / len(embedded_values)
+        suffix_coverage = matching / len(suffix_values)
+        if embedded_coverage < 0.9 or suffix_coverage < 0.85:
+            continue
+        if abs(len(suffix_values) - len(embedded_values)) > max(
+            4,
+            round(len(embedded_values) * 0.12),
+        ):
+            continue
+
+        score = min(embedded_coverage, suffix_coverage)
+        cut = token.start
+        if cut < 40:
+            continue
+        if best is None or score > best[0] or (score == best[0] and cut > best[1]):
+            best = (score, cut)
+    return None if best is None else best[1]
+
+
+def _comparison_tokens(value: str) -> list[_ComparableToken]:
+    comparable = HTML_TAG_PATTERN.sub(
+        lambda match: " " * len(match.group(0)),
+        value,
+    )
+    comparable = LATEX_COMMAND_PATTERN.sub(
+        lambda match: " " * len(match.group(0)),
+        comparable,
+    )
+    result: list[_ComparableToken] = []
+    for match in re.finditer(r"[A-Za-zА-Яа-яЁё0-9]+", comparable):
+        canonical = unicodedata.normalize("NFKC", match.group(0))
+        canonical = canonical.translate(CONFUSABLE_LETTERS).lower().replace("ё", "е")
+        result.append(
+            _ComparableToken(
+                start=match.start(),
+                end=match.end(),
+                canonical=canonical,
+            )
+        )
+    return result
+
+
+def _close_open_paragraphs(value: str) -> str:
+    opened = len(re.findall(r"<p\b[^>]*>", value, re.IGNORECASE))
+    closed = len(re.findall(r"</p>", value, re.IGNORECASE))
+    if opened > closed:
+        value += "</p>" * (opened - closed)
+    return value
 
 
 def _recover_missing_expected_tasks(
@@ -1566,20 +1748,33 @@ def _task_sort_key(task_num: str) -> tuple[int, ...]:
         return (10**9,)
 
 
-def _image_ids(markdown: str) -> list[str]:
+def _image_ids(
+    markdown: str,
+    *,
+    image_dir: Path | None = None,
+) -> list[str]:
     image_ids: list[str] = []
     for match in IMAGE_PATTERN.finditer(markdown):
         markdown_src = match.group("markdown_src")
         if markdown_src:
-            image_ids.append(Path(markdown_src.strip()).name)
+            image_name = Path(markdown_src.strip()).name
+            if image_dir is not None and is_non_content_image(
+                image_dir / image_name
+            ):
+                continue
+            image_ids.append(image_name)
             continue
 
         html_tag = match.group("html") or ""
-        if _is_small_decorative_image(html_tag):
-            continue
         src_match = HTML_SRC_PATTERN.search(html_tag)
         if src_match:
-            image_ids.append(Path(src_match.group(1)).name)
+            image_name = Path(src_match.group(1)).name
+            if image_dir is not None:
+                if is_non_content_image(image_dir / image_name):
+                    continue
+            elif _is_small_decorative_image(html_tag):
+                continue
+            image_ids.append(image_name)
     return image_ids
 
 
@@ -1588,7 +1783,11 @@ def _is_small_decorative_image(html_tag: str) -> bool:
     return bool(width_match and float(width_match.group(1)) <= 5)
 
 
-def _associate_images_with_tasks(markdown: str) -> dict[str, str]:
+def _associate_images_with_tasks(
+    markdown: str,
+    *,
+    image_dir: Path | None = None,
+) -> dict[str, str]:
     headings = list(TASK_HEADING_PATTERN.finditer(markdown))
     associations: dict[str, str] = {}
     visual_tasks: set[str] = set()
@@ -1605,7 +1804,7 @@ def _associate_images_with_tasks(markdown: str) -> dict[str, str]:
         condition = _clean_source_condition(block, task_num=task_num)
         if VISUAL_REFERENCE_PATTERN.search(condition):
             visual_tasks.add(task_num)
-        images = _image_ids(block)
+        images = _image_ids(block, image_dir=image_dir)
         if images:
             associations[task_num] = images[0]
 

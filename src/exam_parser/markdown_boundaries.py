@@ -5,6 +5,8 @@ import shutil
 from collections.abc import Iterable
 from pathlib import Path
 
+from .image_roles import is_boxed_task_number_image
+
 
 TASK_HEADING_PATTERN = re.compile(
     r"(?m)^[ \t]*((?:1[0-9]|[1-9])(?:\.\d+)*)"
@@ -21,6 +23,15 @@ TRAILING_SERVICE_PATTERN = re.compile(
     r"Проверьте,\s*чтобы\s+каждый\s+ответ|"
     r"Проверьте,\s*чтобы\s+ответ\s+на\s+каждое\s+задание"
     r").*$"
+)
+HTML_IMAGE_BLOCK_PATTERN = re.compile(
+    r"(?im)^[ \t]*(?:<div\b[^>\n]*>\s*)?"
+    r"(?P<tag><img\b[^>\n]*>)"
+    r"(?:\s*</div>)?[ \t]*(?:\n|$)"
+)
+HTML_SRC_PATTERN = re.compile(
+    r"src=[\"'](?:imgs/)?([^\"']+)[\"']",
+    re.IGNORECASE,
 )
 
 
@@ -56,6 +67,7 @@ def normalize_task_boundaries(
                 markdown,
                 next_task_num=next_task_num,
                 in_short_answer_part=in_short_answer_part,
+                image_dir=page_path.parent / "imgs",
             )
             if normalized != markdown:
                 replacements[page_path] = normalized
@@ -113,6 +125,7 @@ def _normalize_page(
     *,
     next_task_num: int | None,
     in_short_answer_part: bool,
+    image_dir: Path | None = None,
 ) -> tuple[str, int | None, bool]:
     part_one = PART_ONE_PATTERN.search(markdown)
     part_two = PART_TWO_PATTERN.search(markdown)
@@ -139,7 +152,7 @@ def _normalize_page(
             in_short_answer_part = False
         return markdown, next_task_num, in_short_answer_part
 
-    insertions: list[tuple[int, str]] = []
+    edits: list[tuple[int, int, str]] = []
     previous_answer_end = 0
 
     for answer_index, answer_line in enumerate(answer_lines):
@@ -147,18 +160,32 @@ def _normalize_page(
         leading_length = len(segment) - len(segment.lstrip())
         segment_content = segment[leading_length:]
         heading = TASK_HEADING_PATTERN.match(segment_content)
+        boxed_markers = _boxed_task_marker_blocks(segment, image_dir)
 
         if heading is not None:
             heading_num = heading.group(1)
             if "." not in heading_num:
                 next_task_num = int(heading_num)
+        elif len(boxed_markers) == 1 and next_task_num is not None:
+            marker = boxed_markers[0]
+            edits.append(
+                (
+                    previous_answer_end + marker.start(),
+                    previous_answer_end + marker.end(),
+                    f"{next_task_num}. ",
+                )
+            )
         elif (
             (answer_index > 0 or continues_previous_page)
             and next_task_num is not None
             and segment_content
         ):
-            insertions.append(
-                (previous_answer_end + leading_length, f"{next_task_num}. ")
+            edits.append(
+                (
+                    previous_answer_end + leading_length,
+                    previous_answer_end + leading_length,
+                    f"{next_task_num}. ",
+                )
             )
 
         if next_task_num is not None:
@@ -169,14 +196,32 @@ def _normalize_page(
     if service_match is not None:
         short_part = short_part[: service_match.start()].rstrip() + "\n"
 
-    for position, value in reversed(insertions):
-        if position <= len(short_part):
-            short_part = short_part[:position] + value + short_part[position:]
+    for start, end, value in reversed(edits):
+        if end <= len(short_part):
+            short_part = short_part[:start] + value + short_part[end:]
 
     if part_two is not None:
         in_short_answer_part = False
 
     return short_part + suffix, next_task_num, in_short_answer_part
+
+
+def _boxed_task_marker_blocks(
+    value: str,
+    image_dir: Path | None,
+) -> list[re.Match[str]]:
+    if image_dir is None:
+        return []
+
+    result: list[re.Match[str]] = []
+    for match in HTML_IMAGE_BLOCK_PATTERN.finditer(value):
+        src_match = HTML_SRC_PATTERN.search(match.group("tag"))
+        if src_match is None:
+            continue
+        image_path = image_dir / Path(src_match.group(1)).name
+        if is_boxed_task_number_image(image_path):
+            result.append(match)
+    return result
 
 
 def _page_number(path: Path) -> int:

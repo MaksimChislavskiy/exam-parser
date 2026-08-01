@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -13,7 +14,8 @@ TASK_HEADING_PATTERN = re.compile(
     r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-я])|[ \t]*$)"
 )
 PDF_TASK_HEADING_PATTERN = re.compile(
-    r"(?m)^[ \t]*((?:1[0-9]|[1-9]))\.[ \t]+"
+    r"(?m)^[ \t]*((?:1[0-9]|[1-9]))"
+    r"(?P<separator>\.[ \t]+|[ \t]*$)"
 )
 GEOMETRY_TOKEN_PATTERN = re.compile(
     r"(?<![A-Za-zА-Яа-яЁё0-9_])"
@@ -21,6 +23,7 @@ GEOMETRY_TOKEN_PATTERN = re.compile(
     r"(?![A-Za-zА-Яа-яЁё0-9_])"
 )
 INDEX_PATTERN = re.compile(r"([A-Z])(\d+)")
+RUSSIAN_WORD_PATTERN = re.compile(r"[А-Яа-яЁё]{6,}")
 CONFUSABLE_LETTERS = str.maketrans(
     {
         "А": "A",
@@ -82,12 +85,12 @@ def repair_markdown_from_pdf(
     markdown_dir: str | Path,
     repaired_dir: str | Path,
 ) -> Path:
-    """Исправляет точечные OCR-ошибки в геометрических обозначениях.
+    """Исправляет точечные OCR-ошибки по текстовому слою PDF.
 
     Markdown остаётся главным источником формул и структуры. Текстовый слой PDF
     используется только для замены близких обозначений в одинаковой позиции,
-    например ``ABC`` -> ``ACB``, ``APO`` -> ``APQ`` или восстановления одного
-    потерянного символа в длинном обозначении.
+    например ``ABC`` -> ``ACB``, восстановления одного потерянного символа в
+    длинном обозначении и однобуквенных опечаток в длинных русских словах.
     """
 
     pdf_path = Path(pdf_path)
@@ -146,7 +149,7 @@ def repair_markdown_from_pdf(
 
     for location, old, new in all_changes:
         print(
-            f"PDF-текст: {location}, исправлено обозначение {old} -> {new}",
+            f"PDF-текст: {location}, исправлено {old} -> {new}",
             flush=True,
         )
 
@@ -175,6 +178,11 @@ def _repair_page(
             markdown_block.text,
             pdf_block.text,
         )
+        repaired, word_changes = _reconcile_block_words(
+            repaired,
+            pdf_block.text,
+        )
+        changes.extend(word_changes)
         if repaired != markdown_block.text:
             page_changes.append(
                 (
@@ -228,6 +236,79 @@ def _reconcile_reference_symbols(
         reference_symbols,
         allow_equal_length=False,
     )
+
+
+def _reconcile_block_words(
+    markdown_block: str,
+    pdf_block: str,
+) -> tuple[str, list[tuple[str, str]]]:
+    """Исправляет по PDF только близкие однобуквенные OCR-опечатки."""
+
+    markdown_tokens = _russian_word_tokens(markdown_block)
+    pdf_tokens = _russian_word_tokens(pdf_block)
+    if not markdown_tokens or not pdf_tokens:
+        return markdown_block, []
+
+    matcher = SequenceMatcher(
+        a=[token.canonical for token in markdown_tokens],
+        b=[token.canonical for token in pdf_tokens],
+        autojunk=False,
+    )
+    replacements: list[tuple[int, int, str, str, str]] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != "replace" or i2 - i1 != j2 - j1:
+            continue
+        for markdown_token, pdf_token in zip(
+            markdown_tokens[i1:i2],
+            pdf_tokens[j1:j2],
+        ):
+            if not _safe_word_replacement(
+                markdown_token.canonical,
+                pdf_token.canonical,
+            ):
+                continue
+            replacements.append(
+                (
+                    markdown_token.start,
+                    markdown_token.end,
+                    pdf_token.text,
+                    markdown_token.text,
+                    pdf_token.text,
+                )
+            )
+
+    if not replacements:
+        return markdown_block, []
+
+    result = markdown_block
+    changes: list[tuple[str, str]] = []
+    for start, end, replacement, old, new in reversed(replacements):
+        result = result[:start] + replacement + result[end:]
+        changes.append((old, new))
+    changes.reverse()
+    return result, changes
+
+
+def _russian_word_tokens(value: str) -> list[_Token]:
+    return [
+        _Token(
+            start=match.start(),
+            end=match.end(),
+            text=match.group(0),
+            canonical=match.group(0).lower().replace("ё", "е"),
+        )
+        for match in RUSSIAN_WORD_PATTERN.finditer(value)
+    ]
+
+
+def _safe_word_replacement(old: str, new: str) -> bool:
+    if old == new or min(len(old), len(new)) < 6:
+        return False
+    if abs(len(old) - len(new)) > 1:
+        return False
+    if len(old) == len(new):
+        return sum(left != right for left, right in zip(old, new)) == 1
+    return _is_single_character_insertion_or_deletion(old, new)
 
 
 def _reconcile_symbol_tokens(
@@ -398,7 +479,8 @@ def _pdf_geometry_word_groups(words: list[_PdfWord]) -> list[list[_PdfWord]]:
 
 
 def _is_pdf_geometry_word(value: str) -> bool:
-    compact = re.sub(r"[^A-Za-zА-ЯЁа-яё0-9]", "", value)
+    normalized = unicodedata.normalize("NFKC", value)
+    compact = re.sub(r"[^A-Za-zА-ЯЁа-яё0-9]", "", normalized)
     if not compact or any(character.islower() for character in compact):
         return False
     canonical = _canonical_symbol(compact)
@@ -464,7 +546,8 @@ def _geometry_tokens(value: str) -> list[_Token]:
 
 
 def _canonical_symbol(value: str) -> str:
-    text = value.upper().translate(CONFUSABLE_LETTERS)
+    text = unicodedata.normalize("NFKC", value)
+    text = text.upper().translate(CONFUSABLE_LETTERS)
     return re.sub(r"[^A-Z0-9]", "", text)
 
 
@@ -482,6 +565,8 @@ def _task_blocks(
     heading_pattern: re.Pattern[str] = TASK_HEADING_PATTERN,
 ) -> list[_TaskBlock]:
     headings = list(heading_pattern.finditer(value))
+    if heading_pattern is PDF_TASK_HEADING_PATTERN:
+        headings = _select_pdf_task_headings(headings)
     result: list[_TaskBlock] = []
     for index, heading in enumerate(headings):
         start = heading.end()
@@ -495,6 +580,45 @@ def _task_blocks(
             )
         )
     return result
+
+
+def _select_pdf_task_headings(
+    headings: list[re.Match[str]],
+) -> list[re.Match[str]]:
+    """Выбирает последовательные номера и отбрасывает числа из формул.
+
+    В одних PDF номер задачи заканчивается точкой, в других стоит отдельной
+    строкой. Одиночное число в формуле тоже может занимать строку, но оно не
+    входит в последовательность соседних номеров заданий.
+    """
+
+    if len(headings) < 2:
+        if not headings:
+            return []
+        separator = headings[0].groupdict().get("separator", "")
+        return headings if separator.lstrip().startswith(".") else []
+
+    best: list[re.Match[str]] = []
+    best_dotted = -1
+    for start_index, start in enumerate(headings):
+        chain = [start]
+        expected = int(start.group(1)) + 1
+        for candidate in headings[start_index + 1 :]:
+            number = int(candidate.group(1))
+            if number == expected:
+                chain.append(candidate)
+                expected += 1
+        dotted = sum(
+            match.groupdict().get("separator", "").lstrip().startswith(".")
+            for match in chain
+        )
+        if len(chain) > len(best) or (
+            len(chain) == len(best) and dotted > best_dotted
+        ):
+            best = chain
+            best_dotted = dotted
+
+    return best if len(best) >= 2 else headings
 
 
 def _page_number(path: Path) -> int:

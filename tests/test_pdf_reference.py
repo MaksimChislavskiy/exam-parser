@@ -6,6 +6,7 @@ from exam_parser.pdf_reference import (
     PDF_TASK_HEADING_PATTERN,
     _pdf_geometry_symbols,
     _reconcile_block_symbols,
+    _reconcile_block_words,
     _reconcile_reference_symbols,
     _repair_page,
     _task_blocks,
@@ -42,6 +43,15 @@ class _FakePdfPage:
                     }
                 ]
             }
+        raise AssertionError(f"Неожиданный формат: {kind}")
+
+
+class _MathItalicPdfPage:
+    def get_text(self, kind: str):
+        if kind == "words":
+            return [(0, 0, 100, 10, "𝐴𝐵𝐶𝐷𝐴1𝐵1𝐶1𝐷1", 0, 0, 0)]
+        if kind == "rawdict":
+            return {"blocks": []}
         raise AssertionError(f"Неожиданный формат: {kind}")
 
 
@@ -94,6 +104,23 @@ class PdfReferenceTests(unittest.TestCase):
         symbols = _pdf_geometry_symbols(_FakePdfPage())
 
         self.assertEqual(symbols, ["ABCDA1B1C1D1"])
+
+    def test_pdf_math_italic_geometry_letters_are_normalized(self) -> None:
+        symbols = _pdf_geometry_symbols(_MathItalicPdfPage())
+
+        self.assertEqual(symbols, ["ABCDA1B1C1D1"])
+
+    def test_repairs_single_character_spelling_error_from_pdf(self) -> None:
+        repaired, changes = _reconcile_block_words(
+            "Окружность пересекает гипотензу треугольника.",
+            "Окружность пересекает гипотенузу треугольника.",
+        )
+
+        self.assertEqual(
+            repaired,
+            "Окружность пересекает гипотенузу треугольника.",
+        )
+        self.assertEqual(changes, [("гипотензу", "гипотенузу")])
 
     def test_page_fallback_repairs_only_missing_character(self) -> None:
         markdown = "В кубе $ABCD_1B_1C_1D_1$."
@@ -163,6 +190,14 @@ class PdfReferenceTests(unittest.TestCase):
 
         self.assertEqual([block.task_num for block in blocks], ["1", "2"])
         self.assertIn("Найдите угол АСВ", blocks[0].text)
+
+    def test_single_standalone_page_number_is_not_a_task_heading(self) -> None:
+        blocks = _task_blocks(
+            "Справочные материалы.\n1\n",
+            heading_pattern=PDF_TASK_HEADING_PATTERN,
+        )
+
+        self.assertEqual(blocks, [])
 
     def test_repairs_angle_after_split_formula_number_in_pdf(self) -> None:
         markdown = (

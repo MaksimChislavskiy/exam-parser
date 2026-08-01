@@ -911,6 +911,68 @@ class EmbeddedTaskConditionTests(unittest.TestCase):
 
         self.assertEqual(_remove_embedded_task_conditions(extracted), extracted)
 
+    def test_removes_same_condition_with_different_html_and_latex_formatting(
+        self,
+    ) -> None:
+        page_path = Path("page_6.md")
+        task_14 = (
+            "Точки $A$, $B$ и $C$ лежат на окружности основания конуса.\n"
+            "<p>а) Докажите утверждение.</p>\n"
+            "<p>б) Найдите высоту, если угол равен $60^\\circ$.</p>"
+        )
+        task_13 = (
+            "<p>а) Решите уравнение.</p>\n"
+            "<p>б) Найдите корни.  Точки $A$, B и C лежат на окружности "
+            "основания конуса.</p>\n"
+            "<p>а) Докажите утверждение.</p>\n"
+            "<p>б) Найдите высоту, если угол равен 60°.</p>"
+        )
+        extracted = [
+            (ExtractedTask(task_num="13", condition=task_13), page_path),
+            (ExtractedTask(task_num="14", condition=task_14), page_path),
+        ]
+
+        cleaned = _remove_embedded_task_conditions(extracted)
+        by_number = {task.task_num: task for task, _ in cleaned}
+
+        self.assertEqual(
+            by_number["13"].condition,
+            "<p>а) Решите уравнение.</p>\n<p>б) Найдите корни.</p>",
+        )
+        self.assertEqual(by_number["14"].condition, task_14)
+
+
+class ConditionArtifactRepairTests(unittest.TestCase):
+    def test_moves_explanatory_prose_out_of_latex_span(self) -> None:
+        condition = (
+            "$y=f'(x) - \\text{производной функции } f(x)$, "
+            "определённой на интервале."
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="8"),
+            (
+                "$y=f'(x)$ — производной функции $f(x)$, "
+                "определённой на интервале."
+            ),
+        )
+
+    def test_repairs_transliterated_third_subpart_and_splits_html(self) -> None:
+        condition = (
+            "<p>a) Может ли результат удвоиться?</p>\n"
+            "<p>b) Может ли результат увеличиться в пять раз?  "
+            "v) В какое наибольшее число раз он может увеличиться?</p>"
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="19"),
+            (
+                "<p>а) Может ли результат удвоиться?</p>\n"
+                "<p>б) Может ли результат увеличиться в пять раз?</p>\n"
+                "<p>в) В какое наибольшее число раз он может увеличиться?</p>"
+            ),
+        )
+
 
 class DeepSeekQualityTests(unittest.TestCase):
     def test_long_solution_retries_in_compact_mode(self) -> None:
