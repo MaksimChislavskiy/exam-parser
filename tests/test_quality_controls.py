@@ -103,6 +103,67 @@ class ShortAnswerTests(unittest.TestCase):
 
 
 class ConditionFidelityTests(unittest.TestCase):
+    def test_detects_omitted_single_letter_prose_word(self) -> None:
+        source = (
+            "Плотность жидкости равна $\\rho=1000$, а $g=9,8$ — "
+            "ускорение свободного падения."
+        )
+        candidate = (
+            "Плотность жидкости равна $\\rho=1000$, $g=9,8$ — "
+            "ускорение свободного падения."
+        )
+
+        self.assertIn(
+            "изменен текст: утрачено а",
+            _condition_fidelity_issues(source, candidate),
+        )
+
+    def test_rejects_twice_repeated_single_letter_word_omission(self) -> None:
+        source = (
+            "Плотность жидкости равна $\\rho=1000$, а $g=9,8$ — "
+            "ускорение свободного падения."
+        )
+        changed = ExtractedTask(
+            task_num="9",
+            condition=(
+                "Плотность жидкости равна $\\rho=1000$, $g=9,8$ — "
+                "ускорение свободного падения."
+            ),
+        )
+        client = SimpleNamespace(
+            provider_name="Test",
+            extract_markdown=lambda markdown, image_ids: [changed],
+        )
+
+        result = _ensure_condition_fidelity(client, changed, source)
+
+        self.assertEqual(result.condition, source)
+
+    def test_spelling_fix_cannot_hide_single_letter_word_omission(self) -> None:
+        source = "Рассмотрите функию, а затем найдите её значение."
+        changed = ExtractedTask(
+            task_num="8",
+            condition="Рассмотрите функцию, затем найдите её значение.",
+        )
+        client = SimpleNamespace(
+            provider_name="Test",
+            extract_markdown=lambda markdown, image_ids: [changed],
+        )
+
+        result = _ensure_condition_fidelity(client, changed, source)
+
+        self.assertEqual(result.condition, source)
+
+    def test_ignores_single_letter_inside_latex_as_prose(self) -> None:
+        source = "Пусть $а=1$. Найдите значение выражения."
+        candidate = "Пусть $a=1$. Найдите значение выражения."
+
+        issues = _condition_fidelity_issues(source, candidate)
+
+        self.assertFalse(
+            any(issue.startswith("изменен текст:") for issue in issues)
+        )
+
     def test_separately_checks_unchanged_two_letter_angle_notation(self) -> None:
         source = (
             "В тупоугольном треугольнике $ ABC $ угол C тупой. "
@@ -954,6 +1015,52 @@ class EmbeddedTaskConditionTests(unittest.TestCase):
 
 
 class ConditionArtifactRepairTests(unittest.TestCase):
+    def test_restores_terminal_period_before_answer_field(self) -> None:
+        blocks = _task_condition_blocks(
+            "6. Найдите корень уравнения $x^2=4$\n"
+            "Ответ: ____________________.\n"
+            "7. Найдите значение выражения.\n"
+            "Ответ: ____________________."
+        )
+
+        self.assertEqual(
+            blocks["6"],
+            "Найдите корень уравнения $x^2=4$.",
+        )
+        self.assertEqual(blocks["7"], "Найдите значение выражения.")
+
+    def test_preserves_question_mark_before_answer_field(self) -> None:
+        blocks = _task_condition_blocks(
+            "4. Какова вероятность события?\nОтвет: ____________."
+        )
+
+        self.assertEqual(blocks["4"], "Какова вероятность события?")
+
+    def test_restores_terminal_period_inside_html_paragraph(self) -> None:
+        blocks = _task_condition_blocks(
+            "6. <p>Найдите значение выражения $x+1$</p>\n"
+            "Ответ: ____________."
+        )
+
+        self.assertEqual(
+            blocks["6"],
+            "<p>Найдите значение выражения $x+1$.</p>",
+        )
+
+    def test_does_not_add_terminal_period_without_answer_field(self) -> None:
+        blocks = _task_condition_blocks(
+            "17. <p>а) Докажите, что углы равны</p>\n"
+            "<p>б) Найдите длину стороны.</p>"
+        )
+
+        self.assertEqual(
+            blocks["17"],
+            (
+                "<p>а) Докажите, что углы равны</p>\n"
+                "<p>б) Найдите длину стороны.</p>"
+            ),
+        )
+
     def test_moves_explanatory_prose_out_of_latex_span(self) -> None:
         condition = (
             "$y=f'(x) - \\text{производной функции } f(x)$, "

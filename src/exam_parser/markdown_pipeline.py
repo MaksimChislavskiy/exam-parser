@@ -79,10 +79,17 @@ LATEX_SPAN_PATTERN = re.compile(r"\$(?P<body>.*?)\$", re.DOTALL)
 LATEX_COMMAND_PATTERN = re.compile(r"\\(?P<name>[A-Za-z]+)")
 LATEX_TEXT_PATTERN = re.compile(r"\\text\s*\{[^{}]*\}")
 RUSSIAN_WORD_PATTERN = re.compile(r"[А-Яа-яЁё]{2,}")
+RUSSIAN_SINGLE_LETTER_PATTERN = re.compile(
+    r"(?<![А-Яа-яЁё])[А-Яа-яЁё](?![А-Яа-яЁё])"
+)
 GEOMETRY_WORD_PATTERN = re.compile(
     r"(?<![A-Za-zА-Яа-яЁё0-9_])"
     r"(?:[A-ZА-ЯЁ](?:\s*_?\s*(?:\{\s*\d+\s*\}|\d+))?){2,16}"
     r"(?![A-Za-zА-Яа-яЁё0-9_])"
+)
+INDEXED_GEOMETRY_LETTER_PATTERN = re.compile(
+    r"(?<![A-Za-zА-Яа-яЁё0-9_])[A-ZА-ЯЁ]"
+    r"(?=\s*_?\s*(?:\{\s*\d+\s*\}|\d+))"
 )
 CHECKBOX_TASK_PREFIX_PATTERN = r"[☐□▢◻◼▪■]+\s*{task_num}(?:[.)])?\s+"
 DUPLICATED_PHRASE_PATTERN = re.compile(
@@ -861,6 +868,10 @@ def _is_safe_confirmed_spelling_correction(
         not issue.startswith("изменен текст:") for issue in issues
     ):
         return False
+    if Counter(_russian_single_letter_tokens(source)) != Counter(
+        _russian_single_letter_tokens(candidate)
+    ):
+        return False
 
     source_words = _russian_word_tokens(source)
     candidate_words = _russian_word_tokens(candidate)
@@ -893,8 +904,8 @@ def _is_safe_confirmed_angle_correction(
 ) -> bool:
     if Counter(_numeric_tokens(source)) != Counter(_numeric_tokens(candidate)):
         return False
-    if Counter(_russian_word_tokens(source)) != Counter(
-        _russian_word_tokens(candidate)
+    if Counter(_russian_fidelity_tokens(source)) != Counter(
+        _russian_fidelity_tokens(candidate)
     ):
         return False
     if Counter(_sentence_punctuation_tokens(source)) != Counter(
@@ -994,8 +1005,8 @@ def _condition_fidelity_issues(source: str, candidate: str) -> list[str]:
     if number_changes:
         issues.append(f"изменены числа: {number_changes}")
 
-    source_words = Counter(_russian_word_tokens(source))
-    candidate_words = Counter(_russian_word_tokens(candidate))
+    source_words = Counter(_russian_fidelity_tokens(source))
+    candidate_words = Counter(_russian_fidelity_tokens(candidate))
     word_changes = _format_counter_changes(source_words, candidate_words)
     if word_changes:
         issues.append(f"изменен текст: {word_changes}")
@@ -1057,6 +1068,28 @@ def _russian_word_tokens(value: str) -> list[str]:
     return [
         match.group(0).lower().replace("ё", "е")
         for match in RUSSIAN_WORD_PATTERN.finditer(text)
+    ]
+
+
+def _russian_fidelity_tokens(value: str) -> list[str]:
+    """Возвращает русские слова, включая односимвольные слова в прозе.
+
+    Однобуквенные обозначения внутри LaTeX не считаются словами, чтобы не путать
+    математические символы с русской прозой. В обычном тексте даже короткие
+    союзы и предлоги важны для дословного сохранения условия.
+    """
+
+    return _russian_word_tokens(value) + _russian_single_letter_tokens(value)
+
+
+def _russian_single_letter_tokens(value: str) -> list[str]:
+    prose = LATEX_SPAN_PATTERN.sub(" ", value)
+    prose = HTML_TAG_PATTERN.sub(" ", prose)
+    prose = GEOMETRY_WORD_PATTERN.sub(" ", prose)
+    prose = INDEXED_GEOMETRY_LETTER_PATTERN.sub(" ", prose)
+    return [
+        match.group(0).lower().replace("ё", "е")
+        for match in RUSSIAN_SINGLE_LETTER_PATTERN.finditer(prose)
     ]
 
 
@@ -1137,11 +1170,39 @@ def _task_condition_blocks(markdown: str) -> dict[str, str]:
 
 
 def _clean_source_condition(value: str, *, task_num: str | None = None) -> str:
+    has_answer_field = ANSWER_LINE_PATTERN.search(value) is not None
     cleaned = SERVICE_LINE_PATTERN.sub(" ", value)
     cleaned = IMAGE_PATTERN.sub(" ", cleaned)
     cleaned = ANSWER_LINE_PATTERN.sub(" ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    return _normalize_condition_artifacts(cleaned.strip(), task_num=task_num)
+    cleaned = _normalize_condition_artifacts(cleaned.strip(), task_num=task_num)
+    if has_answer_field:
+        cleaned = _restore_terminal_punctuation(cleaned)
+    return cleaned
+
+
+def _restore_terminal_punctuation(value: str) -> str:
+    """Восстанавливает точку у условия перед отдельным полем ответа.
+
+    Само наличие поля ответа проверяет вызывающая функция. Поэтому правило не
+    переписывает произвольные подпункты и срабатывает только на явной границе
+    короткого задания.
+    """
+
+    if not value:
+        return value
+
+    visible = HTML_TAG_PATTERN.sub("", value).rstrip()
+    if not visible or visible[-1] in ".!?…:;":
+        return value
+
+    trailing_tags = re.search(r"(?:\s*</[^>]+>\s*)*$", value)
+    insertion = trailing_tags.start() if trailing_tags is not None else len(value)
+    prefix = value[:insertion].rstrip()
+    suffix = value[insertion:]
+    if not prefix:
+        return value
+    return prefix + "." + suffix
 
 
 def _normalize_condition_artifacts(value: str, *, task_num: str | None) -> str:
