@@ -346,6 +346,10 @@ def process_markdown(
 
         records = []
         for task, page_path in extracted:
+            # Последний детерминированный барьер перед Excel: повторный ответ
+            # модели и удаление склеенного соседнего условия не должны оставить
+            # в итоговом файле уже известные OCR-артефакты.
+            task = _clean_extracted_task(task)
             image_name = _copy_task_image(
                 page_path,
                 task.image_id,
@@ -1275,6 +1279,7 @@ def _repair_known_ocr_defects(value: str) -> str:
     cleaned = _repair_derivative_graph_question(cleaned)
     cleaned = _repair_spherical_buoyancy_formula(cleaned)
     cleaned = _repair_triangular_prism_name(cleaned)
+    cleaned = _repair_single_geometry_letter(cleaned)
     cleaned = _repair_parameter_letter(cleaned)
     cleaned = _repair_subpart_marker(cleaned)
     cleaned = _repair_missing_sentence_punctuation(cleaned)
@@ -1504,6 +1509,29 @@ def _repeated_triangular_prism_name(
     return "".join(base) + "".join(
         f"{letter}_{formatted_index}" for letter in base
     )
+
+
+def _repair_single_geometry_letter(value: str) -> str:
+    """Переводит одиночную метку геометрического объекта в LaTeX.
+
+    OCR и модель могут записать латинскую вершину кириллическим двойником,
+    например ``угол С`` вместо ``угол $C$``. Контекст математического
+    существительного позволяет исправить метку, не заменяя такие же буквы в
+    обычной русской прозе.
+    """
+
+    label_pattern = re.compile(
+        r"(?P<prefix>\b(?i:угол|угл[а-яё]*|точк[а-яё]*|вершин[а-яё]*|"
+        r"центр[а-яё]*)\s+)"
+        r"(?P<label>[A-ZАВСДЕНКМОРТХУ])"
+        r"(?![A-Za-zА-Яа-яЁё0-9_])"
+    )
+
+    def replace_label(match: re.Match[str]) -> str:
+        label = match.group("label").translate(CONFUSABLE_LETTERS)
+        return f"{match.group('prefix')}${label}$"
+
+    return label_pattern.sub(replace_label, value)
 
 
 def _repair_parameter_letter(value: str) -> str:

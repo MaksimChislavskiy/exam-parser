@@ -8,6 +8,7 @@ from unittest.mock import patch
 from exam_parser.deepseek_client import DeepSeekTaskClient
 from exam_parser.markdown_pipeline import (
     _SourceTaskBlock,
+    _clean_extracted_task,
     _condition_fidelity_issues,
     _ensure_condition_fidelity,
     _generate_solutions_and_answers,
@@ -187,7 +188,7 @@ class ConditionFidelityTests(unittest.TestCase):
 
         self.assertEqual(
             result.condition,
-            "В тупоугольном треугольнике $ ABC $ угол C тупой. "
+            "В тупоугольном треугольнике $ ABC $ угол $C$ тупой. "
             "Докажите, что острые углы $ ABC $ и $ ACH $ равны.",
         )
         self.assertEqual(len(client.marked_conditions), 2)
@@ -443,7 +444,13 @@ class ConditionFidelityTests(unittest.TestCase):
 
         result = _ensure_condition_fidelity(client, corrected, source)
 
-        self.assertEqual(result.condition, corrected.condition)
+        self.assertEqual(
+            result.condition,
+            (
+                "В тупоугольном треугольнике $ABC$ угол $C$ тупой. "
+                "Докажите, что острые углы $ABC$ и $ACH$ равны."
+            ),
+        )
 
     def test_accepts_missing_middle_angle_vertex_for_other_labels(self) -> None:
         source = "Докажите, что углы $PR$ и $QST$ равны."
@@ -627,8 +634,8 @@ class ConditionFidelityTests(unittest.TestCase):
                     "В треугольнике $ABC$ утопил С тупой. "
                     "Докажите, что острые углы $AB$ и $ACH$ равны."
                 ),
-                ("угол С тупой",),
-                ("утопил",),
+                ("угол $C$ тупой",),
+                ("утопил", "угол С"),
             ),
             (
                 "0510-19",
@@ -770,7 +777,10 @@ class ConditionFidelityTests(unittest.TestCase):
                 "Найдите наибольшее значение r."
             ),
         )
-        self.assertEqual(blocks["17"], "В треугольнике ABC угол C тупой.")
+        self.assertEqual(
+            blocks["17"],
+            "В треугольнике ABC угол $C$ тупой.",
+        )
 
 
 class _MissingTaskClient:
@@ -1015,6 +1025,45 @@ class EmbeddedTaskConditionTests(unittest.TestCase):
 
 
 class ConditionArtifactRepairTests(unittest.TestCase):
+    def test_repairs_cyrillic_single_geometry_letter_in_math_context(self) -> None:
+        condition = (
+            "В треугольнике $ABC$ угол С тупой. "
+            "Точка Р лежит вне треугольника."
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="17"),
+            (
+                "В треугольнике $ABC$ угол $C$ тупой. "
+                "Точка $P$ лежит вне треугольника."
+            ),
+        )
+
+    def test_keeps_same_cyrillic_letter_in_ordinary_prose(self) -> None:
+        condition = "С вершиной пирамиды соединена середина ребра."
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="14"),
+            condition,
+        )
+
+    def test_final_task_cleanup_reapplies_all_condition_repairs(self) -> None:
+        task = ExtractedTask(
+            task_num="18",
+            condition=(
+                "Найдите все значения р, при каждом из которых уравнение "
+                "$x^2-p=0$ имеет корень."
+            ),
+        )
+
+        self.assertEqual(
+            _clean_extracted_task(task).condition,
+            (
+                "Найдите все значения $p$, при каждом из которых уравнение "
+                "$x^2-p=0$ имеет корень."
+            ),
+        )
+
     def test_restores_terminal_period_before_answer_field(self) -> None:
         blocks = _task_condition_blocks(
             "6. Найдите корень уравнения $x^2=4$\n"
