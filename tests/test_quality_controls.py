@@ -1061,6 +1061,31 @@ class ConditionArtifactRepairTests(unittest.TestCase):
             ),
         )
 
+    def test_repairs_coordinated_sides_and_intersecting_segment(self) -> None:
+        condition = (
+            "$BP$ и $CP$ — перпендикуляры к сторонам $AB$ и АС "
+            "соответственно, причём СР пересекает сторону $AB$."
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="17"),
+            (
+                "$BP$ и $CP$ — перпендикуляры к сторонам $AB$ и $AC$ "
+                "соответственно, причём $CP$ пересекает сторону $AB$."
+            ),
+        )
+
+    def test_keeps_labels_outside_matching_geometry_context(self) -> None:
+        condition = (
+            "Компании ООО и РОМ соответственно завершили проверку, "
+            "причём РОМ пересекает границу рынка."
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="17"),
+            condition,
+        )
+
     def test_repairs_point_list_while_preserving_existing_latex(self) -> None:
         condition = (
             "Точки $K$, М и P — середины сторон $AB$, $BC$ и $AC$ "

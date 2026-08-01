@@ -1593,6 +1593,24 @@ def _repair_geometry_labels_outside_latex(value: str) -> str:
     cleaned = point_triple_pattern.sub(replace_point_triple, value)
     cleaned = point_pair_pattern.sub(replace_point_pair, cleaned)
 
+    geometry_pair_pattern = re.compile(
+        rf"(?P<prefix>\b(?i:сторон[а-яё]*|ребр[а-яё]*|"
+        rf"отрезк[а-яё]*|прям[а-яё]*)\s+)"
+        rf"(?P<first>{point_atom_source})(?P<and>\s+и\s+)"
+        rf"(?P<second>{point_atom_source})"
+        rf"(?=\s*(?:соответственно\b|[.,;]))",
+    )
+
+    def replace_geometry_pair(match: re.Match[str]) -> str:
+        return (
+            match.group("prefix")
+            + format_point_atom(match.group("first"))
+            + match.group("and")
+            + format_point_atom(match.group("second"))
+        )
+
+    cleaned = geometry_pair_pattern.sub(replace_geometry_pair, cleaned)
+
     angle_pair_pattern = re.compile(
         rf"(?P<prefix>\b(?i:(?:остр[а-яё]*\s+)?угл[а-яё]*)\s+)"
         rf"(?P<first>{label_source})(?P<and>\s+и\s+)"
@@ -1608,6 +1626,13 @@ def _repair_geometry_labels_outside_latex(value: str) -> str:
         rf"(?<![A-Za-zА-Яа-яЁё0-9_$])(?P<label>{label_source})"
         rf"(?=\s*=\s*[+-]?\d)"
     )
+    intersecting_label_pattern = re.compile(
+        rf"(?P<prefix>\b(?i:прич[её]м)\s+)"
+        rf"(?P<label>{label_source})"
+        rf"(?=\s+(?i:пересекает)\s+"
+        rf"(?i:сторон[а-яё]*|отрез[а-яё]*|прям[а-яё]*|"
+        rf"окружност[а-яё]*))"
+    )
 
     def normalize_plain_text(text: str) -> str:
         text = angle_pair_pattern.sub(
@@ -1620,6 +1645,12 @@ def _repair_geometry_labels_outside_latex(value: str) -> str:
             text,
         )
         text = geometry_noun_pattern.sub(
+            lambda match: (
+                match.group("prefix") + format_label(match.group("label"))
+            ),
+            text,
+        )
+        text = intersecting_label_pattern.sub(
             lambda match: (
                 match.group("prefix") + format_label(match.group("label"))
             ),
