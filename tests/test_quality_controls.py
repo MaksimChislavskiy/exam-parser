@@ -243,6 +243,82 @@ class ConditionFidelityTests(unittest.TestCase):
 
         self.assertEqual(result.condition, corrected.condition)
 
+    def test_accepts_twice_confirmed_missing_angle_vertex(self) -> None:
+        source = (
+            "В тупоугольном треугольнике $ ABC $ угол C тупой. "
+            "Докажите, что острые углы $ AB $ и $ ACH $ равны."
+        )
+        corrected = ExtractedTask(
+            task_num="17",
+            condition=(
+                "В тупоугольном треугольнике $ABC$ угол C тупой. "
+                "Докажите, что острые углы $ABC$ и $ACH$ равны."
+            ),
+        )
+        client = SimpleNamespace(
+            provider_name="Test",
+            extract_markdown=lambda markdown, image_ids: [corrected],
+        )
+
+        result = _ensure_condition_fidelity(client, corrected, source)
+
+        self.assertEqual(result.condition, corrected.condition)
+
+    def test_accepts_missing_middle_angle_vertex_for_other_labels(self) -> None:
+        source = "Докажите, что углы $PR$ и $QST$ равны."
+        corrected = ExtractedTask(
+            task_num="14",
+            condition="Докажите, что углы $PQR$ и $QST$ равны.",
+        )
+        client = SimpleNamespace(
+            provider_name="Test",
+            extract_markdown=lambda markdown, image_ids: [corrected],
+        )
+
+        result = _ensure_condition_fidelity(client, corrected, source)
+
+        self.assertEqual(result.condition, corrected.condition)
+
+    def test_does_not_guess_missing_angle_vertex_without_confirmation(
+        self,
+    ) -> None:
+        condition = "Докажите, что углы $AB$ и $ACH$ равны."
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="17"),
+            condition,
+        )
+
+    def test_rejects_twice_confirmed_added_letter_in_side_name(self) -> None:
+        source = "В треугольнике $ABC$ сторона $AB$ равна 5."
+        changed = ExtractedTask(
+            task_num="17",
+            condition="В треугольнике $ABC$ сторона $ABC$ равна 5.",
+        )
+        client = SimpleNamespace(
+            provider_name="Test",
+            extract_markdown=lambda markdown, image_ids: [changed],
+        )
+
+        result = _ensure_condition_fidelity(client, changed, source)
+
+        self.assertEqual(result.condition, source)
+
+    def test_rejects_twice_confirmed_replaced_angle_points(self) -> None:
+        source = "Докажите, что углы $AB$ и $ACH$ равны."
+        changed = ExtractedTask(
+            task_num="17",
+            condition="Докажите, что углы $ACD$ и $ACH$ равны.",
+        )
+        client = SimpleNamespace(
+            provider_name="Test",
+            extract_markdown=lambda markdown, image_ids: [changed],
+        )
+
+        result = _ensure_condition_fidelity(client, changed, source)
+
+        self.assertEqual(result.condition, source)
+
     def test_rejects_twice_repeated_meaning_sensitive_word_change(self) -> None:
         source = "Укажите длину наибольшого из промежутков."
         changed = ExtractedTask(
@@ -370,8 +446,8 @@ class ConditionFidelityTests(unittest.TestCase):
                     "В треугольнике $ABC$ утопил С тупой. "
                     "Докажите, что острые углы $AB$ и $ACH$ равны."
                 ),
-                ("угол С тупой", "углы $ABC$ и $ACH$"),
-                ("утопил", "углы $AB$ и $ACH$"),
+                ("угол С тупой",),
+                ("утопил",),
             ),
             (
                 "0510-19",

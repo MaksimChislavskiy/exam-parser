@@ -659,15 +659,32 @@ def _ensure_condition_fidelity(
         )
         if not retry_issues:
             return retry
-        if (
-            _conditions_match(task.condition, retry.condition)
+        repeated_correction = _conditions_match(
+            task.condition,
+            retry.condition,
+        )
+        spelling_correction = (
+            repeated_correction
             and _is_safe_confirmed_spelling_correction(
                 source_condition,
                 retry.condition,
             )
-        ):
+        )
+        angle_correction = (
+            repeated_correction
+            and _is_safe_confirmed_angle_correction(
+                source_condition,
+                retry.condition,
+            )
+        )
+        if spelling_correction or angle_correction:
+            correction_description = (
+                "очевидная OCR-опечатка"
+                if spelling_correction
+                else "пропущенная вершина в обозначении угла"
+            )
             print(
-                f"{client.provider_name}: очевидная OCR-опечатка в условии "
+                f"{client.provider_name}: {correction_description} в условии "
                 f"задачи {task.task_num} подтверждена повтором",
                 flush=True,
             )
@@ -727,6 +744,82 @@ def _is_safe_confirmed_spelling_correction(
             changed_words += 1
 
     return 0 < changed_words <= 6
+
+
+def _is_safe_confirmed_angle_correction(
+    source: str,
+    candidate: str,
+) -> bool:
+    if Counter(_numeric_tokens(source)) != Counter(_numeric_tokens(candidate)):
+        return False
+    if Counter(_russian_word_tokens(source)) != Counter(
+        _russian_word_tokens(candidate)
+    ):
+        return False
+    if Counter(_sentence_punctuation_tokens(source)) != Counter(
+        _sentence_punctuation_tokens(candidate)
+    ):
+        return False
+
+    source_canonical = _canonical_fidelity_text(source)
+    candidate_canonical = _canonical_fidelity_text(candidate)
+    source_matches = list(PROTECTED_SYMBOL_PATTERN.finditer(source_canonical))
+    candidate_matches = list(
+        PROTECTED_SYMBOL_PATTERN.finditer(candidate_canonical)
+    )
+    if len(source_matches) != len(candidate_matches):
+        return False
+
+    changed_indices = [
+        index
+        for index, (source_match, candidate_match) in enumerate(
+            zip(source_matches, candidate_matches)
+        )
+        if source_match.group(0) != candidate_match.group(0)
+    ]
+    if len(changed_indices) != 1:
+        return False
+
+    changed_index = changed_indices[0]
+    source_symbol = source_matches[changed_index].group(0)
+    candidate_symbol = candidate_matches[changed_index].group(0)
+    if not (
+        re.fullmatch(r"[A-Z]{2}", source_symbol)
+        and re.fullmatch(r"[A-Z]{3}", candidate_symbol)
+        and len(set(candidate_symbol)) == 3
+        and any(
+            candidate_symbol[:index] + candidate_symbol[index + 1 :]
+            == source_symbol
+            for index in range(len(candidate_symbol))
+        )
+    ):
+        return False
+
+    candidate_match = candidate_matches[changed_index]
+    prefix = HTML_TAG_PATTERN.sub(
+        " ",
+        candidate_canonical[: candidate_match.start()],
+    )
+    if re.search(r"\bугл[а-яё]*\s*$", prefix, re.IGNORECASE) is None:
+        return False
+
+    source_math = Counter(_math_fidelity_tokens(source))
+    candidate_math = Counter(_math_fidelity_tokens(candidate))
+    inserted_letter = next(
+        (
+            candidate_symbol[index]
+            for index in range(len(candidate_symbol))
+            if candidate_symbol[:index] + candidate_symbol[index + 1 :]
+            == source_symbol
+        ),
+        None,
+    )
+    if inserted_letter is None:
+        return False
+    return (
+        not source_math - candidate_math
+        and candidate_math - source_math == Counter([inserted_letter])
+    )
 
 
 def _is_sensitive_word(value: str) -> bool:
@@ -972,13 +1065,6 @@ def _repair_known_ocr_defects(value: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     )
-    if re.search(r"треугольник\w*\s+\$ABC\$", cleaned, re.IGNORECASE):
-        cleaned = re.sub(
-            r"(острые\s+углы\s+)\$AB\$(\s+и\s+\$ACH\$)",
-            r"\1$ABC$\2",
-            cleaned,
-            flags=re.IGNORECASE,
-        )
 
     cleaned = _repair_coordinate_separators(cleaned)
     cleaned = _repair_derivative_graph_question(cleaned)
