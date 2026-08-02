@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.scripts]
-exam-parser = "exam_parser.cli:main"
+exam-parser = "exam_parser.entrypoint:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
