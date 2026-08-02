@@ -19,9 +19,27 @@ def test_removes_two_embedded_conditions_in_sequence() -> None:
     page = Path("page_3.md")
 
     extracted = [
-        (ExtractedTask("13", own + condition_14 + condition_15), page),
-        (ExtractedTask("14", condition_14), page),
-        (ExtractedTask("15", condition_15), page),
+        (
+            ExtractedTask(
+                task_num="13",
+                condition=own + condition_14 + condition_15,
+            ),
+            page,
+        ),
+        (
+            ExtractedTask(
+                task_num="14",
+                condition=condition_14,
+            ),
+            page,
+        ),
+        (
+            ExtractedTask(
+                task_num="15",
+                condition=condition_15,
+            ),
+            page,
+        ),
     ]
 
     repaired = remove_embedded_task_conditions(extracted)
