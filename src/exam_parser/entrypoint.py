@@ -4,7 +4,7 @@ from __future__ import annotations
 def main() -> None:
     """Запускает CLI после подключения детерминированных исправлений."""
 
-    from .pipeline_runtime_v5 import install_runtime_repairs
+    from .pipeline_runtime_v6 import install_runtime_repairs
 
     install_runtime_repairs()
 
