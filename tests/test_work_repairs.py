@@ -135,7 +135,7 @@ def test_radiator_units_are_restored_only_in_radiator_context() -> None:
         r"$c=4200\frac{\mathrm{B t}\cdot\mathrm{c}}{"
         r"\mathrm{k g}\cdot^{\circ}\mathrm{C}}$, "
         r"$\gamma=42\frac{\mathrm{B t}}{\mathrm{M}\cdot^{\circ}\mathrm{C}}$ "
-        "— коэффициент теплообмена, $a=\alpha=1,6$ — постоянная."
+        r"— коэффициент теплообмена, $a=\alpha=1,6$ — постоянная."
     )
     repaired = repair_ocr_context(source)
     assert r"T_{\mathrm{п}}" in repaired
