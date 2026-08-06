@@ -26,6 +26,11 @@ PART_TWO_PATTERN = re.compile(
     r"<div[^>]*>\s*Часть\s*2\s*</div>)",
     re.IGNORECASE | re.MULTILINE,
 )
+_DUPLICATE_TASK_PREFIX_PATTERN = re.compile(
+    r"^[ \t]*(?P<num>(?:1[0-9]|[1-9]))\.[ \t]+"
+    r"(?P=num)(?=[ \t\n])",
+    re.MULTILINE,
+)
 _INSTALLED = False
 
 
@@ -85,7 +90,10 @@ def repair_long_task_boundaries(
     replacements: dict[Path, str] = {}
     for group in groups:
         source_texts = [path.read_text(encoding="utf-8") for path in group]
-        repaired_texts = repair_page_group(source_texts)
+        repaired_texts = [
+            _remove_duplicate_task_prefixes(value)
+            for value in repair_page_group(source_texts)
+        ]
         for path, source, repaired in zip(group, source_texts, repaired_texts):
             if source != repaired:
                 replacements[path] = repaired
@@ -105,6 +113,13 @@ def repair_long_task_boundaries(
         )
         target.write_text(repaired, encoding="utf-8")
     return normalized_dir
+
+
+def _remove_duplicate_task_prefixes(value: str) -> str:
+    return _DUPLICATE_TASK_PREFIX_PATTERN.sub(
+        lambda match: f"{match.group('num')}. ",
+        value,
+    )
 
 
 def _resolve_groups(
