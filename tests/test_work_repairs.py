@@ -142,10 +142,11 @@ def test_cyrillic_b_reference_is_restored_only_with_real_subparts() -> None:
         "<p>а) Докажите утверждение.</p>\n"
         "<p>б) Найдите значение.</p>\n"
         "<p>в) Найдите наибольшее число, удовлетворяющее условиям "
-        "пунктов а и 6).</p>"
+        "пунктов а и6).</p>"
     )
     repaired = repair_condition_ocr(source)
-    assert "пунктов а и б)" in repaired
+    assert "пунктов а и б" in repaired
+    assert "пунктов а и6)" not in repaired
 
     unrelated = "а) Перечислите случаи.\n6) Шестой случай оставьте без изменений."
     assert repair_condition_ocr(unrelated) == unrelated
