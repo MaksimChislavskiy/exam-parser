@@ -161,6 +161,16 @@ def test_solution_images_are_not_associated_with_task_conditions() -> None:
     assert associate_condition_images(markdown) == {}
 
 
+def test_diagram_after_blank_answer_field_stays_with_task() -> None:
+    markdown = (
+        "1. Первая задача с чертежом.\n"
+        "Ответ: ___.\n\n"
+        "![Чертёж](imgs/diagram.png)\n\n"
+        "2. Вторая задача без чертежа."
+    )
+    assert associate_condition_images(markdown) == {"1": "diagram.png"}
+
+
 def test_misordered_geometry_image_moves_from_next_nonvisual_task() -> None:
     markdown = (
         "1. В остроугольном треугольнике ABC проведены высоты AA1 и BB1. "
