@@ -44,6 +44,25 @@ _ABSOLUTE_DISTANCE_SYSTEM_PATTERN = re.compile(
     r"\s*$",
     re.DOTALL,
 )
+_SUBPART_A_PATTERN = re.compile(
+    r"(?:^|<p>\s*|(?:\r?\n)+\s*)а\)\s+(?=[А-ЯЁ])",
+    re.IGNORECASE | re.MULTILINE,
+)
+_SUBPART_B_PATTERN = re.compile(
+    r"(?:^|<p>\s*|(?:\r?\n)+\s*)б\)\s+(?=[А-ЯЁ])",
+    re.IGNORECASE | re.MULTILINE,
+)
+_SUBPART_SIX_PATTERN = re.compile(
+    r"(?P<prefix>^|<p>\s*|(?:\r?\n)+\s*)"
+    r"(?P<label>6)\)\s+"
+    r"(?=(?:Докажите|Найдите|Определите|Вычислите|Решите|Укажите|"
+    r"Постройте|Исследуйте)\b)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_SUBPART_REFERENCE_SIX_PATTERN = re.compile(
+    r"(?P<prefix>\bпункт(?:ов|а|е|ах)\s+а\s+и\s+)6\)",
+    re.IGNORECASE,
+)
 
 
 def repair_condition_ocr(value: str) -> str:
@@ -56,6 +75,7 @@ def repair_condition_ocr(value: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     )
+    cleaned = _repair_contextual_subparts(cleaned)
     cleaned = _repair_latex_systems(cleaned)
     return cleaned
 
@@ -102,6 +122,40 @@ def _repair_contextual_words(value: str) -> str:
         cleaned,
     )
     cleaned = _JULY_DEADLINE_PATTERN.sub(_repair_july_deadline, cleaned)
+    return cleaned
+
+
+def _repair_contextual_subparts(value: str) -> str:
+    """Исправляет OCR-подмену кириллической ``б`` цифрой ``6``.
+
+    Замена маркера разрешена только после уже найденного подпункта ``а)`` и
+    только в начале отдельного подпункта с типичным глаголом задания. Ссылка
+    вида ``пунктов а и 6)`` исправляется лишь когда в том же условии уже есть
+    настоящие маркеры ``а)`` и ``б)``. Это не затрагивает обычные числовые
+    списки и произвольные упоминания числа 6.
+    """
+
+    first = _SUBPART_A_PATTERN.search(value)
+    if first is None:
+        return value
+
+    cleaned = value
+    if _SUBPART_B_PATTERN.search(cleaned) is None:
+        candidates = [
+            match
+            for match in _SUBPART_SIX_PATTERN.finditer(cleaned)
+            if match.start("label") > first.end()
+        ]
+        if len(candidates) == 1:
+            match = candidates[0]
+            start, end = match.span("label")
+            cleaned = cleaned[:start] + "б" + cleaned[end:]
+
+    if _SUBPART_B_PATTERN.search(cleaned) is not None:
+        cleaned = _SUBPART_REFERENCE_SIX_PATTERN.sub(
+            lambda match: match.group("prefix") + "б)",
+            cleaned,
+        )
     return cleaned
 
 
