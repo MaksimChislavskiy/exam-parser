@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .source_repairs import condition_source_prefix
+from .source_repairs import image_source_prefix
 
 
 _VISUAL_CUE_PATTERN = re.compile(
@@ -45,12 +45,13 @@ def associate_condition_images(
     *,
     image_dir: Path | None = None,
 ) -> dict[str, str]:
-    """Связывает задачи только с картинками из области их условий.
+    """Связывает задачи только с картинками, относящимися к их условиям.
 
-    Изображения после ``Ответ``/``Решение`` не являются частью условия и
-    исключаются до привязки. Если OCR поместил чертёж сразу в текстовый блок
-    следующей не-визуальной задачи, картинка может быть возвращена предыдущей
-    задаче только при сильном геометрическом контексте предыдущего условия.
+    Заполненный ответ и раздел ``Ответ``/``Решение`` отсекают картинки решения.
+    Пустое поле ``Ответ: ___`` не отсекает последующий рисунок, потому что в
+    экзаменационной вёрстке чертёж исходной задачи может находиться ниже поля
+    для записи ответа. Если OCR перенёс чертёж в начало следующей не-визуальной
+    задачи, он возвращается предыдущей только при сильном контексте рисунка.
     """
 
     from . import markdown_pipeline as pipeline
@@ -59,7 +60,6 @@ def associate_condition_images(
     associations: dict[str, str] = {}
     explicit_visual_tasks: set[str] = set()
     strong_geometry_tasks: set[str] = set()
-    conditions: dict[str, str] = {}
     ordered_task_nums: list[str] = []
 
     for index, heading in enumerate(headings):
@@ -69,7 +69,7 @@ def associate_condition_images(
             else len(markdown)
         )
         raw_block = markdown[heading.end() : block_end]
-        condition_block = condition_source_prefix(raw_block)
+        image_block = image_source_prefix(raw_block)
         task_num = heading.group(1)
         ordered_task_nums.append(task_num)
 
@@ -77,14 +77,13 @@ def associate_condition_images(
             raw_block,
             task_num=task_num,
         )
-        conditions[task_num] = condition
         if _VISUAL_CUE_PATTERN.search(condition):
             explicit_visual_tasks.add(task_num)
         if _strong_geometry_context(condition):
             strong_geometry_tasks.add(task_num)
 
         images = pipeline._image_ids(
-            condition_block,
+            image_block,
             image_dir=image_dir,
         )
         if images:
