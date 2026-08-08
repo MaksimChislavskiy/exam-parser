@@ -60,7 +60,7 @@ _SUBPART_SIX_PATTERN = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _SUBPART_REFERENCE_SIX_PATTERN = re.compile(
-    r"(?P<prefix>\bпункт(?:ов|а|е|ах)\s+а\s+и\s+)6\)",
+    r"(?P<prefix>\bпункт(?:ов|а|е|ах)\s+а\s+и)\s*6\)",
     re.IGNORECASE,
 )
 
@@ -131,8 +131,10 @@ def _repair_contextual_subparts(value: str) -> str:
     Замена маркера разрешена только после уже найденного подпункта ``а)`` и
     только в начале отдельного подпункта с типичным глаголом задания. Ссылка
     вида ``пунктов а и 6)`` исправляется лишь когда в том же условии уже есть
-    настоящие маркеры ``а)`` и ``б)``. Это не затрагивает обычные числовые
-    списки и произвольные упоминания числа 6.
+    настоящие маркеры ``а)`` и ``б)``. При ссылке пробел после ``и`` может быть
+    потерян OCR; он восстанавливается вместе с буквой, а скобка маркера в
+    обычной фразе удаляется. Это не затрагивает обычные числовые списки и
+    произвольные упоминания числа 6.
     """
 
     first = _SUBPART_A_PATTERN.search(value)
@@ -153,7 +155,7 @@ def _repair_contextual_subparts(value: str) -> str:
 
     if _SUBPART_B_PATTERN.search(cleaned) is not None:
         cleaned = _SUBPART_REFERENCE_SIX_PATTERN.sub(
-            lambda match: match.group("prefix") + "б)",
+            lambda match: match.group("prefix") + " б",
             cleaned,
         )
     return cleaned
