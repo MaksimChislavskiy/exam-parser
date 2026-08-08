@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from exam_parser.boundary_repairs import ANSWER_LINE_PATTERN
 from exam_parser.boundary_rules import repair_page_group
+from exam_parser.condition_repairs import repair_condition_ocr
+from exam_parser.image_repairs import associate_condition_images
 from exam_parser.ocr_context_repairs import repair_ocr_context
 from exam_parser.source_repairs import install_source_repairs
 
@@ -94,6 +96,90 @@ def test_source_condition_stops_before_answer_and_solution() -> None:
     assert markdown_pipeline._clean_source_condition(source) == (
         "Найдите все значения параметра."
     )
+
+
+def test_source_condition_stops_at_answer_field_and_drops_punctuation_html() -> None:
+    install_source_repairs()
+    from exam_parser import markdown_pipeline
+
+    source = (
+        "Найдите угол. Ответ дайте в градусах\n\n"
+        '<div style="text-align: center;">Ответ:</div>\n'
+        '<div style="text-align: center;">. </div>'
+    )
+    assert markdown_pipeline._clean_source_condition(source) == (
+        "Найдите угол. Ответ дайте в градусах."
+    )
+
+
+def test_part_two_instruction_is_not_appended_to_previous_condition() -> None:
+    install_source_repairs()
+    from exam_parser import markdown_pipeline
+
+    source = (
+        "Найдите значение выражения.\n\n"
+        '<div style="text-align: center;">Часть 2</div>\n\n'
+        "Для записи решений и ответов на задания 13–19 используйте "
+        "отдельный лист."
+    )
+    assert markdown_pipeline._clean_source_condition(source) == (
+        "Найдите значение выражения."
+    )
+
+
+def test_cyrillic_b_subpart_is_restored_from_six_marker() -> None:
+    source = (
+        "<p>а) Докажите, что точки лежат на одной окружности.</p>\n"
+        "<p>6) Найдите длину отрезка EL.</p>"
+    )
+    repaired = repair_condition_ocr(source)
+    assert "<p>б) Найдите длину отрезка EL.</p>" in repaired
+    assert "6) Найдите" not in repaired
+
+
+def test_cyrillic_b_reference_is_restored_only_with_real_subparts() -> None:
+    source = (
+        "<p>а) Докажите утверждение.</p>\n"
+        "<p>б) Найдите значение.</p>\n"
+        "<p>в) Найдите наибольшее число, удовлетворяющее условиям "
+        "пунктов а и 6).</p>"
+    )
+    repaired = repair_condition_ocr(source)
+    assert "пунктов а и б)" in repaired
+
+    unrelated = "а) Перечислите случаи.\n6) Шестой случай оставьте без изменений."
+    assert repair_condition_ocr(unrelated) == unrelated
+
+
+def test_solution_images_are_not_associated_with_task_conditions() -> None:
+    markdown = (
+        "5. Найдите вероятность события.\n\n"
+        "Ответ: 0,4\n\n"
+        "![Дерево решения](imgs/solution_tree.png)\n\n"
+        "6. Найдите значение функции."
+    )
+    assert associate_condition_images(markdown) == {}
+
+
+def test_misordered_geometry_image_moves_from_next_nonvisual_task() -> None:
+    markdown = (
+        "1. В остроугольном треугольнике ABC проведены высоты AA1 и BB1. "
+        "Площадь описанного круга равна 16π. Найдите угол ACB.\n\n"
+        "2. ![Чертёж](imgs/diagram.png)\n\n"
+        "Даны векторы a и b, угол между ними равен 120 градусам. "
+        "Найдите квадрат длины вектора c."
+    )
+    assert associate_condition_images(markdown) == {"1": "diagram.png"}
+
+
+def test_image_stays_with_current_task_when_current_condition_is_visual() -> None:
+    markdown = (
+        "1. В треугольнике ABC проведены две высоты и описана окружность. "
+        "Найдите угол.\n\n"
+        "2. ![График](imgs/graph.png)\n\n"
+        "На рисунке изображён график функции. Найдите значение производной."
+    )
+    assert associate_condition_images(markdown) == {"2": "graph.png"}
 
 
 def test_transliterated_extremum_is_restored() -> None:
