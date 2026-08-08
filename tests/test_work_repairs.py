@@ -72,7 +72,8 @@ def test_complete_solution_page_becomes_missing_task_18() -> None:
             (
                 "Найдите все значения параметра, при каждом из которых "
                 "множество точек представляет график функции.\n\n"
-                "## Ответ\n\n$1$\n\n## Решение\n\nПроведём исследование."
+                "## Ответ\n\n$1$\n\n"
+                "## Решение\n\nПроведём исследование."
             ),
             (
                 "19 Юра и Полина играют в числа. Докажите невозможность "
@@ -147,6 +148,15 @@ def test_cyrillic_b_reference_is_restored_only_with_real_subparts() -> None:
     repaired = repair_condition_ocr(source)
     assert "пунктов а и б" in repaired
     assert "пунктов а и6)" not in repaired
+
+    question_mark_source = (
+        "<p>а) Могло ли выполняться условие?</p>\n"
+        "<p>б) Найдите наибольшее значение.</p>\n"
+        "<p>в) Что получится без дополнительного условия пунктов а и 6?</p>"
+    )
+    repaired_question_mark = repair_condition_ocr(question_mark_source)
+    assert "пунктов а и б?</p>" in repaired_question_mark
+    assert "пунктов а и 6?</p>" not in repaired_question_mark
 
     unrelated = "а) Перечислите случаи.\n6) Шестой случай оставьте без изменений."
     assert repair_condition_ocr(unrelated) == unrelated
