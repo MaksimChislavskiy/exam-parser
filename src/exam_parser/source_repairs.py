@@ -24,6 +24,11 @@ _PART_TWO_TAIL_PATTERN = re.compile(
     r"задания[ \t]+\d+[ \t]*[–—-][ \t]*\d+\b",
     re.IGNORECASE | re.MULTILINE,
 )
+_HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+_ANSWER_PREFIX_PATTERN = re.compile(
+    r"^[ \t]*[ОOоo][ТTтt][ВVвv][ЕEеe][ТTтt][ \t]*:[ \t]*",
+    re.IGNORECASE,
+)
 _INSTALLED = False
 
 
@@ -54,13 +59,60 @@ def _first_condition_tail(value: str) -> tuple[int | None, bool]:
     return min(candidates, key=lambda item: item[0])
 
 
+def _answer_field_has_value(answer_line: str) -> bool:
+    """Отличает заполненный ответ от пустого поля для записи ответа.
+
+    В бланках ЕГЭ рисунок иногда расположен после строки ``Ответ: ___``.
+    Такая строка завершает текст условия, но не должна автоматически отсекать
+    последующий рисунок. В сборниках с решениями ``Ответ: 0,4`` уже содержит
+    реальный ответ и является надёжной границей для изображений решения.
+    """
+
+    plain = _HTML_TAG_PATTERN.sub("", answer_line)
+    payload = _ANSWER_PREFIX_PATTERN.sub("", plain, count=1).strip()
+    if not payload:
+        return False
+
+    # Подчёркивания, точки, тире и похожие знаки считаются пустым полем.
+    placeholder = re.sub(r"[\s_.…—–-]+", "", payload)
+    return bool(placeholder)
+
+
 def condition_source_prefix(value: str) -> str:
-    """Оставляет только область исходного блока, относящуюся к условию."""
+    """Оставляет только текстовую область исходного блока условия."""
 
     tail_start, _ = _first_condition_tail(value)
     if tail_start is None:
         return value
     return value[:tail_start].rstrip()
+
+
+def image_source_prefix(value: str) -> str:
+    """Оставляет область блока, где ещё может находиться рисунок условия.
+
+    Для изображений пустое поле ``Ответ: ___`` не является жёсткой границей:
+    в экзаменационной вёрстке рисунок задачи может идти ниже этого поля. При
+    этом заполненный ответ, отдельный раздел ``Ответ``/``Решение`` и начало
+    следующей части экзамена однозначно отделяют материалы решения.
+    """
+
+    candidates: list[int] = []
+
+    answer = _EXTENDED_ANSWER_LINE_PATTERN.search(value)
+    if answer is not None and _answer_field_has_value(answer.group(0)):
+        candidates.append(answer.start())
+
+    section = _SOLUTION_SECTION_PATTERN.search(value)
+    if section is not None:
+        candidates.append(section.start())
+
+    part_two = _PART_TWO_TAIL_PATTERN.search(value)
+    if part_two is not None:
+        candidates.append(part_two.start())
+
+    if not candidates:
+        return value
+    return value[: min(candidates)].rstrip()
 
 
 def install_source_repairs() -> None:
