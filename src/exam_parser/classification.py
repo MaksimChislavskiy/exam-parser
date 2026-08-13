@@ -169,6 +169,70 @@ def build_classification_correction_prompt(
 """.strip()
 
 
+def build_classification_tiebreak_prompt(
+    records: list[TaskRecord],
+    catalog: ReferenceCatalog,
+    first_assignments: dict[str, ClassificationAssignment],
+    second_assignments: dict[str, ClassificationAssignment],
+) -> str:
+    """Строит арбитраж только между двумя уже прошедшими проверку кандидатами."""
+
+    catalog_by_id = catalog.by_id()
+    blocks: list[str] = []
+    for record in records:
+        first = first_assignments[record.task_num]
+        second = second_assignments[record.task_num]
+        if first.catalog_id == second.catalog_id:
+            raise ValueError(
+                f"Для задачи {record.task_num} арбитраж не нужен: "
+                f"оба прохода выбрали id={first.catalog_id}"
+            )
+
+        first_item = catalog_by_id[first.catalog_id]
+        second_item = catalog_by_id[second.catalog_id]
+        first_chain = " > ".join(
+            f"{item.item_id}:{item.name}"
+            for item in catalog.ancestors(first_item.item_id)
+        )
+        second_chain = " > ".join(
+            f"{item.item_id}:{item.name}"
+            for item in catalog.ancestors(second_item.item_id)
+        )
+        blocks.append(
+            "\n".join(
+                (
+                    f"ЗАДАЧА {record.task_num}",
+                    record.condition,
+                    f"КАНДИДАТ A: id={first_item.item_id} | {first_item.name}",
+                    f"ИЕРАРХИЯ A: {first_chain}",
+                    f"КАНДИДАТ B: id={second_item.item_id} | {second_item.name}",
+                    f"ИЕРАРХИЯ B: {second_chain}",
+                )
+            )
+        )
+
+    disputed_text = "\n\n".join(blocks)
+    return f"""
+Два независимых прохода классификации дали разные, но семантически допустимые
+категории. Для каждой задачи выбери ОДИН из двух предложенных кандидатов.
+
+Это арбитраж, а не новая классификация: запрещено выбирать третий id.
+
+Правила выбора:
+- выбирай категорию, которая точнее описывает фактический математический метод,
+  объект, требуемое действие и искомый результат;
+- если один кандидат является общей категорией или категорией «разные задачи»,
+  а второй конкретно и без противоречий описывает задачу, выбирай конкретный;
+- глубина в дереве сама по себе не доказывает точность: учитывай смысл названия
+  категории и всю показанную цепочку родителей;
+- не делай вывод только по одному слову из условия;
+- верни каждую переданную задачу ровно один раз и не меняй task_num.
+
+СПОРНЫЕ ЗАДАЧИ И ДВА ДОПУСТИМЫХ КАНДИДАТА:
+{disputed_text}
+""".strip()
+
+
 def validate_classification_batch(
     records: list[TaskRecord],
     batch: ClassificationBatch,
@@ -216,6 +280,31 @@ def validate_classification_batch(
             "Классификатор не вернул задачи: " + ", ".join(missing)
         )
 
+    return assignments
+
+
+def validate_classification_tiebreak(
+    records: list[TaskRecord],
+    batch: ClassificationBatch,
+    catalog: ReferenceCatalog,
+    first_assignments: dict[str, ClassificationAssignment],
+    second_assignments: dict[str, ClassificationAssignment],
+) -> dict[str, ClassificationAssignment]:
+    """Не позволяет арбитру выйти за пределы двух исходных кандидатов."""
+
+    assignments = validate_classification_batch(records, batch, catalog)
+    for record in records:
+        chosen = assignments[record.task_num].catalog_id
+        allowed = {
+            first_assignments[record.task_num].catalog_id,
+            second_assignments[record.task_num].catalog_id,
+        }
+        if chosen not in allowed:
+            allowed_text = ", ".join(map(str, sorted(allowed)))
+            raise ValueError(
+                f"Арбитр вернул для задачи {record.task_num} id={chosen}, "
+                f"но разрешены только кандидаты: {allowed_text}"
+            )
     return assignments
 
 
