@@ -10,6 +10,7 @@ from .excel import (
     read_variant_metadata_xlsx,
     write_tasks_xlsx,
 )
+from .models import TaskRecord, VariantMetadata
 from .reference_catalogs import ReferenceCatalog
 
 
@@ -58,10 +59,10 @@ def classify_tasks_workbook(
 
 
 def _write_tasks_atomically(
-    records,
+    records: list[TaskRecord],
     output_path: Path,
     *,
-    about,
+    about: VariantMetadata | None,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = output_path.with_name(
