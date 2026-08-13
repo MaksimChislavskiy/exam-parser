@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .math_text import normalize_geometry_notation, normalize_latex_delimiters
 from .result_quality import (
@@ -194,12 +195,32 @@ class GeneratedAnswer(BaseModel):
         return normalize_result_answer(value)
 
 
+class VariantMetadata(BaseModel):
+    """Метаданные одного экзаменационного варианта для листа about."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    school_class: int | str | None = Field(default=None, alias="class")
+    year: int | None = None
+    date: date | str | None = None
+    topic: int | str | None = None
+    exam_id: int | str | None = None
+    title: str | None = None
+    code: str | None = None
+    source_name: str | None = None
+    is_public: bool | str | None = None
+    source_url: str | None = None
+    description: str | None = None
+
+
 class TaskRecord(BaseModel):
     task_num: str
     condition: str
     image_name: str | None = None
     solution: str = ""
     answer: str = ""
+    exams_id: int | None = None
+    topics_id: int | None = None
 
     @field_validator("condition", "solution")
     @classmethod
