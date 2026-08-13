@@ -16,6 +16,9 @@ from .models import TaskRecord
 from .reference_catalogs import ReferenceCatalog
 
 
+MAX_CORRECTION_ATTEMPTS = 2
+
+
 class CatalogClassifier(Protocol):
     """Провайдер-независимый интерфейс классификации по справочнику."""
 
@@ -56,51 +59,101 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
         )
         reviews = validate_classification_review(records, review_batch)
 
-        rejected_records = [
+        pending_records = [
             record
             for record in records
             if not reviews[record.task_num].is_compatible
         ]
-        if not rejected_records:
+        if not pending_records:
             return batch
 
-        rejected_nums = ", ".join(record.task_num for record in rejected_records)
-        print(
-            f"DeepSeek: уточнение спорных задач: {rejected_nums}",
-            flush=True,
-        )
-        rejected_assignments = {
-            record.task_num: assignments[record.task_num]
-            for record in rejected_records
-        }
-        rejected_reviews = {
-            record.task_num: reviews[record.task_num]
-            for record in rejected_records
-        }
-        correction_prompt = build_classification_correction_prompt(
-            rejected_records,
-            catalog,
-            rejected_assignments,
-            rejected_reviews,
-        )
-        correction_batch = self._request_structured(
-            correction_prompt,
-            ClassificationBatch,
-            thinking=False,
-        )
-        corrected = validate_classification_batch(
-            rejected_records,
-            correction_batch,
-            catalog,
-        )
-
         merged_assignments = dict(assignments)
-        merged_assignments.update(corrected)
-        merged = ClassificationBatch(
-            assignments=[
-                merged_assignments[record.task_num]
-                for record in records
-            ]
+        pending_assignments = {
+            record.task_num: assignments[record.task_num]
+            for record in pending_records
+        }
+        pending_reviews = {
+            record.task_num: reviews[record.task_num]
+            for record in pending_records
+        }
+
+        for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
+            pending_nums = ", ".join(record.task_num for record in pending_records)
+            print(
+                "DeepSeek: уточнение спорных задач "
+                f"(попытка {attempt}/{MAX_CORRECTION_ATTEMPTS}): {pending_nums}",
+                flush=True,
+            )
+            correction_prompt = build_classification_correction_prompt(
+                pending_records,
+                catalog,
+                pending_assignments,
+                pending_reviews,
+            )
+            correction_batch = self._request_structured(
+                correction_prompt,
+                ClassificationBatch,
+                thinking=True,
+            )
+            corrected = validate_classification_batch(
+                pending_records,
+                correction_batch,
+                catalog,
+            )
+
+            print("DeepSeek: повторная проверка уточнений", flush=True)
+            corrected_review_prompt = build_classification_review_prompt(
+                pending_records,
+                correction_batch,
+                catalog,
+            )
+            corrected_review_batch = self._request_structured(
+                corrected_review_prompt,
+                ClassificationReviewBatch,
+                thinking=False,
+            )
+            corrected_reviews = validate_classification_review(
+                pending_records,
+                corrected_review_batch,
+            )
+
+            next_pending_records: list[TaskRecord] = []
+            for record in pending_records:
+                review = corrected_reviews[record.task_num]
+                if review.is_compatible:
+                    merged_assignments[record.task_num] = corrected[record.task_num]
+                else:
+                    next_pending_records.append(record)
+
+            if not next_pending_records:
+                merged = ClassificationBatch(
+                    assignments=[
+                        merged_assignments[record.task_num]
+                        for record in records
+                    ]
+                )
+                validate_classification_batch(records, merged, catalog)
+                return merged
+
+            pending_records = next_pending_records
+            pending_assignments = {
+                record.task_num: corrected[record.task_num]
+                for record in pending_records
+            }
+            pending_reviews = {
+                record.task_num: corrected_reviews[record.task_num]
+                for record in pending_records
+            }
+
+        details = []
+        for record in pending_records:
+            assignment = pending_assignments[record.task_num]
+            review = pending_reviews[record.task_num]
+            issues = "; ".join(review.issues) or "семантическое противоречие"
+            details.append(
+                f"{record.task_num}: id={assignment.catalog_id} ({issues})"
+            )
+        raise ValueError(
+            "DeepSeek не смог подобрать совместимую категорию после "
+            f"{MAX_CORRECTION_ATTEMPTS} попыток: " + "; ".join(details)
         )
-        validate_classification_batch(records, merged, catalog)
-        return merged
