@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_LOCAL_DATA_ROOT = PROJECT_DIR / "data"
+DEFAULT_LOCAL_DATA_ROOT = Path.home() / ".exam-parser-data"
 DATA_ROOT_ENV = "EXAM_PARSER_DATA_ROOT"
 
 
