@@ -7,8 +7,10 @@ from exam_parser.classification import (
     apply_classification_batch,
     build_classification_prompt,
     build_classification_review_prompt,
+    build_classification_tiebreak_prompt,
     validate_classification_batch,
     validate_classification_review,
+    validate_classification_tiebreak,
 )
 from exam_parser.models import TaskRecord
 from exam_parser.reference_catalogs import (
@@ -45,6 +47,12 @@ def _catalog() -> ReferenceCatalog:
                     "name": "Решение равнобедренного треугольника",
                     "parent": "1",
                 },
+            ),
+            CatalogItem(
+                item_id=172,
+                name="Сфера",
+                parent_id=1,
+                raw={"id": "172", "name": "Сфера", "parent": "1"},
             ),
         ),
     )
@@ -122,6 +130,35 @@ def test_review_prompt_detects_semantic_contradictions() -> None:
     assert "искомой величине" in prompt
     assert "задача про куб, а категория явно про сферу" in prompt
     assert "требуется площадь, а категория явно про объём" in prompt
+
+
+def test_tiebreak_prompt_includes_candidate_hierarchies() -> None:
+    records = [TaskRecord(task_num="1", condition="Найдите угол треугольника")]
+    first = {"1": ClassificationAssignment(task_num="1", catalog_id=1)}
+    second = {"1": ClassificationAssignment(task_num="1", catalog_id=171)}
+
+    prompt = build_classification_tiebreak_prompt(records, _catalog(), first, second)
+
+    assert "КАНДИДАТ A: id=1 | Геометрия" in prompt
+    assert "КАНДИДАТ B: id=171 | Решение равнобедренного треугольника" in prompt
+    assert "1:Геометрия > 171:Решение равнобедренного треугольника" in prompt
+    assert "запрещено выбирать третий id" in prompt
+
+
+def test_tiebreak_rejects_third_existing_candidate() -> None:
+    records = [TaskRecord(task_num="1", condition="Найдите угол треугольника")]
+    first = {"1": ClassificationAssignment(task_num="1", catalog_id=1)}
+    second = {"1": ClassificationAssignment(task_num="1", catalog_id=171)}
+    batch = ClassificationBatch(
+        assignments=[ClassificationAssignment(task_num="1", catalog_id=172)]
+    )
+
+    try:
+        validate_classification_tiebreak(records, batch, _catalog(), first, second)
+    except ValueError as error:
+        assert "разрешены только кандидаты: 1, 171" in str(error)
+    else:
+        raise AssertionError("Ожидалась ошибка для третьего кандидата")
 
 
 def test_rejects_hallucinated_catalog_id() -> None:
