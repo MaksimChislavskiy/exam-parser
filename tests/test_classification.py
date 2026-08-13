@@ -3,9 +3,12 @@ from __future__ import annotations
 from exam_parser.classification import (
     ClassificationAssignment,
     ClassificationBatch,
+    ClassificationReviewBatch,
     apply_classification_batch,
     build_classification_prompt,
+    build_classification_review_prompt,
     validate_classification_batch,
+    validate_classification_review,
 )
 from exam_parser.models import TaskRecord
 from exam_parser.reference_catalogs import (
@@ -83,7 +86,7 @@ def test_prompt_prioritizes_mathematical_goal_over_geometry_object() -> None:
     assert "к категории про сечение только потому" in prompt
 
 
-def test_prompt_rejects_specific_category_with_wrong_requested_quantity() -> None:
+def test_prompt_requires_object_and_requested_quantity_to_match() -> None:
     records = [
         TaskRecord(
             task_num="3",
@@ -93,10 +96,31 @@ def test_prompt_rejects_specific_category_with_wrong_requested_quantity() -> Non
 
     prompt = build_classification_prompt(records, _catalog())
 
-    assert "нельзя выбирать категорию про объём" in prompt
-    assert "если требуется площадь" in prompt
-    assert "более общий подходящий узел" in prompt
+    assert "одновременно соответствует" in prompt
+    assert "математическому объекту/теме" in prompt
+    assert "не выбирай категорию только по одному совпавшему слову" in prompt
+    assert "категория про сферу не подходит задаче про куб" in prompt
+    assert "более общую, но совместимую категорию" in prompt
     assert records[0].condition in prompt
+
+
+def test_review_prompt_detects_semantic_contradictions() -> None:
+    records = [
+        TaskRecord(
+            task_num="3",
+            condition="Диагональ куба равна 13. Найдите площадь его поверхности.",
+        )
+    ]
+    batch = ClassificationBatch(
+        assignments=[ClassificationAssignment(task_num="3", catalog_id=171)]
+    )
+
+    prompt = build_classification_review_prompt(records, batch, _catalog())
+
+    assert "математическому объекту или фигуре" in prompt
+    assert "искомой величине" in prompt
+    assert "задача про куб, а категория явно про сферу" in prompt
+    assert "требуется площадь, а категория явно про объём" in prompt
 
 
 def test_rejects_hallucinated_catalog_id() -> None:
@@ -128,3 +152,20 @@ def test_requires_exactly_one_result_for_each_task() -> None:
         assert "Классификатор не вернул задачи: 2" in str(error)
     else:
         raise AssertionError("Ожидалась ошибка для пропущенной задачи")
+
+
+def test_review_requires_exactly_one_result_for_each_task() -> None:
+    records = [
+        TaskRecord(task_num="1", condition="Первое условие"),
+        TaskRecord(task_num="2", condition="Второе условие"),
+    ]
+    batch = ClassificationReviewBatch(
+        reviews=[{"task_num": "1", "is_compatible": True, "issues": []}]
+    )
+
+    try:
+        validate_classification_review(records, batch)
+    except ValueError as error:
+        assert "не вернула задачи: 2" in str(error)
+    else:
+        raise AssertionError("Ожидалась ошибка для пропущенной проверки")
