@@ -4,6 +4,7 @@ from exam_parser.classification import (
     ClassificationAssignment,
     ClassificationBatch,
     apply_classification_batch,
+    build_classification_prompt,
     validate_classification_batch,
 )
 from exam_parser.models import TaskRecord
@@ -61,6 +62,25 @@ def test_applies_only_ids_existing_in_catalog() -> None:
     apply_classification_batch(records, batch, _catalog(), target="exams_id")
 
     assert records[0].exams_id == 171
+
+
+def test_prompt_prioritizes_mathematical_goal_over_geometry_object() -> None:
+    records = [
+        TaskRecord(
+            task_num="14",
+            condition=(
+                "В призме задана плоскость. "
+                "а) Докажите перпендикулярность. "
+                "б) Найдите расстояние от точки до плоскости."
+            ),
+        )
+    ]
+
+    prompt = build_classification_prompt(records, _catalog())
+
+    assert "основной математической цели задачи" in prompt
+    assert "приоритет требуемому итоговому результату" in prompt
+    assert "к категории про сечение только потому" in prompt
 
 
 def test_rejects_hallucinated_catalog_id() -> None:
