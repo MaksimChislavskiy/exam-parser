@@ -120,6 +120,26 @@ def test_review_prompt_detects_semantic_contradictions() -> None:
     assert "требуется площадь, а категория явно про объём" in prompt
 
 
+def test_review_prompt_does_not_reject_math_category_for_applied_context() -> None:
+    records = [
+        TaskRecord(
+            task_num="9",
+            condition=(
+                "Скорость батискафа задаётся физической формулой. "
+                "Определите неизвестную частоту."
+            ),
+        )
+    ]
+    batch = ClassificationBatch(
+        assignments=[ClassificationAssignment(task_num="9", catalog_id=1)]
+    )
+    prompt = build_classification_review_prompt(records, batch, _catalog())
+    normalized_prompt = " ".join(prompt.split())
+    assert "Прикладной сюжет сам по себе НЕ является противоречием" in normalized_prompt
+    assert "оценивай математическую операцию" in normalized_prompt
+    assert "наличие физической формулы не мешает категории про уравнения" in normalized_prompt
+
+
 def test_tiebreak_prompt_includes_candidate_hierarchies() -> None:
     records = [TaskRecord(task_num="1", condition="Найдите угол треугольника")]
     first = {"1": ClassificationAssignment(task_num="1", catalog_id=1)}
