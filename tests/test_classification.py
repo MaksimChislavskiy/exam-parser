@@ -13,11 +13,7 @@ from exam_parser.classification import (
     validate_classification_tiebreak,
 )
 from exam_parser.models import TaskRecord
-from exam_parser.reference_catalogs import (
-    CatalogItem,
-    CatalogSpec,
-    ReferenceCatalog,
-)
+from exam_parser.reference_catalogs import CatalogItem, CatalogSpec, ReferenceCatalog
 
 
 def _catalog() -> ReferenceCatalog:
@@ -69,9 +65,7 @@ def test_applies_only_ids_existing_in_catalog() -> None:
             )
         ]
     )
-
     apply_classification_batch(records, batch, _catalog(), target="exams_id")
-
     assert records[0].exams_id == 171
 
 
@@ -86,9 +80,7 @@ def test_prompt_prioritizes_mathematical_goal_over_geometry_object() -> None:
             ),
         )
     ]
-
     prompt = build_classification_prompt(records, _catalog())
-
     assert "основной математической цели задачи" in prompt
     assert "приоритет требуемому итоговому результату" in prompt
     assert "к категории про сечение только потому" in prompt
@@ -101,10 +93,8 @@ def test_prompt_requires_object_and_requested_quantity_to_match() -> None:
             condition="Диагональ куба равна 13. Найдите площадь его поверхности.",
         )
     ]
-
     prompt = build_classification_prompt(records, _catalog())
     normalized_prompt = " ".join(prompt.split())
-
     assert "одновременно соответствует" in normalized_prompt
     assert "математическому объекту/теме" in normalized_prompt
     assert "не выбирай категорию только по одному совпавшему слову" in normalized_prompt
@@ -123,9 +113,7 @@ def test_review_prompt_detects_semantic_contradictions() -> None:
     batch = ClassificationBatch(
         assignments=[ClassificationAssignment(task_num="3", catalog_id=171)]
     )
-
     prompt = build_classification_review_prompt(records, batch, _catalog())
-
     assert "математическому объекту или фигуре" in prompt
     assert "искомой величине" in prompt
     assert "задача про куб, а категория явно про сферу" in prompt
@@ -136,13 +124,23 @@ def test_tiebreak_prompt_includes_candidate_hierarchies() -> None:
     records = [TaskRecord(task_num="1", condition="Найдите угол треугольника")]
     first = {"1": ClassificationAssignment(task_num="1", catalog_id=1)}
     second = {"1": ClassificationAssignment(task_num="1", catalog_id=171)}
-
     prompt = build_classification_tiebreak_prompt(records, _catalog(), first, second)
-
     assert "КАНДИДАТ A: id=1 | Геометрия" in prompt
     assert "КАНДИДАТ B: id=171 | Решение равнобедренного треугольника" in prompt
     assert "1:Геометрия > 171:Решение равнобедренного треугольника" in prompt
     assert "запрещено выбирать третий id" in prompt
+
+
+def test_tiebreak_prioritizes_explicit_final_result_over_object() -> None:
+    records = [TaskRecord(task_num="3", condition="Дана пирамида. Найдите объём.")]
+    first = {"3": ClassificationAssignment(task_num="3", catalog_id=1)}
+    second = {"3": ClassificationAssignment(task_num="3", catalog_id=171)}
+    prompt = build_classification_tiebreak_prompt(records, _catalog(), first, second)
+    normalized_prompt = " ".join(prompt.split())
+    assert "явно сформулированный конечный вопрос" in normalized_prompt
+    assert "предпочитай категорию итогового результата" in normalized_prompt
+    assert "объект задачи не имеет автоматического приоритета" in normalized_prompt
+    assert "«объём» предпочтительнее общей категории «пирамида»" in normalized_prompt
 
 
 def test_tiebreak_rejects_third_existing_candidate() -> None:
@@ -152,7 +150,6 @@ def test_tiebreak_rejects_third_existing_candidate() -> None:
     batch = ClassificationBatch(
         assignments=[ClassificationAssignment(task_num="1", catalog_id=172)]
     )
-
     try:
         validate_classification_tiebreak(records, batch, _catalog(), first, second)
     except ValueError as error:
@@ -166,7 +163,6 @@ def test_rejects_hallucinated_catalog_id() -> None:
     batch = ClassificationBatch(
         assignments=[ClassificationAssignment(task_num="1", catalog_id=999)]
     )
-
     try:
         validate_classification_batch(records, batch, _catalog())
     except ValueError as error:
@@ -183,7 +179,6 @@ def test_requires_exactly_one_result_for_each_task() -> None:
     batch = ClassificationBatch(
         assignments=[ClassificationAssignment(task_num="1", catalog_id=171)]
     )
-
     try:
         validate_classification_batch(records, batch, _catalog())
     except ValueError as error:
@@ -200,7 +195,6 @@ def test_review_requires_exactly_one_result_for_each_task() -> None:
     batch = ClassificationReviewBatch(
         reviews=[{"task_num": "1", "is_compatible": True, "issues": []}]
     )
-
     try:
         validate_classification_review(records, batch)
     except ValueError as error:
