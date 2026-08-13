@@ -29,6 +29,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("tasks_xlsx", type=Path)
     parser.add_argument("--catalog", choices=tuple(CATALOGS), required=True)
+    parser.add_argument(
+        "--scope-root",
+        type=int,
+        required=True,
+        help=(
+            "ID корня допустимой области справочника. Классификатор увидит "
+            "только этот узел и его потомков."
+        ),
+    )
     parser.add_argument("--model", default=None)
     return parser
 
@@ -39,12 +48,19 @@ def main() -> None:
         raise SystemExit(f"Файл не найден: {args.tasks_xlsx}")
 
     records = read_tasks_xlsx(args.tasks_xlsx)
-    catalog = load_reference_catalog(CATALOGS[args.catalog])
+    full_catalog = load_reference_catalog(CATALOGS[args.catalog])
+    try:
+        catalog = full_catalog.subtree(args.scope_root)
+    except KeyError as error:
+        raise SystemExit(str(error)) from error
+
+    scope_name = catalog.by_id()[args.scope_root].name
     classifier = DeepSeekCatalogClassifier(model=args.model)
 
     print(
         f"DeepSeek: классификация {len(records)} задач по справочнику "
-        f"{args.catalog} ({len(catalog.items)} записей)",
+        f"{args.catalog}, область {args.scope_root} «{scope_name}» "
+        f"({len(catalog.items)} из {len(full_catalog.items)} записей)",
         flush=True,
     )
     batch = classifier.classify_catalog(records, catalog)
