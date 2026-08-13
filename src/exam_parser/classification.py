@@ -21,6 +21,16 @@ class ClassificationBatch(BaseModel):
     assignments: list[ClassificationAssignment]
 
 
+class ClassificationReviewItem(BaseModel):
+    task_num: str = Field(min_length=1)
+    is_compatible: bool
+    issues: list[str] = Field(default_factory=list)
+
+
+class ClassificationReviewBatch(BaseModel):
+    reviews: list[ClassificationReviewItem]
+
+
 def build_classification_prompt(
     records: list[TaskRecord],
     catalog: ReferenceCatalog,
@@ -38,17 +48,14 @@ def build_classification_prompt(
 Правила:
 - используй только существующий id из справочника;
 - выбирай наиболее конкретную подходящую категорию, а не только общий раздел;
-- категория не обязана быть листом дерева, если более точная дочерняя категория
-  уже не соответствует условию;
+- конкретная категория допустима только если одновременно соответствует
+  математическому объекту/теме задачи и требуемой величине или действию;
+- не выбирай категорию только по одному совпавшему слову: например, категория
+  про сферу не подходит задаче про куб даже при совпадении слова «площадь»;
+- если более конкретная категория противоречит хотя бы одному существенному
+  признаку задачи, выбери более общую, но совместимую категорию;
 - классифицируй по основной математической цели задачи и требуемому результату,
   а не только по упомянутому объекту, фигуре или конструкции;
-- перед выбором конкретной категории проверь, что она соответствует типу
-  искомой величины или требуемого действия: нельзя выбирать категорию про объём,
-  если требуется площадь, категорию про площадь — если требуется расстояние,
-  и аналогично для других несовместимых математических целей;
-- если более конкретная дочерняя категория описывает другой результат или
-  другое действие, чем требуется в задаче, выбери более общий подходящий узел,
-  а не формально более конкретную, но неверную категорию;
 - в задаче с подпунктами учитывай их роль: если один подпункт доказывает
   вспомогательный факт, а следующий требует найти конкретную величину,
   при выборе категории отдавай приоритет требуемому итоговому результату;
@@ -62,6 +69,102 @@ def build_classification_prompt(
 {catalog.prompt_text()}
 
 ЗАДАЧИ:
+{task_text}
+""".strip()
+
+
+def build_classification_review_prompt(
+    records: list[TaskRecord],
+    batch: ClassificationBatch,
+    catalog: ReferenceCatalog,
+) -> str:
+    """Строит короткую независимую проверку уже выбранных категорий."""
+
+    assignments = validate_classification_batch(records, batch, catalog)
+    catalog_by_id = catalog.by_id()
+    blocks: list[str] = []
+    for record in records:
+        assignment = assignments[record.task_num]
+        item = catalog_by_id[assignment.catalog_id]
+        blocks.append(
+            "\n".join(
+                (
+                    f"ЗАДАЧА {record.task_num}",
+                    record.condition,
+                    f"ВЫБРАНО: id={item.item_id} | {item.name}",
+                )
+            )
+        )
+
+    selected_text = "\n\n".join(blocks)
+    return f"""
+Проверь семантическую совместимость уже выбранной категории с каждой задачей.
+Не выполняй новую классификацию и не предлагай другой id.
+
+Ставь is_compatible=false, если название выбранной категории явно
+противоречит хотя бы одному существенному признаку условия:
+- математическому объекту или фигуре;
+- искомой величине;
+- требуемому действию;
+- основной математической теме.
+
+Примеры несовместимости:
+- задача про куб, а категория явно про сферу;
+- требуется площадь, а категория явно про объём;
+- требуется расстояние, а категория явно про площадь.
+
+Более общая категория может считаться совместимой, если она не противоречит
+условию. В issues кратко перечисли только реальные противоречия.
+Проверь каждую задачу ровно один раз и не изменяй task_num.
+
+{selected_text}
+""".strip()
+
+
+def build_classification_correction_prompt(
+    records: list[TaskRecord],
+    catalog: ReferenceCatalog,
+    rejected_assignments: dict[str, ClassificationAssignment],
+    rejected_reviews: dict[str, ClassificationReviewItem],
+) -> str:
+    """Строит повторный запрос только для семантически спорных задач."""
+
+    blocks: list[str] = []
+    catalog_by_id = catalog.by_id()
+    for record in records:
+        assignment = rejected_assignments[record.task_num]
+        item = catalog_by_id[assignment.catalog_id]
+        review = rejected_reviews[record.task_num]
+        issues = "; ".join(review.issues) or "категория противоречит условию"
+        blocks.append(
+            "\n".join(
+                (
+                    f"ЗАДАЧА {record.task_num}",
+                    record.condition,
+                    f"ОТКЛОНЕНО: id={item.item_id} | {item.name}",
+                    f"ПРИЧИНА: {issues}",
+                )
+            )
+        )
+
+    task_text = "\n\n".join(blocks)
+    return f"""
+Ниже дан справочник и задачи, для которых предыдущий выбор категории был
+отклонён семантической проверкой. Выбери для каждой задачи ОДНУ новую категорию.
+
+Правила:
+- используй только существующий id из справочника;
+- новая категория не должна повторять указанное противоречие;
+- проверяй одновременно объект/тему задачи и требуемую величину или действие;
+- не выбирай категорию по одному совпавшему слову;
+- если точной узкой категории нет, выбери более общую совместимую категорию,
+  а не узкую категорию с неверным объектом, величиной или действием;
+- каждую переданную задачу классифицируй ровно один раз.
+
+СПРАВОЧНИК {catalog.spec.key}:
+{catalog.prompt_text()}
+
+СПОРНЫЕ ЗАДАЧИ:
 {task_text}
 """.strip()
 
@@ -114,6 +217,34 @@ def validate_classification_batch(
         )
 
     return assignments
+
+
+def validate_classification_review(
+    records: list[TaskRecord],
+    batch: ClassificationReviewBatch,
+) -> dict[str, ClassificationReviewItem]:
+    expected_task_nums = {record.task_num for record in records}
+    reviews: dict[str, ClassificationReviewItem] = {}
+
+    for review in batch.reviews:
+        if review.task_num not in expected_task_nums:
+            raise ValueError(
+                f"Проверка классификации вернула неизвестную задачу "
+                f"{review.task_num!r}"
+            )
+        if review.task_num in reviews:
+            raise ValueError(
+                f"Проверка классификации дважды вернула задачу {review.task_num}"
+            )
+        reviews[review.task_num] = review
+
+    missing = sorted(expected_task_nums.difference(reviews), key=_task_sort_key)
+    if missing:
+        raise ValueError(
+            "Проверка классификации не вернула задачи: " + ", ".join(missing)
+        )
+
+    return reviews
 
 
 def apply_classification_batch(
