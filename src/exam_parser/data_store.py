@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from dotenv import dotenv_values
+
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_LOCAL_DATA_ROOT = Path.home() / ".exam-parser-data"
@@ -43,9 +45,18 @@ class DataStore:
 
 
 def resolve_data_store(explicit_root: str | Path | None = None) -> DataStore:
-    """Возвращает внешний data root или безопасный локальный fallback."""
+    """Возвращает внешний data root или безопасный локальный fallback.
 
-    raw_root = explicit_root or os.getenv(DATA_ROOT_ENV)
+    Приоритет конфигурации: явный аргумент, переменная окружения процесса,
+    корневой ``.env`` проекта, затем локальный fallback вне репозитория.
+    DataStore не зависит от того, создавался ли до него LLM-клиент.
+    """
+
+    raw_root: str | Path | None = explicit_root or os.getenv(DATA_ROOT_ENV)
+    if not raw_root:
+        env_values = dotenv_values(PROJECT_DIR / ".env")
+        raw_root = env_values.get(DATA_ROOT_ENV)
+
     if raw_root:
         root = Path(raw_root).expanduser()
         if not root.is_absolute():
