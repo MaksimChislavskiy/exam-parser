@@ -60,6 +60,60 @@ def test_loads_catalog_from_external_data_store(tmp_path: Path) -> None:
     assert catalog.prompt_text().splitlines()[0] == "id\tname\tparent\textra"
 
 
+def test_catalog_subtree_keeps_only_selected_branch(tmp_path: Path) -> None:
+    source = tmp_path / "topics.csv"
+    source.write_text(
+        "id,name,parent\n"
+        "1,Mathematics,0\n"
+        "2,Algebra,1\n"
+        "3,Equations,2\n"
+        "193,Physics,0\n"
+        "194,Mechanics,193\n",
+        encoding="utf-8",
+    )
+    spec = CatalogSpec(
+        key="topics",
+        filename="topics.csv",
+        id_column="id",
+        name_column="name",
+        parent_column="parent",
+    )
+    catalog = load_reference_catalog(spec, path=source)
+
+    scoped = catalog.subtree(1)
+
+    assert [item.item_id for item in scoped.items] == [1, 2, 3]
+    assert scoped.by_id()[1].parent_id is None
+    assert scoped.by_id()[1].raw["parent"] == "0"
+    assert [item.name for item in scoped.ancestors(3)] == [
+        "Mathematics",
+        "Algebra",
+        "Equations",
+    ]
+    assert 193 not in scoped.by_id()
+    assert 194 not in scoped.by_id()
+
+
+def test_catalog_subtree_rejects_unknown_root(tmp_path: Path) -> None:
+    source = tmp_path / "topics.csv"
+    source.write_text(
+        "id,name,parent\n"
+        "1,Mathematics,0\n",
+        encoding="utf-8",
+    )
+    spec = CatalogSpec(
+        key="topics",
+        filename="topics.csv",
+        id_column="id",
+        name_column="name",
+        parent_column="parent",
+    )
+    catalog = load_reference_catalog(spec, path=source)
+
+    with pytest.raises(KeyError, match="нет id=999"):
+        catalog.subtree(999)
+
+
 def test_catalog_spec_allows_different_csv_column_names(tmp_path: Path) -> None:
     source = tmp_path / "exams.csv"
     source.write_text(
