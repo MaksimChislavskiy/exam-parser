@@ -95,12 +95,13 @@ def test_prompt_requires_object_and_requested_quantity_to_match() -> None:
     ]
 
     prompt = build_classification_prompt(records, _catalog())
+    normalized_prompt = " ".join(prompt.split())
 
-    assert "одновременно соответствует" in prompt
-    assert "математическому объекту/теме" in prompt
-    assert "не выбирай категорию только по одному совпавшему слову" in prompt
-    assert "категория про сферу не подходит задаче про куб" in prompt
-    assert "более общую, но совместимую категорию" in prompt
+    assert "одновременно соответствует" in normalized_prompt
+    assert "математическому объекту/теме" in normalized_prompt
+    assert "не выбирай категорию только по одному совпавшему слову" in normalized_prompt
+    assert "категория про сферу не подходит задаче про куб" in normalized_prompt
+    assert "более общую, но совместимую категорию" in normalized_prompt
     assert records[0].condition in prompt
 
 
