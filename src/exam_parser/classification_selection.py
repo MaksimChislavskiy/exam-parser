@@ -59,6 +59,7 @@ def build_classification_final_choice_prompt(
             )
             candidates.append(f"- id={item.item_id} | {item.name}\n  ИЕРАРХИЯ: {chain}")
         blocks.append("\n".join((f"ЗАДАЧА {record.task_num}", record.condition, "КАНДИДАТЫ:", *candidates)))
+    candidate_text = "\n\n".join(blocks)
 
     return f"""
 Выбери для каждой задачи ОДНУ финальную категорию только из её shortlist.
@@ -74,7 +75,7 @@ def build_classification_final_choice_prompt(
 Глубина дерева сама по себе не критерий: иерархия служит только контекстом.
 Прикладной сюжет не отменяет подходящий математический метод.
 
-{"\n\n".join(blocks)}
+{candidate_text}
 """.strip()
 
 
