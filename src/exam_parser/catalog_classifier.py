@@ -8,8 +8,10 @@ from .classification import (
     build_classification_correction_prompt,
     build_classification_prompt,
     build_classification_review_prompt,
+    build_classification_tiebreak_prompt,
     validate_classification_batch,
     validate_classification_review,
+    validate_classification_tiebreak,
 )
 from .deepseek_client import DeepSeekTaskClient
 from .models import TaskRecord
@@ -39,9 +41,97 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
         records: list[TaskRecord],
         catalog: ReferenceCatalog,
     ) -> ClassificationBatch:
+        """Делает два независимых прохода и арбитраж только при расхождениях."""
+
         if not records:
             raise ValueError("Нет задач для классификации")
 
+        print("DeepSeek: независимый проход 1/2", flush=True)
+        first = self._classify_catalog_once(records, catalog)
+        first_assignments = validate_classification_batch(records, first, catalog)
+
+        print("DeepSeek: независимый проход 2/2", flush=True)
+        second = self._classify_catalog_once(records, catalog)
+        second_assignments = validate_classification_batch(records, second, catalog)
+
+        disputed_records = [
+            record
+            for record in records
+            if first_assignments[record.task_num].catalog_id
+            != second_assignments[record.task_num].catalog_id
+        ]
+        if not disputed_records:
+            print("DeepSeek: оба прохода совпали", flush=True)
+            return first
+
+        disputed_nums = ", ".join(record.task_num for record in disputed_records)
+        print(f"DeepSeek: арбитраж расхождений: {disputed_nums}", flush=True)
+        tiebreak_prompt = build_classification_tiebreak_prompt(
+            disputed_records,
+            catalog,
+            first_assignments,
+            second_assignments,
+        )
+        tiebreak_batch = self._request_structured(
+            tiebreak_prompt,
+            ClassificationBatch,
+            thinking=True,
+        )
+        tiebreak_assignments = validate_classification_tiebreak(
+            disputed_records,
+            tiebreak_batch,
+            catalog,
+            first_assignments,
+            second_assignments,
+        )
+
+        print("DeepSeek: семантическая проверка арбитража", flush=True)
+        review_prompt = build_classification_review_prompt(
+            disputed_records,
+            tiebreak_batch,
+            catalog,
+        )
+        review_batch = self._request_structured(
+            review_prompt,
+            ClassificationReviewBatch,
+            thinking=False,
+        )
+        reviews = validate_classification_review(disputed_records, review_batch)
+        rejected = [
+            record
+            for record in disputed_records
+            if not reviews[record.task_num].is_compatible
+        ]
+        if rejected:
+            details: list[str] = []
+            for record in rejected:
+                assignment = tiebreak_assignments[record.task_num]
+                review = reviews[record.task_num]
+                issues = "; ".join(review.issues) or "семантическое противоречие"
+                details.append(
+                    f"{record.task_num}: id={assignment.catalog_id} ({issues})"
+                )
+            raise ValueError(
+                "DeepSeek: результат арбитража не прошёл семантическую проверку: "
+                + "; ".join(details)
+            )
+
+        merged_assignments = dict(first_assignments)
+        merged_assignments.update(tiebreak_assignments)
+        merged = ClassificationBatch(
+            assignments=[
+                merged_assignments[record.task_num]
+                for record in records
+            ]
+        )
+        validate_classification_batch(records, merged, catalog)
+        return merged
+
+    def _classify_catalog_once(
+        self,
+        records: list[TaskRecord],
+        catalog: ReferenceCatalog,
+    ) -> ClassificationBatch:
         prompt = build_classification_prompt(records, catalog)
         batch = self._request_structured(
             prompt,
