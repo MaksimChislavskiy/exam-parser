@@ -83,6 +83,22 @@ def test_prompt_prioritizes_mathematical_goal_over_geometry_object() -> None:
     assert "к категории про сечение только потому" in prompt
 
 
+def test_prompt_rejects_specific_category_with_wrong_requested_quantity() -> None:
+    records = [
+        TaskRecord(
+            task_num="3",
+            condition="Диагональ куба равна 13. Найдите площадь его поверхности.",
+        )
+    ]
+
+    prompt = build_classification_prompt(records, _catalog())
+
+    assert "нельзя выбирать категорию про объём" in prompt
+    assert "если требуется площадь" in prompt
+    assert "более общий подходящий узел" in prompt
+    assert records[0].condition in prompt
+
+
 def test_rejects_hallucinated_catalog_id() -> None:
     records = [TaskRecord(task_num="1", condition="Условие")]
     batch = ClassificationBatch(
