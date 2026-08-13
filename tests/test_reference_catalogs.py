@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from exam_parser.data_store import DataStore
+from exam_parser.reference_catalogs import (
+    CatalogSpec,
+    load_reference_catalog,
+)
+
+
+def test_loads_catalog_from_external_data_store(tmp_path: Path) -> None:
+    store = DataStore(tmp_path / "data-center")
+    store.ensure_layout()
+    source = store.reference_path("sample.csv")
+    source.write_text(
+        "id,name,parent,extra\n"
+        "1,Root,0,a\n"
+        "2,Geometry,1,b\n"
+        "3,Triangle,2,c\n",
+        encoding="utf-8",
+    )
+    spec = CatalogSpec(
+        key="sample",
+        filename="sample.csv",
+        id_column="id",
+        name_column="name",
+        parent_column="parent",
+    )
+
+    catalog = load_reference_catalog(spec, data_store=store)
+
+    assert [item.item_id for item in catalog.items] == [1, 2, 3]
+    assert [item.name for item in catalog.ancestors(3)] == [
+        "Root",
+        "Geometry",
+        "Triangle",
+    ]
+    assert catalog.items[2].raw["extra"] == "c"
+    assert catalog.prompt_text().splitlines()[0] == "id\tname\tparent\textra"
+
+
+def test_catalog_spec_allows_different_csv_column_names(tmp_path: Path) -> None:
+    source = tmp_path / "exams.csv"
+    source.write_text(
+        "id,name_of_Exam,parent_of_exam,trigger\n"
+        "1,Exam,0,True\n"
+        "2,Planometry,1,False\n",
+        encoding="utf-8",
+    )
+    spec = CatalogSpec(
+        key="exams",
+        filename="exams.csv",
+        id_column="id",
+        name_column="name_of_Exam",
+        parent_column="parent_of_exam",
+    )
+
+    catalog = load_reference_catalog(spec, path=source)
+
+    assert catalog.items[1].name == "Planometry"
+    assert catalog.items[1].parent_id == 1
+
+
+def test_rejects_missing_parent_reference(tmp_path: Path) -> None:
+    source = tmp_path / "broken.csv"
+    source.write_text(
+        "id,name,parent\n"
+        "1,Root,0\n"
+        "2,Child,999\n",
+        encoding="utf-8",
+    )
+    spec = CatalogSpec(
+        key="broken",
+        filename="broken.csv",
+        id_column="id",
+        name_column="name",
+        parent_column="parent",
+    )
+
+    with pytest.raises(ValueError, match="parent id"):
+        load_reference_catalog(spec, path=source)
