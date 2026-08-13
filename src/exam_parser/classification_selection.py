@@ -79,6 +79,49 @@ def build_classification_final_choice_prompt(
 """.strip()
 
 
+def build_classification_final_review_prompt(
+    records: list[TaskRecord],
+    batch: ClassificationBatch,
+    catalog: ReferenceCatalog,
+) -> str:
+    assignments = validate_classification_batch(records, batch, catalog)
+    by_id = catalog.by_id()
+    blocks: list[str] = []
+    for record in records:
+        item = by_id[assignments[record.task_num].catalog_id]
+        chain = " > ".join(
+            f"{ancestor.item_id}:{ancestor.name}"
+            for ancestor in catalog.ancestors(item.item_id)
+        )
+        blocks.append(
+            "\n".join(
+                (
+                    f"ЗАДАЧА {record.task_num}",
+                    record.condition,
+                    f"ВЫБРАНО: id={item.item_id} | {item.name}",
+                    f"ИЕРАРХИЯ: {chain}",
+                )
+            )
+        )
+    selected_text = "\n\n".join(blocks)
+    return f"""
+Проверь только семантическую совместимость выбранной категории с задачей.
+Не выполняй новую классификацию и не предлагай другой id.
+
+Ставь is_compatible=false при реальном противоречии: другой объект или тема,
+несовместимое требуемое действие/результат, либо узкий подтип требует степени,
+частного случая, специального свойства или иного признака, которого условие не
+гарантирует. Более общая категория допустима, если она не противоречит задаче.
+Категория «разные задачи» не является ошибкой сама по себе, когда узкий подтип
+добавлял бы неверное ограничение. Глубина дерева не доказывает точность.
+Прикладной физический, экономический, технический или бытовой сюжет сам по себе
+не противоречит математической категории: оценивай действие, нужное для ответа.
+В issues перечисляй только реальные противоречия. Проверь каждую задачу один раз.
+
+{selected_text}
+""".strip()
+
+
 def validate_classification_shortlist(
     records: list[TaskRecord],
     batch: ClassificationShortlistBatch,
