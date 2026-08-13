@@ -3,16 +3,25 @@ from __future__ import annotations
 from typing import Protocol
 
 from .classification import (
+    ClassificationAssignment,
     ClassificationBatch,
     ClassificationReviewBatch,
+    ClassificationReviewItem,
     build_classification_correction_prompt,
-    build_classification_prompt,
     build_classification_review_prompt,
-    build_classification_tiebreak_prompt,
     validate_classification_batch,
     validate_classification_review,
-    validate_classification_tiebreak,
 )
+from .classification_cache import ClassificationCache
+from .classification_selection import (
+    CLASSIFICATION_PROMPT_VERSION,
+    ClassificationShortlistBatch,
+    build_classification_final_choice_prompt,
+    build_classification_shortlist_prompt,
+    validate_classification_choice,
+    validate_classification_shortlist,
+)
+from .data_store import DataStore
 from .deepseek_client import DeepSeekTaskClient
 from .models import TaskRecord
 from .reference_catalogs import ReferenceCatalog
@@ -22,8 +31,6 @@ MAX_CORRECTION_ATTEMPTS = 2
 
 
 class CatalogClassifier(Protocol):
-    """Провайдер-независимый интерфейс классификации по справочнику."""
-
     provider_name: str
 
     def classify_catalog(
@@ -34,130 +41,162 @@ class CatalogClassifier(Protocol):
 
 
 class DeepSeekCatalogClassifier(DeepSeekTaskClient):
-    """Классифицирует уже извлечённые задачи, не вмешиваясь в OCR-пайплайн."""
+    """Классифицирует готовые задачи отдельно от OCR-пайплайна."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        *,
+        data_store: DataStore | None = None,
+        use_cache: bool = True,
+        refresh_cache: bool = False,
+    ) -> None:
+        super().__init__(api_key=api_key, model=model)
+        self.refresh_cache = refresh_cache
+        self.classification_cache = (
+            ClassificationCache(
+                model=self.model,
+                prompt_version=CLASSIFICATION_PROMPT_VERSION,
+                data_store=data_store,
+            )
+            if use_cache
+            else None
+        )
 
     def classify_catalog(
         self,
         records: list[TaskRecord],
         catalog: ReferenceCatalog,
     ) -> ClassificationBatch:
-        """Делает два независимых прохода и арбитраж только при расхождениях."""
-
         if not records:
             raise ValueError("Нет задач для классификации")
 
-        print("DeepSeek: независимый проход 1/2", flush=True)
-        first = self._classify_catalog_once(records, catalog)
-        first_assignments = validate_classification_batch(records, first, catalog)
+        cached_assignments: dict[str, ClassificationAssignment] = {}
+        pending_records: list[TaskRecord] = []
+        cache = getattr(self, "classification_cache", None)
+        refresh_cache = getattr(self, "refresh_cache", False)
 
-        print("DeepSeek: независимый проход 2/2", flush=True)
-        second = self._classify_catalog_once(records, catalog)
-        second_assignments = validate_classification_batch(records, second, catalog)
-
-        disputed_records = [
-            record
-            for record in records
-            if first_assignments[record.task_num].catalog_id
-            != second_assignments[record.task_num].catalog_id
-        ]
-        if not disputed_records:
-            print("DeepSeek: оба прохода совпали", flush=True)
-            return first
-
-        disputed_nums = ", ".join(record.task_num for record in disputed_records)
-        print(f"DeepSeek: арбитраж расхождений: {disputed_nums}", flush=True)
-        tiebreak_prompt = build_classification_tiebreak_prompt(
-            disputed_records,
-            catalog,
-            first_assignments,
-            second_assignments,
-        )
-        tiebreak_batch = self._request_structured(
-            tiebreak_prompt,
-            ClassificationBatch,
-            thinking=True,
-        )
-        tiebreak_assignments = validate_classification_tiebreak(
-            disputed_records,
-            tiebreak_batch,
-            catalog,
-            first_assignments,
-            second_assignments,
-        )
-
-        print("DeepSeek: семантическая проверка арбитража", flush=True)
-        review_prompt = build_classification_review_prompt(
-            disputed_records,
-            tiebreak_batch,
-            catalog,
-        )
-        review_batch = self._request_structured(
-            review_prompt,
-            ClassificationReviewBatch,
-            thinking=False,
-        )
-        reviews = validate_classification_review(disputed_records, review_batch)
-        rejected = [
-            record
-            for record in disputed_records
-            if not reviews[record.task_num].is_compatible
-        ]
-        if rejected:
-            details: list[str] = []
-            for record in rejected:
-                assignment = tiebreak_assignments[record.task_num]
-                review = reviews[record.task_num]
-                issues = "; ".join(review.issues) or "семантическое противоречие"
-                details.append(
-                    f"{record.task_num}: id={assignment.catalog_id} ({issues})"
-                )
-            raise ValueError(
-                "DeepSeek: результат арбитража не прошёл семантическую проверку: "
-                + "; ".join(details)
+        for record in records:
+            cached = None
+            if cache is not None and not refresh_cache:
+                cached = cache.load(record.condition, catalog)
+            if cached is None:
+                pending_records.append(record)
+                continue
+            cached_assignments[record.task_num] = ClassificationAssignment(
+                task_num=record.task_num,
+                catalog_id=cached.catalog_id,
+                catalog_name=cached.catalog_name,
             )
 
-        merged_assignments = dict(first_assignments)
-        merged_assignments.update(tiebreak_assignments)
-        merged = ClassificationBatch(
-            assignments=[
-                merged_assignments[record.task_num]
-                for record in records
-            ]
-        )
-        validate_classification_batch(records, merged, catalog)
-        return merged
+        if cache is not None and not refresh_cache:
+            print(
+                f"DeepSeek: кэш классификации: {len(cached_assignments)}/{len(records)}",
+                flush=True,
+            )
 
-    def _classify_catalog_once(
+        computed_assignments: dict[str, ClassificationAssignment] = {}
+        if pending_records:
+            computed_batch = self._classify_uncached(pending_records, catalog)
+            computed_assignments = validate_classification_batch(
+                pending_records,
+                computed_batch,
+                catalog,
+            )
+            if cache is not None:
+                for record in pending_records:
+                    assignment = computed_assignments[record.task_num]
+                    cache.save(
+                        record.condition,
+                        catalog,
+                        catalog_id=assignment.catalog_id,
+                    )
+        else:
+            print("DeepSeek: все задачи взяты из кэша", flush=True)
+
+        merged = {**cached_assignments, **computed_assignments}
+        batch = ClassificationBatch(
+            assignments=[merged[record.task_num] for record in records]
+        )
+        validate_classification_batch(records, batch, catalog)
+        return batch
+
+    def _classify_uncached(
         self,
         records: list[TaskRecord],
         catalog: ReferenceCatalog,
     ) -> ClassificationBatch:
-        prompt = build_classification_prompt(records, catalog)
-        batch = self._request_structured(
-            prompt,
+        nums = ", ".join(record.task_num for record in records)
+        print(f"DeepSeek: формирование shortlist: {nums}", flush=True)
+        shortlist_prompt = build_classification_shortlist_prompt(records, catalog)
+        shortlist_batch = self._request_structured(
+            shortlist_prompt,
+            ClassificationShortlistBatch,
+            thinking=False,
+        )
+        validate_classification_shortlist(records, shortlist_batch, catalog)
+
+        print("DeepSeek: финальный reasoning-выбор по shortlist", flush=True)
+        final_prompt = build_classification_final_choice_prompt(
+            records,
+            shortlist_batch,
+            catalog,
+        )
+        final_batch = self._request_structured(
+            final_prompt,
             ClassificationBatch,
-            thinking=False,
+            thinking=True,
         )
-        assignments = validate_classification_batch(records, batch, catalog)
-
-        print("DeepSeek: семантическая проверка классификации", flush=True)
-        review_prompt = build_classification_review_prompt(records, batch, catalog)
-        review_batch = self._request_structured(
-            review_prompt,
-            ClassificationReviewBatch,
-            thinking=False,
+        final_assignments = validate_classification_choice(
+            records,
+            final_batch,
+            shortlist_batch,
+            catalog,
         )
-        reviews = validate_classification_review(records, review_batch)
 
-        pending_records = [
+        print("DeepSeek: семантическая проверка финального выбора", flush=True)
+        reviews = self._review(records, final_batch, catalog)
+        rejected = [
             record
             for record in records
             if not reviews[record.task_num].is_compatible
         ]
-        if not pending_records:
-            return batch
+        if not rejected:
+            return final_batch
 
+        return self._repair_rejected(
+            records,
+            catalog,
+            final_assignments,
+            reviews,
+            rejected,
+        )
+
+    def _review(
+        self,
+        records: list[TaskRecord],
+        batch: ClassificationBatch,
+        catalog: ReferenceCatalog,
+    ) -> dict[str, ClassificationReviewItem]:
+        prompt = build_classification_review_prompt(records, batch, catalog)
+        review_batch = self._request_structured(
+            prompt,
+            ClassificationReviewBatch,
+            thinking=False,
+        )
+        return validate_classification_review(records, review_batch)
+
+    def _repair_rejected(
+        self,
+        records: list[TaskRecord],
+        catalog: ReferenceCatalog,
+        assignments: dict[str, ClassificationAssignment],
+        reviews: dict[str, ClassificationReviewItem],
+        rejected: list[TaskRecord],
+    ) -> ClassificationBatch:
         merged_assignments = dict(assignments)
+        pending_records = rejected
         pending_assignments = {
             record.task_num: assignments[record.task_num]
             for record in pending_records
@@ -170,7 +209,7 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
         for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
             pending_nums = ", ".join(record.task_num for record in pending_records)
             print(
-                "DeepSeek: уточнение спорных задач "
+                "DeepSeek: расширенное уточнение после shortlist "
                 f"(попытка {attempt}/{MAX_CORRECTION_ATTEMPTS}): {pending_nums}",
                 flush=True,
             )
@@ -192,40 +231,31 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
             )
 
             print("DeepSeek: повторная проверка уточнений", flush=True)
-            corrected_review_prompt = build_classification_review_prompt(
+            corrected_reviews = self._review(
                 pending_records,
                 correction_batch,
                 catalog,
             )
-            corrected_review_batch = self._request_structured(
-                corrected_review_prompt,
-                ClassificationReviewBatch,
-                thinking=False,
-            )
-            corrected_reviews = validate_classification_review(
-                pending_records,
-                corrected_review_batch,
-            )
 
-            next_pending_records: list[TaskRecord] = []
+            next_pending: list[TaskRecord] = []
             for record in pending_records:
                 review = corrected_reviews[record.task_num]
                 if review.is_compatible:
                     merged_assignments[record.task_num] = corrected[record.task_num]
                 else:
-                    next_pending_records.append(record)
+                    next_pending.append(record)
 
-            if not next_pending_records:
-                merged = ClassificationBatch(
+            if not next_pending:
+                result = ClassificationBatch(
                     assignments=[
                         merged_assignments[record.task_num]
                         for record in records
                     ]
                 )
-                validate_classification_batch(records, merged, catalog)
-                return merged
+                validate_classification_batch(records, result, catalog)
+                return result
 
-            pending_records = next_pending_records
+            pending_records = next_pending
             pending_assignments = {
                 record.task_num: corrected[record.task_num]
                 for record in pending_records
@@ -235,14 +265,12 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
                 for record in pending_records
             }
 
-        details = []
+        details: list[str] = []
         for record in pending_records:
             assignment = pending_assignments[record.task_num]
             review = pending_reviews[record.task_num]
             issues = "; ".join(review.issues) or "семантическое противоречие"
-            details.append(
-                f"{record.task_num}: id={assignment.catalog_id} ({issues})"
-            )
+            details.append(f"{record.task_num}: id={assignment.catalog_id} ({issues})")
         raise ValueError(
             "DeepSeek не смог подобрать совместимую категорию после "
             f"{MAX_CORRECTION_ATTEMPTS} попыток: " + "; ".join(details)
