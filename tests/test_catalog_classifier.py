@@ -94,6 +94,7 @@ def test_classifier_retries_semantically_incompatible_result(
         calls += 1
         if calls == 1:
             assert response_model is ClassificationBatch
+            assert thinking is False
             return ClassificationBatch(
                 assignments=[
                     {
@@ -105,6 +106,7 @@ def test_classifier_retries_semantically_incompatible_result(
             )
         if calls == 2:
             assert response_model is ClassificationReviewBatch
+            assert thinking is False
             return ClassificationReviewBatch(
                 reviews=[
                     {
@@ -116,6 +118,7 @@ def test_classifier_retries_semantically_incompatible_result(
             )
         if calls == 3:
             assert response_model is ClassificationBatch
+            assert thinking is True
             assert "ОТКЛОНЕНО: id=3 | Sphere" in prompt
             assert "категория про сферу" in prompt
             return ClassificationBatch(
@@ -127,13 +130,26 @@ def test_classifier_retries_semantically_incompatible_result(
                     }
                 ]
             )
+        if calls == 4:
+            assert response_model is ClassificationReviewBatch
+            assert thinking is False
+            assert "ВЫБРАНО: id=2 | Triangle" in prompt
+            return ClassificationReviewBatch(
+                reviews=[
+                    {
+                        "task_num": "1",
+                        "is_compatible": True,
+                        "issues": [],
+                    }
+                ]
+            )
         raise AssertionError("Лишний запрос")
 
     classifier._request_structured = fake_request  # type: ignore[method-assign]
 
     batch = classifier.classify_catalog(records, catalog)
 
-    assert calls == 3
+    assert calls == 4
     assert batch.assignments[0].catalog_id == 2
 
 
