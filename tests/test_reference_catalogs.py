@@ -4,11 +4,29 @@ from pathlib import Path
 
 import pytest
 
-from exam_parser.data_store import DataStore
+import exam_parser.data_store as data_store_module
+from exam_parser.data_store import DATA_ROOT_ENV, DataStore
 from exam_parser.reference_catalogs import (
     CatalogSpec,
     load_reference_catalog,
 )
+
+
+def test_resolve_data_store_reads_project_dotenv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured_root = tmp_path / "external-data"
+    (tmp_path / ".env").write_text(
+        f"{DATA_ROOT_ENV}={configured_root.as_posix()}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv(DATA_ROOT_ENV, raising=False)
+    monkeypatch.setattr(data_store_module, "PROJECT_DIR", tmp_path)
+
+    store = data_store_module.resolve_data_store()
+
+    assert store.root == configured_root.resolve()
 
 
 def test_loads_catalog_from_external_data_store(tmp_path: Path) -> None:
