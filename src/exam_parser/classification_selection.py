@@ -2,36 +2,67 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from .classification import ClassificationAssignment, ClassificationBatch, validate_classification_batch
+from .classification import (
+    ClassificationAssignment,
+    ClassificationBatch,
+    validate_classification_batch,
+)
 from .models import TaskRecord
 from .reference_catalogs import ReferenceCatalog
 
 
-CLASSIFICATION_PROMPT_VERSION = "shortlist-final-v1"
-SHORTLIST_MAX_CANDIDATES = 3
+CLASSIFICATION_PROMPT_VERSION = "shortlist-final-v2"
+SHORTLIST_MAX_CANDIDATES = 4
 
 
 class ClassificationShortlistItem(BaseModel):
     task_num: str = Field(min_length=1)
-    candidate_ids: list[int] = Field(min_length=1, max_length=SHORTLIST_MAX_CANDIDATES)
+    candidate_ids: list[int] = Field(
+        min_length=1,
+        max_length=SHORTLIST_MAX_CANDIDATES,
+    )
 
 
 class ClassificationShortlistBatch(BaseModel):
     shortlists: list[ClassificationShortlistItem]
 
 
-def build_classification_shortlist_prompt(records: list[TaskRecord], catalog: ReferenceCatalog) -> str:
-    tasks = "\n\n".join(f"ЗАДАЧА {r.task_num}\n{r.condition}" for r in records)
+def build_classification_shortlist_prompt(
+    records: list[TaskRecord],
+    catalog: ReferenceCatalog,
+) -> str:
+    tasks = "\n\n".join(
+        f"ЗАДАЧА {record.task_num}\n{record.condition}"
+        for record in records
+    )
     return f"""
-Сформируй для каждой задачи shortlist из 2–3 наиболее правдоподобных категорий.
+Сформируй для каждой задачи shortlist из 2–4 наиболее правдоподобных категорий.
 Это не финальный выбор. Используй только id из справочника.
 
-Учитывай тему и объект, требуемое действие, основной метод и итоговый результат.
-Добавляй только содержательно разумные альтернативы. Если узкая категория
-добавляет ограничение, которое не следует из условия, включи также более общую.
-Если конкурируют категория объекта и категория того, что требуется найти,
-включи обе. Прикладной сюжет сам по себе не меняет математический тип задачи.
-Не выбирай по одному совпавшему слову. Верни каждую задачу ровно один раз.
+Правила формирования shortlist:
+- сначала найди наиболее точную содержательную категорию, которая напрямую
+  соответствует математическому объекту/теме, требуемому действию, основному
+  методу или явно искомому результату задачи;
+- если такой точный подтип существует и не противоречит условию, ОБЯЗАТЕЛЬНО
+  включи его в shortlist; не заменяй точный совместимый подтип только его более
+  общим родителем;
+- общий родитель или более широкая категория могут быть дополнительным запасным
+  кандидатом, особенно если применимость узкого подтипа не полностью очевидна;
+- если узкий подтип добавляет степень, частный случай, специальное свойство или
+  иное ограничение, которого условие не гарантирует, включи более общий вариант
+  и не считай узкий подтип автоматически лучшим;
+- если конкурируют категории объекта, математического метода и того, что явно
+  требуется найти или сделать, сохрани содержательно сильные альтернативы,
+  чтобы финальный reasoning мог сравнить их;
+- если справочник содержит общую экзаменационную категорию и более конкретный
+  содержательный подтип, напрямую соответствующий задаче, не выбрасывай этот
+  содержательный подтип только потому, что общая категория тоже совместима;
+- иерархия даёт контекст, но не является безошибочной онтологией: оценивай смысл
+  названия категории вместе с цепочкой родителей;
+- прикладной физический, экономический, технический или бытовой сюжет сам по
+  себе не меняет математический тип задачи;
+- не выбирай категории по одному совпавшему слову;
+- верни каждую задачу ровно один раз.
 
 СПРАВОЧНИК {catalog.spec.key}:
 {catalog.prompt_text()}
@@ -46,7 +77,11 @@ def build_classification_final_choice_prompt(
     shortlist_batch: ClassificationShortlistBatch,
     catalog: ReferenceCatalog,
 ) -> str:
-    shortlists = validate_classification_shortlist(records, shortlist_batch, catalog)
+    shortlists = validate_classification_shortlist(
+        records,
+        shortlist_batch,
+        catalog,
+    )
     by_id = catalog.by_id()
     blocks: list[str] = []
     for record in records:
@@ -57,23 +92,46 @@ def build_classification_final_choice_prompt(
                 f"{ancestor.item_id}:{ancestor.name}"
                 for ancestor in catalog.ancestors(candidate_id)
             )
-            candidates.append(f"- id={item.item_id} | {item.name}\n  ИЕРАРХИЯ: {chain}")
-        blocks.append("\n".join((f"ЗАДАЧА {record.task_num}", record.condition, "КАНДИДАТЫ:", *candidates)))
+            candidates.append(
+                f"- id={item.item_id} | {item.name}\n"
+                f"  ИЕРАРХИЯ: {chain}"
+            )
+        blocks.append(
+            "\n".join(
+                (
+                    f"ЗАДАЧА {record.task_num}",
+                    record.condition,
+                    "КАНДИДАТЫ:",
+                    *candidates,
+                )
+            )
+        )
     candidate_text = "\n\n".join(blocks)
 
     return f"""
 Выбери для каждой задачи ОДНУ финальную категорию только из её shortlist.
-Запрещено выбирать третий id.
+Запрещено выбирать id, которого нет среди кандидатов этой задачи.
 
-Сравни кандидатов по реальному методу, объекту, требуемому действию и итоговому
-результату. Если один кандидат описывает лишь объект, а другой без противоречий
-прямо описывает требуемый результат, предпочитай результат. Узкая категория не
-получает автоматического преимущества: если она добавляет степень, частный
-случай или свойство, которого условие не гарантирует, выбирай совместимую более
-общую. Поэтому «разные задачи» иногда может быть точнее узкого подтипа. Но общая
-категория не должна побеждать точную, когда узкий подтип полностью подходит.
-Глубина дерева сама по себе не критерий: иерархия служит только контекстом.
-Прикладной сюжет не отменяет подходящий математический метод.
+Правила выбора:
+- сравни кандидатов по реальному математическому методу, объекту, требуемому
+  действию и итоговому результату;
+- если один кандидат напрямую и без дополнительных предположений описывает
+  фактическую тему, действие или искомый результат задачи, а другой является
+  только его совместимым общим родителем, предпочитай точный кандидат;
+- общий родитель не должен побеждать точный совместимый подтип только потому,
+  что он безопаснее или шире;
+- если узкий кандидат добавляет степень, частный случай, специальное свойство
+  или другое ограничение, которого условие не гарантирует, выбирай более общий
+  совместимый вариант;
+- если один кандидат описывает лишь объект, а другой без противоречий прямо
+  описывает требуемый результат, предпочитай категорию результата;
+- категория «разные задачи» иногда может быть точнее узкого подтипа, если этот
+  подтип накладывает отсутствующее в условии ограничение; но она не должна
+  вытеснять точную категорию, которая полностью соответствует задаче;
+- общая категория экзамена или номера задания не имеет автоматического
+  преимущества перед содержательной категорией, напрямую описывающей задачу;
+- глубина дерева сама по себе не критерий точности: иерархия служит контекстом;
+- прикладной сюжет не отменяет подходящий математический метод.
 
 {candidate_text}
 """.strip()
@@ -134,22 +192,41 @@ def validate_classification_shortlist(
 
     for item in batch.shortlists:
         if item.task_num not in expected:
-            raise ValueError(f"Shortlist вернул неизвестную задачу {item.task_num!r}")
+            raise ValueError(
+                f"Shortlist вернул неизвестную задачу {item.task_num!r}"
+            )
         if item.task_num in result:
-            raise ValueError(f"Shortlist дважды вернул задачу {item.task_num}")
+            raise ValueError(
+                f"Shortlist дважды вернул задачу {item.task_num}"
+            )
         ids = tuple(item.candidate_ids)
         if len(ids) < minimum:
-            raise ValueError(f"Для задачи {item.task_num} shortlist должен содержать минимум {minimum} кандидата")
+            raise ValueError(
+                f"Для задачи {item.task_num} shortlist должен содержать "
+                f"минимум {minimum} кандидата"
+            )
         if len(set(ids)) != len(ids):
-            raise ValueError(f"Для задачи {item.task_num} shortlist содержит повторяющиеся id")
-        unknown = [candidate_id for candidate_id in ids if candidate_id not in known_ids]
+            raise ValueError(
+                f"Для задачи {item.task_num} shortlist содержит "
+                "повторяющиеся id"
+            )
+        unknown = [
+            candidate_id
+            for candidate_id in ids
+            if candidate_id not in known_ids
+        ]
         if unknown:
-            raise ValueError(f"Для задачи {item.task_num} shortlist содержит отсутствующие id: " + ", ".join(map(str, unknown)))
+            raise ValueError(
+                f"Для задачи {item.task_num} shortlist содержит отсутствующие id: "
+                + ", ".join(map(str, unknown))
+            )
         result[item.task_num] = ids
 
     missing = sorted(expected.difference(result), key=_task_sort_key)
     if missing:
-        raise ValueError("Shortlist не вернул задачи: " + ", ".join(missing))
+        raise ValueError(
+            "Shortlist не вернул задачи: " + ", ".join(missing)
+        )
     return result
 
 
@@ -160,12 +237,17 @@ def validate_classification_choice(
     catalog: ReferenceCatalog,
 ) -> dict[str, ClassificationAssignment]:
     assignments = validate_classification_batch(records, batch, catalog)
-    shortlists = validate_classification_shortlist(records, shortlist_batch, catalog)
+    shortlists = validate_classification_shortlist(
+        records,
+        shortlist_batch,
+        catalog,
+    )
     for record in records:
         chosen = assignments[record.task_num].catalog_id
         if chosen not in shortlists[record.task_num]:
             raise ValueError(
-                f"Финальный выбор для задачи {record.task_num}: id={chosen}, но разрешены только shortlist id: "
+                f"Финальный выбор для задачи {record.task_num}: id={chosen}, "
+                "но разрешены только shortlist id: "
                 + ", ".join(map(str, shortlists[record.task_num]))
             )
     return assignments
