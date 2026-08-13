@@ -54,7 +54,7 @@ def test_classifier_builds_prompt_and_validates_batch(tmp_path: Path) -> None:
     batch = classifier.classify_catalog(records, catalog)
 
     assert batch.assignments[0].catalog_id == 2
-    assert "Дан треугольник ABC." in str(captured["prompt"])
+    assert records[0].condition in str(captured["prompt"])
     assert "Triangle" in str(captured["prompt"])
     assert captured["response_model"] is ClassificationBatch
     assert captured["thinking"] is False
