@@ -3,10 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from exam_parser.catalog_classifier import DeepSeekCatalogClassifier
-from exam_parser.classification import (
-    ClassificationBatch,
-    ClassificationReviewBatch,
-)
+from exam_parser.classification import ClassificationBatch, ClassificationReviewBatch
 from exam_parser.models import TaskRecord
 from exam_parser.reference_catalogs import CatalogSpec, load_reference_catalog
 
@@ -32,124 +29,98 @@ def _catalog(tmp_path: Path):
     )
 
 
-def test_classifier_builds_prompt_and_accepts_compatible_result(
-    tmp_path: Path,
-) -> None:
+def test_single_pass_builds_prompt_and_accepts_compatible_result(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path)
     records = [TaskRecord(task_num="1", condition="Дан треугольник ABC.")]
     classifier = DeepSeekCatalogClassifier.__new__(DeepSeekCatalogClassifier)
-
     captured: list[tuple[str, object, bool]] = []
 
     def fake_request(prompt, response_model, *, thinking):
         captured.append((prompt, response_model, thinking))
         if response_model is ClassificationBatch:
-            return ClassificationBatch(
-                assignments=[
-                    {
-                        "task_num": "1",
-                        "catalog_id": 2,
-                        "catalog_name": "Triangle",
-                    }
-                ]
-            )
+            return ClassificationBatch(assignments=[{"task_num": "1", "catalog_id": 2, "catalog_name": "Triangle"}])
         if response_model is ClassificationReviewBatch:
-            return ClassificationReviewBatch(
-                reviews=[
-                    {
-                        "task_num": "1",
-                        "is_compatible": True,
-                        "issues": [],
-                    }
-                ]
-            )
+            return ClassificationReviewBatch(reviews=[{"task_num": "1", "is_compatible": True, "issues": []}])
         raise AssertionError(response_model)
 
     classifier._request_structured = fake_request  # type: ignore[method-assign]
-
-    batch = classifier.classify_catalog(records, catalog)
+    batch = classifier._classify_catalog_once(records, catalog)
 
     assert batch.assignments[0].catalog_id == 2
     assert records[0].condition in captured[0][0]
     assert "Triangle" in captured[0][0]
     assert "ВЫБРАНО: id=2 | Triangle" in captured[1][0]
-    assert [item[1] for item in captured] == [
-        ClassificationBatch,
-        ClassificationReviewBatch,
-    ]
+    assert [item[1] for item in captured] == [ClassificationBatch, ClassificationReviewBatch]
     assert all(item[2] is False for item in captured)
 
 
-def test_classifier_retries_semantically_incompatible_result(
-    tmp_path: Path,
-) -> None:
+def test_single_pass_retries_semantically_incompatible_result(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path)
     records = [TaskRecord(task_num="1", condition="Дан треугольник ABC.")]
     classifier = DeepSeekCatalogClassifier.__new__(DeepSeekCatalogClassifier)
-
     calls = 0
 
     def fake_request(prompt, response_model, *, thinking):
         nonlocal calls
         calls += 1
         if calls == 1:
-            assert response_model is ClassificationBatch
-            assert thinking is False
-            return ClassificationBatch(
-                assignments=[
-                    {
-                        "task_num": "1",
-                        "catalog_id": 3,
-                        "catalog_name": "Sphere",
-                    }
-                ]
-            )
+            assert response_model is ClassificationBatch and thinking is False
+            return ClassificationBatch(assignments=[{"task_num": "1", "catalog_id": 3, "catalog_name": "Sphere"}])
         if calls == 2:
-            assert response_model is ClassificationReviewBatch
-            assert thinking is False
-            return ClassificationReviewBatch(
-                reviews=[
-                    {
-                        "task_num": "1",
-                        "is_compatible": False,
-                        "issues": ["Задача про треугольник, а категория про сферу"],
-                    }
-                ]
-            )
+            assert response_model is ClassificationReviewBatch and thinking is False
+            return ClassificationReviewBatch(reviews=[{"task_num": "1", "is_compatible": False, "issues": ["Задача про треугольник, а категория про сферу"]}])
         if calls == 3:
-            assert response_model is ClassificationBatch
-            assert thinking is True
+            assert response_model is ClassificationBatch and thinking is True
             assert "ОТКЛОНЕНО: id=3 | Sphere" in prompt
-            assert "категория про сферу" in prompt
-            return ClassificationBatch(
-                assignments=[
-                    {
-                        "task_num": "1",
-                        "catalog_id": 2,
-                        "catalog_name": "Triangle",
-                    }
-                ]
-            )
+            return ClassificationBatch(assignments=[{"task_num": "1", "catalog_id": 2, "catalog_name": "Triangle"}])
         if calls == 4:
-            assert response_model is ClassificationReviewBatch
-            assert thinking is False
-            assert "ВЫБРАНО: id=2 | Triangle" in prompt
-            return ClassificationReviewBatch(
-                reviews=[
-                    {
-                        "task_num": "1",
-                        "is_compatible": True,
-                        "issues": [],
-                    }
-                ]
-            )
+            assert response_model is ClassificationReviewBatch and thinking is False
+            return ClassificationReviewBatch(reviews=[{"task_num": "1", "is_compatible": True, "issues": []}])
         raise AssertionError("Лишний запрос")
 
     classifier._request_structured = fake_request  # type: ignore[method-assign]
-
-    batch = classifier.classify_catalog(records, catalog)
+    batch = classifier._classify_catalog_once(records, catalog)
 
     assert calls == 4
+    assert batch.assignments[0].catalog_id == 2
+
+
+def test_classifier_arbitrates_between_two_valid_disagreements(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    records = [TaskRecord(task_num="1", condition="Дан треугольник ABC.")]
+    classifier = DeepSeekCatalogClassifier.__new__(DeepSeekCatalogClassifier)
+    calls = 0
+
+    def fake_request(prompt, response_model, *, thinking):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ClassificationBatch(assignments=[{"task_num": "1", "catalog_id": 2, "catalog_name": "Triangle"}])
+        if calls == 2:
+            return ClassificationReviewBatch(reviews=[{"task_num": "1", "is_compatible": True, "issues": []}])
+        if calls == 3:
+            return ClassificationBatch(assignments=[{"task_num": "1", "catalog_id": 1, "catalog_name": "Geometry"}])
+        if calls == 4:
+            return ClassificationReviewBatch(reviews=[{"task_num": "1", "is_compatible": True, "issues": []}])
+        if calls == 5:
+            assert response_model is ClassificationBatch
+            assert thinking is True
+            assert "КАНДИДАТ A: id=2 | Triangle" in prompt
+            assert "КАНДИДАТ B: id=1 | Geometry" in prompt
+            assert "1:Geometry > 2:Triangle" in prompt
+            assert "запрещено выбирать третий id" in prompt
+            return ClassificationBatch(assignments=[{"task_num": "1", "catalog_id": 2, "catalog_name": "Triangle"}])
+        if calls == 6:
+            assert response_model is ClassificationReviewBatch
+            assert thinking is False
+            assert "ВЫБРАНО: id=2 | Triangle" in prompt
+            return ClassificationReviewBatch(reviews=[{"task_num": "1", "is_compatible": True, "issues": []}])
+        raise AssertionError("Лишний запрос")
+
+    classifier._request_structured = fake_request  # type: ignore[method-assign]
+    batch = classifier.classify_catalog(records, catalog)
+
+    assert calls == 6
     assert batch.assignments[0].catalog_id == 2
 
 
