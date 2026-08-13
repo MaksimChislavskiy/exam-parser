@@ -62,6 +62,50 @@ class ReferenceCatalog:
         chain.reverse()
         return tuple(chain)
 
+    def subtree(self, root_id: int) -> ReferenceCatalog:
+        """Возвращает корень и всех его потомков как самостоятельный каталог."""
+
+        items_by_id = self.by_id()
+        root = items_by_id.get(root_id)
+        if root is None:
+            raise KeyError(f"В справочнике {self.spec.key!r} нет id={root_id}")
+
+        children = self.children_by_parent()
+        selected_ids: set[int] = set()
+        pending = [root_id]
+        while pending:
+            item_id = pending.pop()
+            if item_id in selected_ids:
+                continue
+            selected_ids.add(item_id)
+            pending.extend(child.item_id for child in children.get(item_id, ()))
+
+        scoped_items: list[CatalogItem] = []
+        for item in self.items:
+            if item.item_id not in selected_ids:
+                continue
+            if item.item_id == root_id:
+                root_raw = dict(item.raw)
+                root_raw[self.spec.parent_column] = "0"
+                scoped_items.append(
+                    CatalogItem(
+                        item_id=item.item_id,
+                        name=item.name,
+                        parent_id=None,
+                        raw=root_raw,
+                    )
+                )
+            else:
+                scoped_items.append(item)
+
+        scoped = ReferenceCatalog(
+            spec=self.spec,
+            headers=self.headers,
+            items=tuple(scoped_items),
+        )
+        _validate_parent_links(scoped)
+        return scoped
+
     def prompt_text(self) -> str:
         """Компактное TSV-представление для передачи классификатору."""
 
