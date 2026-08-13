@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -202,7 +202,7 @@ class VariantMetadata(BaseModel):
 
     school_class: int | str | None = Field(default=None, alias="class")
     year: int | None = None
-    date: date | str | None = None
+    date: date | datetime | str | None = None
     topic: int | str | None = None
     exam_id: int | str | None = None
     title: str | None = None
