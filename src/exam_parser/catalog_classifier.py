@@ -94,7 +94,8 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
 
         if cache is not None and not refresh_cache:
             print(
-                f"DeepSeek: кэш классификации: {len(cached_assignments)}/{len(records)}",
+                f"DeepSeek: кэш классификации: "
+                f"{len(cached_assignments)}/{len(records)}",
                 flush=True,
             )
 
@@ -137,7 +138,12 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
             ClassificationShortlistBatch,
             thinking=False,
         )
-        validate_classification_shortlist(records, shortlist_batch, catalog)
+        shortlists = validate_classification_shortlist(
+            records,
+            shortlist_batch,
+            catalog,
+        )
+        self._print_shortlists(records, shortlists, catalog)
 
         final_batch = self._choose_from_shortlist_in_batches(
             records,
@@ -175,9 +181,13 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
         shortlist_batch: ClassificationShortlistBatch,
         catalog: ReferenceCatalog,
     ) -> ClassificationBatch:
-        shortlist_items = {item.task_num: item for item in shortlist_batch.shortlists}
+        shortlist_items = {
+            item.task_num: item
+            for item in shortlist_batch.shortlists
+        }
         assignments: dict[str, ClassificationAssignment] = {}
         chunks = _chunk_records(records, FINAL_CHOICE_BATCH_SIZE)
+        catalog_by_id = catalog.by_id()
 
         for index, chunk in enumerate(chunks, start=1):
             nums = ", ".join(record.task_num for record in chunk)
@@ -187,7 +197,10 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
                 flush=True,
             )
             chunk_shortlist = ClassificationShortlistBatch(
-                shortlists=[shortlist_items[record.task_num] for record in chunk]
+                shortlists=[
+                    shortlist_items[record.task_num]
+                    for record in chunk
+                ]
             )
             prompt = build_classification_final_choice_prompt(
                 chunk,
@@ -207,11 +220,42 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
             )
             assignments.update(chunk_assignments)
 
+            for record in chunk:
+                assignment = chunk_assignments[record.task_num]
+                item = catalog_by_id[assignment.catalog_id]
+                print(
+                    f"DeepSeek: финальный выбор {record.task_num}: "
+                    f"{item.item_id} «{item.name}»",
+                    flush=True,
+                )
+
         result = ClassificationBatch(
             assignments=[assignments[record.task_num] for record in records]
         )
-        validate_classification_choice(records, result, shortlist_batch, catalog)
+        validate_classification_choice(
+            records,
+            result,
+            shortlist_batch,
+            catalog,
+        )
         return result
+
+    def _print_shortlists(
+        self,
+        records: list[TaskRecord],
+        shortlists: dict[str, tuple[int, ...]],
+        catalog: ReferenceCatalog,
+    ) -> None:
+        catalog_by_id = catalog.by_id()
+        for record in records:
+            candidates = ", ".join(
+                f"{candidate_id} «{catalog_by_id[candidate_id].name}»"
+                for candidate_id in shortlists[record.task_num]
+            )
+            print(
+                f"DeepSeek: shortlist {record.task_num}: {candidates}",
+                flush=True,
+            )
 
     def _review(
         self,
@@ -226,24 +270,39 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
         for index, chunk in enumerate(chunks, start=1):
             nums = ", ".join(record.task_num for record in chunk)
             print(
-                f"DeepSeek: семантическая проверка (батч {index}/{len(chunks)}): {nums}",
+                "DeepSeek: семантическая проверка "
+                f"(батч {index}/{len(chunks)}): {nums}",
                 flush=True,
             )
             chunk_batch = ClassificationBatch(
-                assignments=[assignments[record.task_num] for record in chunk]
+                assignments=[
+                    assignments[record.task_num]
+                    for record in chunk
+                ]
             )
-            prompt = build_classification_review_prompt(chunk, chunk_batch, catalog)
+            prompt = build_classification_review_prompt(
+                chunk,
+                chunk_batch,
+                catalog,
+            )
             review_batch = self._request_structured(
                 prompt,
                 ClassificationReviewBatch,
                 thinking=False,
             )
-            reviews.update(validate_classification_review(chunk, review_batch))
+            reviews.update(
+                validate_classification_review(chunk, review_batch)
+            )
 
-        missing = [record.task_num for record in records if record.task_num not in reviews]
+        missing = [
+            record.task_num
+            for record in records
+            if record.task_num not in reviews
+        ]
         if missing:
             raise ValueError(
-                "Проверка классификации не вернула задачи: " + ", ".join(missing)
+                "Проверка классификации не вернула задачи: "
+                + ", ".join(missing)
             )
         return reviews
 
@@ -267,10 +326,14 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
         }
 
         for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
-            pending_nums = ", ".join(record.task_num for record in pending_records)
+            pending_nums = ", ".join(
+                record.task_num
+                for record in pending_records
+            )
             print(
                 "DeepSeek: расширенное уточнение после shortlist "
-                f"(попытка {attempt}/{MAX_CORRECTION_ATTEMPTS}): {pending_nums}",
+                f"(попытка {attempt}/{MAX_CORRECTION_ATTEMPTS}): "
+                f"{pending_nums}",
                 flush=True,
             )
             correction_prompt = build_classification_correction_prompt(
@@ -329,11 +392,17 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
         for record in pending_records:
             assignment = pending_assignments[record.task_num]
             review = pending_reviews[record.task_num]
-            issues = "; ".join(review.issues) or "семантическое противоречие"
-            details.append(f"{record.task_num}: id={assignment.catalog_id} ({issues})")
+            issues = (
+                "; ".join(review.issues)
+                or "семантическое противоречие"
+            )
+            details.append(
+                f"{record.task_num}: id={assignment.catalog_id} ({issues})"
+            )
         raise ValueError(
             "DeepSeek не смог подобрать совместимую категорию после "
-            f"{MAX_CORRECTION_ATTEMPTS} попыток: " + "; ".join(details)
+            f"{MAX_CORRECTION_ATTEMPTS} попыток: "
+            + "; ".join(details)
         )
 
 
@@ -343,4 +412,7 @@ def _chunk_records(
 ) -> list[list[TaskRecord]]:
     if size <= 0:
         raise ValueError("Размер батча должен быть положительным")
-    return [records[start : start + size] for start in range(0, len(records), size)]
+    return [
+        records[start : start + size]
+        for start in range(0, len(records), size)
+    ]
