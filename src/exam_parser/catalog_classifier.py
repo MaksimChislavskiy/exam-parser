@@ -17,6 +17,7 @@ from .classification_selection import (
     CLASSIFICATION_PROMPT_VERSION,
     ClassificationShortlistBatch,
     build_classification_final_choice_prompt,
+    build_classification_final_review_prompt,
     build_classification_shortlist_prompt,
     validate_classification_choice,
     validate_classification_shortlist,
@@ -28,6 +29,7 @@ from .reference_catalogs import ReferenceCatalog
 
 
 MAX_CORRECTION_ATTEMPTS = 2
+SHORTLIST_BATCH_SIZE = 5
 FINAL_CHOICE_BATCH_SIZE = 5
 REVIEW_BATCH_SIZE = 5
 
@@ -130,14 +132,7 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
         records: list[TaskRecord],
         catalog: ReferenceCatalog,
     ) -> ClassificationBatch:
-        nums = ", ".join(record.task_num for record in records)
-        print(f"DeepSeek: формирование shortlist: {nums}", flush=True)
-        shortlist_prompt = build_classification_shortlist_prompt(records, catalog)
-        shortlist_batch = self._request_structured(
-            shortlist_prompt,
-            ClassificationShortlistBatch,
-            thinking=False,
-        )
+        shortlist_batch = self._build_shortlist_in_batches(records, catalog)
         shortlists = validate_classification_shortlist(
             records,
             shortlist_batch,
@@ -158,7 +153,12 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
         )
 
         print("DeepSeek: семантическая проверка финального выбора", flush=True)
-        reviews = self._review(records, final_batch, catalog)
+        reviews = self._review_final_choice(
+            records,
+            final_batch,
+            shortlist_batch,
+            catalog,
+        )
         rejected = [
             record
             for record in records
@@ -174,6 +174,37 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
             reviews,
             rejected,
         )
+
+    def _build_shortlist_in_batches(
+        self,
+        records: list[TaskRecord],
+        catalog: ReferenceCatalog,
+    ) -> ClassificationShortlistBatch:
+        items_by_task: dict[str, object] = {}
+        chunks = _chunk_records(records, SHORTLIST_BATCH_SIZE)
+
+        for index, chunk in enumerate(chunks, start=1):
+            nums = ", ".join(record.task_num for record in chunk)
+            print(
+                "DeepSeek: формирование shortlist "
+                f"(батч {index}/{len(chunks)}): {nums}",
+                flush=True,
+            )
+            prompt = build_classification_shortlist_prompt(chunk, catalog)
+            chunk_batch = self._request_structured(
+                prompt,
+                ClassificationShortlistBatch,
+                thinking=False,
+            )
+            validate_classification_shortlist(chunk, chunk_batch, catalog)
+            for item in chunk_batch.shortlists:
+                items_by_task[item.task_num] = item
+
+        result = ClassificationShortlistBatch(
+            shortlists=[items_by_task[record.task_num] for record in records]
+        )
+        validate_classification_shortlist(records, result, catalog)
+        return result
 
     def _choose_from_shortlist_in_batches(
         self,
@@ -256,6 +287,67 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
                 f"DeepSeek: shortlist {record.task_num}: {candidates}",
                 flush=True,
             )
+
+    def _review_final_choice(
+        self,
+        records: list[TaskRecord],
+        batch: ClassificationBatch,
+        shortlist_batch: ClassificationShortlistBatch,
+        catalog: ReferenceCatalog,
+    ) -> dict[str, ClassificationReviewItem]:
+        assignments = validate_classification_batch(records, batch, catalog)
+        shortlist_items = {
+            item.task_num: item
+            for item in shortlist_batch.shortlists
+        }
+        reviews: dict[str, ClassificationReviewItem] = {}
+        chunks = _chunk_records(records, REVIEW_BATCH_SIZE)
+
+        for index, chunk in enumerate(chunks, start=1):
+            nums = ", ".join(record.task_num for record in chunk)
+            print(
+                "DeepSeek: проверка выбора среди shortlist "
+                f"(батч {index}/{len(chunks)}): {nums}",
+                flush=True,
+            )
+            chunk_batch = ClassificationBatch(
+                assignments=[
+                    assignments[record.task_num]
+                    for record in chunk
+                ]
+            )
+            chunk_shortlist = ClassificationShortlistBatch(
+                shortlists=[
+                    shortlist_items[record.task_num]
+                    for record in chunk
+                ]
+            )
+            prompt = build_classification_final_review_prompt(
+                chunk,
+                chunk_batch,
+                chunk_shortlist,
+                catalog,
+            )
+            review_batch = self._request_structured(
+                prompt,
+                ClassificationReviewBatch,
+                thinking=False,
+            )
+            reviews.update(
+                validate_classification_review(chunk, review_batch)
+            )
+
+        missing = [
+            record.task_num
+            for record in records
+            if record.task_num not in reviews
+        ]
+        if missing:
+            raise ValueError(
+                "Проверка классификации не вернула задачи: "
+                + ", ".join(missing)
+            )
+        return reviews
 
     def _review(
         self,
