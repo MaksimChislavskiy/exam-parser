@@ -27,7 +27,9 @@ def _catalog(tmp_path: Path):
     )
 
 
-def test_reasoning_and_review_are_split_into_batches_of_five(tmp_path: Path) -> None:
+def test_shortlist_reasoning_and_review_are_split_into_batches_of_five(
+    tmp_path: Path,
+) -> None:
     catalog = _catalog(tmp_path)
     records = [
         TaskRecord(task_num=str(index), condition=f"Triangle task {index}")
@@ -47,10 +49,13 @@ def test_reasoning_and_review_are_split_into_batches_of_five(tmp_path: Path) -> 
         if response_model is ClassificationShortlistBatch:
             shortlist_calls += 1
             assert thinking is False
+            selected = records[:5] if shortlist_calls == 1 else records[5:]
+            for record in selected:
+                assert f"ЗАДАЧА {record.task_num}" in prompt
             return ClassificationShortlistBatch(
                 shortlists=[
                     {"task_num": record.task_num, "candidate_ids": [2, 1]}
-                    for record in records
+                    for record in selected
                 ]
             )
 
@@ -77,6 +82,8 @@ def test_reasoning_and_review_are_split_into_batches_of_five(tmp_path: Path) -> 
             selected = records[:5] if review_calls == 1 else records[5:]
             for record in selected:
                 assert f"ЗАДАЧА {record.task_num}" in prompt
+                assert "SHORTLIST:" in prompt
+                assert "АЛЬТЕРНАТИВА: id=1 | Geometry" in prompt
             return ClassificationReviewBatch(
                 reviews=[
                     {
@@ -93,7 +100,7 @@ def test_reasoning_and_review_are_split_into_batches_of_five(tmp_path: Path) -> 
     classifier._request_structured = fake_request  # type: ignore[method-assign]
     batch = classifier.classify_catalog(records, catalog)
 
-    assert shortlist_calls == 1
+    assert shortlist_calls == 2
     assert final_calls == 2
     assert review_calls == 2
     assert [assignment.catalog_id for assignment in batch.assignments] == [2] * 6
