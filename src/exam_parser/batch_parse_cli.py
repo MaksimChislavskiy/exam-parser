@@ -51,6 +51,7 @@ class DocumentState:
     tasks: int = 0
     error: str = ""
     export_error: str = ""
+    processed_pdf_path: Path | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -65,6 +66,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_INPUT_DIR,
         help="Папка с PDF. По умолчанию output/input.",
+    )
+    parser.add_argument(
+        "--processed-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Куда перемещать полностью успешно обработанные PDF. "
+            "По умолчанию processed_pending рядом с входной папкой."
+        ),
     )
     parser.add_argument(
         "--result-root",
@@ -163,9 +173,15 @@ def main() -> None:
 
 
 def run_batch(args: argparse.Namespace) -> int:
-    input_dir = args.input_dir.resolve()
-    result_root = args.result_root.resolve()
-    export_root = getattr(args, "export_root", DEFAULT_EXPORT_ROOT).resolve()
+    input_dir = args.input_dir.expanduser().resolve()
+    result_root = args.result_root.expanduser().resolve()
+    export_root = getattr(args, "export_root", DEFAULT_EXPORT_ROOT).expanduser().resolve()
+    processed_arg = getattr(args, "processed_dir", None)
+    processed_root = (
+        processed_arg.expanduser().resolve()
+        if processed_arg is not None
+        else (input_dir.parent / "processed_pending").resolve()
+    )
     api_retries = max(0, int(getattr(args, "api_retries", 12)))
     failed_retry_rounds = max(
         0,
@@ -180,6 +196,10 @@ def run_batch(args: argparse.Namespace) -> int:
     school_class = int(getattr(args, "school_class", 11))
     classification_model = getattr(args, "classification_model", None)
     reuse_markdown_first_pass = bool(getattr(args, "reuse_markdown", False))
+
+    if processed_root == input_dir:
+        print("--processed-dir не должен совпадать с --input-dir.", flush=True)
+        return 2
 
     pdfs = discover_pdfs(input_dir)
     if not pdfs:
@@ -205,13 +225,21 @@ def run_batch(args: argparse.Namespace) -> int:
     _validate_run_name(run_name)
     run_dir = result_root / run_name
     export_dir = export_root / run_name
+    processed_run_dir = processed_root / run_name
     if run_dir.exists():
         print(f"Папка пакетного запуска уже существует: {run_dir}", flush=True)
         return 2
     if export_dir.exists():
         print(f"Папка экспортов уже существует: {export_dir}", flush=True)
         return 2
+    if processed_run_dir.exists():
+        print(
+            f"Папка обработанных PDF уже существует: {processed_run_dir}",
+            flush=True,
+        )
+        return 2
     run_dir.mkdir(parents=True, exist_ok=False)
+    processed_run_dir.mkdir(parents=True, exist_ok=False)
 
     report_path = run_dir / "batch_report.csv"
     log_path = run_dir / "batch.log"
@@ -251,6 +279,7 @@ def run_batch(args: argparse.Namespace) -> int:
             f"{failed_retry_rounds}, пауза={failed_retry_delay_seconds:g} сек"
         )
         emit(f"Результаты: {run_dir}")
+        emit(f"Успешно обработанные PDF: {processed_run_dir}")
         emit(f"Полный лог: {log_path}")
 
         pending = states
@@ -297,6 +326,7 @@ def run_batch(args: argparse.Namespace) -> int:
                 status = "ok"
                 variants = 0
                 tasks = 0
+                processed_pdf_path: Path | None = None
                 reuse_markdown = reuse_markdown_first_pass or (
                     state.attempts > 1
                     and has_complete_markdown_workspace(pdf_path.stem)
@@ -343,6 +373,15 @@ def run_batch(args: argparse.Namespace) -> int:
                             if variants == 0:
                                 status = "error"
                                 error = "tasks.xlsx не создан"
+                            else:
+                                processed_pdf_path = move_processed_pdf(
+                                    pdf_path,
+                                    processed_run_dir,
+                                )
+                                emit(
+                                    "PDF перемещён в очередь проверки: "
+                                    f"{processed_pdf_path}"
+                                )
                 except Exception as exc:
                     status = "error"
                     error = f"{type(exc).__name__}: {exc}"
@@ -355,6 +394,8 @@ def run_batch(args: argparse.Namespace) -> int:
                 state.variants = variants
                 state.tasks = tasks
                 state.error = error
+                if processed_pdf_path is not None:
+                    state.processed_pdf_path = processed_pdf_path
 
                 if status == "error":
                     next_pending.append(state)
@@ -461,9 +502,10 @@ def _create_exports(
                     f"send: {type(exc).__name__}: {exc}"
                 )
 
+        source_pdf_path = state.processed_pdf_path or state.pdf_path
         try:
             create_private_archive(
-                state.pdf_path,
+                source_pdf_path,
                 document_output,
                 archive_dir,
                 work_root=DEFAULT_WORK_ROOT,
@@ -493,6 +535,19 @@ def discover_pdfs(input_dir: Path) -> list[Path]:
     )
 
 
+def move_processed_pdf(pdf_path: Path, processed_run_dir: Path) -> Path:
+    """Перемещает полностью обработанный исходный PDF в очередь проверки."""
+
+    processed_run_dir.mkdir(parents=True, exist_ok=True)
+    destination = processed_run_dir / pdf_path.name
+    if destination.exists():
+        raise FileExistsError(
+            f"Файл уже существует в очереди проверки: {destination}"
+        )
+    moved_path = shutil.move(str(pdf_path), str(destination))
+    return Path(moved_path).resolve()
+
+
 def run_document(
     pdf_path: Path,
     output_dir: Path,
@@ -510,6 +565,8 @@ def run_document(
         sys.executable,
         str(PROJECT_DIR / "main.py"),
         pdf_path.name,
+        "--input-dir",
+        str(pdf_path.parent),
         "--provider",
         provider,
         "--no-solutions",
@@ -542,9 +599,13 @@ def run_document(
     )
     assert process.stdout is not None
     output = on_output or _print_child_output
-    for raw_line in process.stdout:
-        output(decode_subprocess_output(raw_line))
-    return process.wait()
+    try:
+        for raw_line in process.stdout:
+            output(decode_subprocess_output(raw_line))
+        return process.wait()
+    except KeyboardInterrupt:
+        _terminate_process(process)
+        raise
 
 
 def run_finalization(
@@ -576,6 +637,7 @@ def run_finalization(
 
     child_env = os.environ.copy()
     child_env["DEEPSEEK_MAX_RETRIES"] = str(api_retries)
+    child_env["PYTHONIOENCODING"] = "utf-8"
 
     process = subprocess.Popen(
         command,
@@ -589,9 +651,26 @@ def run_finalization(
     )
     assert process.stdout is not None
     output = on_output or _print_child_output
-    for raw_line in process.stdout:
-        output(decode_subprocess_output(raw_line))
-    return process.wait()
+    try:
+        for raw_line in process.stdout:
+            output(decode_subprocess_output(raw_line))
+        return process.wait()
+    except KeyboardInterrupt:
+        _terminate_process(process)
+        raise
+
+
+def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+    """Не оставляет дочерний Python-процесс после Ctrl+C."""
+
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
 
 
 def has_complete_markdown_workspace(document_stem: str) -> bool:
