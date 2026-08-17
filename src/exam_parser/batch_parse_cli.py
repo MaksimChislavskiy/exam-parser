@@ -56,8 +56,8 @@ class DocumentState:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Пакетный unattended-прогон PDF только для извлечения задач: "
-            "без решений и ответов."
+            "Пакетный unattended-прогон PDF до конечного Excel: "
+            "без решений и ответов, но с классификацией и листом about."
         )
     )
     parser.add_argument(
@@ -92,6 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="deepseek",
     )
     parser.add_argument("--model", default=None)
+    parser.add_argument(
+        "--classification-model",
+        default=None,
+        help="Модель DeepSeek для финальной классификации. По умолчанию из .env.",
+    )
     parser.add_argument("--device", default="gpu:0")
     parser.add_argument("--dpi", type=int, default=300)
     parser.add_argument(
@@ -99,6 +104,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=19,
         help="Ожидаемое число задач в варианте; 0 отключает проверку.",
+    )
+    parser.add_argument(
+        "--exams-scope-root",
+        type=int,
+        default=2,
+        help="Корень области exams.csv для конечной классификации. По умолчанию 2.",
+    )
+    parser.add_argument(
+        "--topics-scope-root",
+        type=int,
+        default=1,
+        help="Корень области topics.csv для конечной классификации. По умолчанию 1.",
+    )
+    parser.add_argument(
+        "--school-class",
+        type=int,
+        default=11,
+        help="Класс для листа about. По умолчанию 11.",
     )
     parser.add_argument(
         "--api-retries",
@@ -143,6 +166,10 @@ def run_batch(args: argparse.Namespace) -> int:
         0.0,
         float(getattr(args, "failed_retry_delay_seconds", 300.0)),
     )
+    exams_scope_root = int(getattr(args, "exams_scope_root", 2))
+    topics_scope_root = int(getattr(args, "topics_scope_root", 1))
+    school_class = int(getattr(args, "school_class", 11))
+    classification_model = getattr(args, "classification_model", None)
 
     pdfs = discover_pdfs(input_dir)
     if not pdfs:
@@ -180,7 +207,15 @@ def run_batch(args: argparse.Namespace) -> int:
 
         emit(f"Пакетный запуск: {run_name}")
         emit(f"PDF: {len(pdfs)}")
-        emit("Режим: только парсинг, без решений и ответов")
+        emit(
+            "Режим: парсинг без решений/ответов → классификация → "
+            "конечный Excel Tasks + about"
+        )
+        emit(
+            "Области классификации: "
+            f"exams={exams_scope_root}, topics={topics_scope_root}, "
+            f"class={school_class}"
+        )
         emit(f"API retry: {api_retries}")
         emit(
             "Повторные круги упавших PDF: "
@@ -255,12 +290,27 @@ def run_batch(args: argparse.Namespace) -> int:
                     )
                     if return_code != 0:
                         status = "error"
-                        error = f"process exit code {return_code}"
+                        error = f"parse exit code {return_code}"
                     else:
-                        variants, tasks = count_document_results(document_output)
-                        if variants == 0:
+                        emit("Финализация: exams_id/topics_id + лист about")
+                        finalization_code = run_finalization(
+                            pdf_path,
+                            document_output,
+                            exams_scope_root=exams_scope_root,
+                            topics_scope_root=topics_scope_root,
+                            school_class=school_class,
+                            model=classification_model,
+                            api_retries=api_retries,
+                            on_output=emit_child,
+                        )
+                        if finalization_code != 0:
                             status = "error"
-                            error = "tasks.xlsx не создан"
+                            error = f"finalization exit code {finalization_code}"
+                        else:
+                            variants, tasks = count_document_results(document_output)
+                            if variants == 0:
+                                status = "error"
+                                error = "tasks.xlsx не создан"
                 except Exception as exc:
                     status = "error"
                     error = f"{type(exc).__name__}: {exc}"
@@ -442,6 +492,53 @@ def run_document(
         str(expected_tasks),
     ]
     command.append("--reuse-markdown" if reuse_markdown else "--run-ocr")
+    if model:
+        command.extend(("--model", model))
+
+    child_env = os.environ.copy()
+    child_env["DEEPSEEK_MAX_RETRIES"] = str(api_retries)
+
+    process = subprocess.Popen(
+        command,
+        cwd=PROJECT_DIR,
+        env=child_env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=False,
+        bufsize=0,
+    )
+    assert process.stdout is not None
+    output = on_output or _print_child_output
+    for raw_line in process.stdout:
+        output(decode_subprocess_output(raw_line))
+    return process.wait()
+
+
+def run_finalization(
+    pdf_path: Path,
+    document_output: Path,
+    *,
+    exams_scope_root: int,
+    topics_scope_root: int,
+    school_class: int,
+    model: str | None,
+    api_retries: int = 12,
+    on_output: Callable[[str], None] | None = None,
+) -> int:
+    command = [
+        sys.executable,
+        "-m",
+        "exam_parser.batch_finalize",
+        str(document_output),
+        str(pdf_path),
+        "--exams-scope-root",
+        str(exams_scope_root),
+        "--topics-scope-root",
+        str(topics_scope_root),
+        "--school-class",
+        str(school_class),
+    ]
     if model:
         command.extend(("--model", model))
 
