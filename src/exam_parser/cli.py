@@ -36,7 +36,8 @@ HELP_EPILOG = """
   uv run python main.py trvar540.pdf --no-answers
       Подробные решения без отдельного столбца коротких ответов.
 
-Входной файл всегда ищется в output/input. Указывайте только имя файла.
+По умолчанию входной файл ищется в output/input. Другую папку можно задать
+через --input-dir. Указывайте только имя файла, без пути.
 """.strip()
 
 
@@ -53,9 +54,15 @@ def build_parser() -> argparse.ArgumentParser:
         "input",
         metavar="FILE",
         help=(
-            "Имя одного PDF или изображения из output/input. "
+            "Имя одного PDF или изображения из входной папки. "
             "Папка автоматически не перебирается."
         ),
+    )
+    parser.add_argument(
+        "--input-dir",
+        type=Path,
+        default=INPUT_DIR,
+        help="Папка входного файла. По умолчанию output/input.",
     )
     parser.add_argument(
         "--provider",
@@ -136,19 +143,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def resolve_input_path(filename: str, input_dir: Path = INPUT_DIR) -> Path:
-    """Возвращает путь к одному файлу из стандартной входной папки."""
+    """Возвращает путь к одному файлу из указанной входной папки."""
 
     candidate = Path(filename)
     if candidate.is_absolute() or candidate.name != filename:
-        raise ValueError(
-            "Укажите только имя файла из output/input, например: trvar540.pdf"
-        )
+        raise ValueError("Укажите только имя файла, например: trvar540.pdf")
 
     input_path = input_dir / candidate.name
     if not input_path.is_file():
         raise FileNotFoundError(
             f"Входной файл не найден: {input_path}. "
-            "Поместите его в output/input и укажите только имя файла."
+            "Проверьте --input-dir и имя файла."
         )
     return input_path.resolve()
 
@@ -168,8 +173,9 @@ def main() -> None:
 
     provider: LLMProvider = args.provider
     provider_label = PROVIDER_LABELS[provider]
+    input_dir = args.input_dir.expanduser().resolve()
     try:
-        input_path = resolve_input_path(args.input)
+        input_path = resolve_input_path(args.input, input_dir=input_dir)
     except (ValueError, FileNotFoundError) as error:
         raise SystemExit(str(error)) from None
 
