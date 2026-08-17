@@ -50,6 +50,9 @@ def test_batch_continues_after_document_failure_and_writes_report(
 
     def fake_run_document(pdf_path: Path, output_dir: Path, **kwargs) -> int:
         calls.append(pdf_path.name)
+        on_output = kwargs.get("on_output")
+        if callable(on_output):
+            on_output(f"child output: {pdf_path.name}\n")
         if pdf_path.name == "b.pdf":
             return 7
         write_tasks_xlsx(
@@ -65,7 +68,8 @@ def test_batch_continues_after_document_failure_and_writes_report(
     assert exit_code == 1
     assert calls == ["a.pdf", "b.pdf"]
 
-    report_path = result_root / "night_test" / "batch_report.csv"
+    run_dir = result_root / "night_test"
+    report_path = run_dir / "batch_report.csv"
     with report_path.open(encoding="utf-8-sig", newline="") as report_file:
         rows = list(csv.DictReader(report_file))
 
@@ -75,6 +79,11 @@ def test_batch_continues_after_document_failure_and_writes_report(
     assert rows[0]["tasks"] == "1"
     assert rows[1]["status"] == "error"
     assert "exit code 7" in rows[1]["error"]
+
+    log_text = (run_dir / "batch.log").read_text(encoding="utf-8")
+    assert "child output: a.pdf" in log_text
+    assert "child output: b.pdf" in log_text
+    assert "ПАКЕТНЫЙ ПРОГОН ЗАВЕРШЁН" in log_text
 
 
 def test_run_document_forces_parse_only_flags(tmp_path: Path, monkeypatch) -> None:
@@ -114,3 +123,18 @@ def test_run_document_forces_parse_only_flags(tmp_path: Path, monkeypatch) -> No
     assert "--no-answers" in command
     assert "--run-ocr" in command
     assert captured["kwargs"]["stdin"] is batch_parse_cli.subprocess.DEVNULL
+    assert captured["kwargs"]["text"] is False
+
+
+def test_decode_subprocess_output_prefers_utf8() -> None:
+    text = "DeepSeek: извлечение задач\n"
+
+    assert batch_parse_cli.decode_subprocess_output(text.encode("utf-8")) == text
+
+
+def test_decode_subprocess_output_uses_windows_oem_fallback(monkeypatch) -> None:
+    text = "ИНФОРМАЦИЯ: не удается найти файлы по заданным шаблонам.\r\n"
+    monkeypatch.setattr(batch_parse_cli.sys, "platform", "win32")
+    monkeypatch.setattr(batch_parse_cli, "_windows_oem_encoding", lambda: "cp866")
+
+    assert batch_parse_cli.decode_subprocess_output(text.encode("cp866")) == text
