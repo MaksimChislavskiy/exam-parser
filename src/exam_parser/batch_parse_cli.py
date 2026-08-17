@@ -5,6 +5,7 @@ import csv
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -93,32 +94,46 @@ def run_batch(args: argparse.Namespace) -> int:
     run_dir.mkdir(parents=True, exist_ok=False)
 
     report_path = run_dir / "batch_report.csv"
+    log_path = run_dir / "batch.log"
     total_started = time.perf_counter()
     succeeded = 0
     failed = 0
     total_variants = 0
     total_tasks = 0
 
-    print(f"Пакетный запуск: {run_name}", flush=True)
-    print(f"PDF: {len(pdfs)}", flush=True)
-    print("Режим: только парсинг, без решений и ответов", flush=True)
-    print(f"Результаты: {run_dir}", flush=True)
-
-    with report_path.open("w", encoding="utf-8-sig", newline="") as report_file:
+    with (
+        log_path.open("w", encoding="utf-8", newline="") as log_file,
+        report_path.open("w", encoding="utf-8-sig", newline="") as report_file,
+    ):
         writer = csv.DictWriter(report_file, fieldnames=REPORT_HEADERS)
         writer.writeheader()
         report_file.flush()
+
+        def emit(message: str = "") -> None:
+            print(message, flush=True)
+            log_file.write(message + "\n")
+            log_file.flush()
+
+        def emit_child(text: str) -> None:
+            print(text, end="", flush=True)
+            log_file.write(text)
+            log_file.flush()
+
+        emit(f"Пакетный запуск: {run_name}")
+        emit(f"PDF: {len(pdfs)}")
+        emit("Режим: только парсинг, без решений и ответов")
+        emit(f"Результаты: {run_dir}")
+        emit(f"Полный лог: {log_path}")
 
         for index, pdf_path in enumerate(pdfs, start=1):
             document_output = run_dir / pdf_path.stem
             started_at = datetime.now()
             started = time.perf_counter()
-            print("", flush=True)
-            print("=" * 88, flush=True)
-            print(
+            emit()
+            emit("=" * 88)
+            emit(
                 f"[{index}/{len(pdfs)}] {pdf_path.name} — старт "
-                f"{started_at:%Y-%m-%d %H:%M:%S}",
-                flush=True,
+                f"{started_at:%Y-%m-%d %H:%M:%S}"
             )
 
             error = ""
@@ -134,6 +149,7 @@ def run_batch(args: argparse.Namespace) -> int:
                     device=args.device,
                     dpi=args.dpi,
                     expected_tasks=args.expected_tasks,
+                    on_output=emit_child,
                 )
                 if return_code != 0:
                     status = "error"
@@ -170,25 +186,26 @@ def run_batch(args: argparse.Namespace) -> int:
             )
             report_file.flush()
 
-            print(
+            emit(
                 f"[{index}/{len(pdfs)}] {pdf_path.name} — {status.upper()}, "
-                f"{elapsed / 60:.1f} мин, вариантов={variants}, задач={tasks}",
-                flush=True,
+                f"{elapsed / 60:.1f} мин, вариантов={variants}, задач={tasks}"
             )
             if error:
-                print(f"Ошибка: {error}", flush=True)
+                emit(f"Ошибка: {error}")
 
-    total_elapsed = time.perf_counter() - total_started
-    print("", flush=True)
-    print("=" * 88, flush=True)
-    print("ПАКЕТНЫЙ ПРОГОН ЗАВЕРШЁН", flush=True)
-    print(f"PDF всего: {len(pdfs)}", flush=True)
-    print(f"Успешно: {succeeded}", flush=True)
-    print(f"С ошибкой: {failed}", flush=True)
-    print(f"Вариантов: {total_variants}", flush=True)
-    print(f"Задач: {total_tasks}", flush=True)
-    print(f"Общее время: {total_elapsed / 60:.1f} мин", flush=True)
-    print(f"Отчёт: {report_path}", flush=True)
+        total_elapsed = time.perf_counter() - total_started
+        emit()
+        emit("=" * 88)
+        emit("ПАКЕТНЫЙ ПРОГОН ЗАВЕРШЁН")
+        emit(f"PDF всего: {len(pdfs)}")
+        emit(f"Успешно: {succeeded}")
+        emit(f"С ошибкой: {failed}")
+        emit(f"Вариантов: {total_variants}")
+        emit(f"Задач: {total_tasks}")
+        emit(f"Общее время: {total_elapsed / 60:.1f} мин")
+        emit(f"Отчёт: {report_path}")
+        emit(f"Полный лог: {log_path}")
+
     return 0 if failed == 0 else 1
 
 
@@ -210,6 +227,7 @@ def run_document(
     device: str,
     dpi: int,
     expected_tasks: int,
+    on_output: Callable[[str], None] | None = None,
 ) -> int:
     command = [
         sys.executable,
@@ -238,15 +256,42 @@ def run_document(
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
+        text=False,
+        bufsize=0,
     )
     assert process.stdout is not None
-    for line in process.stdout:
-        print(line, end="", flush=True)
+    output = on_output or _print_child_output
+    for raw_line in process.stdout:
+        output(decode_subprocess_output(raw_line))
     return process.wait()
+
+
+def decode_subprocess_output(raw: bytes) -> str:
+    """Декодирует смешанный вывод Python UTF-8 и нативных Windows-команд."""
+
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        encoding = _windows_oem_encoding() if sys.platform == "win32" else None
+        if encoding is not None:
+            return raw.decode(encoding, errors="replace")
+        return raw.decode(errors="replace")
+
+
+def _windows_oem_encoding() -> str:
+    try:
+        import ctypes
+
+        code_page = int(ctypes.windll.kernel32.GetOEMCP())
+        if code_page > 0:
+            return f"cp{code_page}"
+    except (AttributeError, OSError, ValueError):
+        pass
+    return "cp866"
+
+
+def _print_child_output(text: str) -> None:
+    print(text, end="", flush=True)
 
 
 def count_document_results(output_dir: Path) -> tuple[int, int]:
