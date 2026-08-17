@@ -17,9 +17,13 @@ def _args(input_dir: Path, result_root: Path) -> Namespace:
         run_name="night_test",
         provider="deepseek",
         model=None,
+        classification_model=None,
         device="gpu:0",
         dpi=300,
         expected_tasks=19,
+        exams_scope_root=2,
+        topics_scope_root=1,
+        school_class=11,
         api_retries=12,
         failed_retry_rounds=0,
         failed_retry_delay_seconds=0.0,
@@ -66,6 +70,7 @@ def test_batch_continues_after_document_failure_and_writes_report(
         return 0
 
     monkeypatch.setattr(batch_parse_cli, "run_document", fake_run_document)
+    monkeypatch.setattr(batch_parse_cli, "run_finalization", lambda *args, **kwargs: 0)
 
     exit_code = batch_parse_cli.run_batch(_args(input_dir, result_root))
 
@@ -114,6 +119,7 @@ def test_failed_document_is_requeued_and_can_recover(
         return 0
 
     monkeypatch.setattr(batch_parse_cli, "run_document", fake_run_document)
+    monkeypatch.setattr(batch_parse_cli, "run_finalization", lambda *args, **kwargs: 0)
     args = _args(input_dir, result_root)
     args.failed_retry_rounds = 1
 
@@ -205,6 +211,50 @@ def test_run_document_can_reuse_markdown_on_retry(tmp_path: Path, monkeypatch) -
     assert isinstance(command, list)
     assert "--reuse-markdown" in command
     assert "--run-ocr" not in command
+
+
+def test_run_finalization_uses_scopes_metadata_and_retry_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeStdout:
+        def __iter__(self):
+            return iter(())
+
+    class FakeProcess:
+        stdout = FakeStdout()
+
+        def wait(self) -> int:
+            return 0
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(batch_parse_cli.subprocess, "Popen", fake_popen)
+
+    return_code = batch_parse_cli.run_finalization(
+        tmp_path / "sample.pdf",
+        tmp_path / "result",
+        exams_scope_root=2,
+        topics_scope_root=1,
+        school_class=11,
+        model="classifier-model",
+        api_retries=12,
+    )
+
+    assert return_code == 0
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert "exam_parser.batch_finalize" in command
+    assert command[command.index("--exams-scope-root") + 1] == "2"
+    assert command[command.index("--topics-scope-root") + 1] == "1"
+    assert command[command.index("--school-class") + 1] == "11"
+    assert command[command.index("--model") + 1] == "classifier-model"
+    assert captured["kwargs"]["env"]["DEEPSEEK_MAX_RETRIES"] == "12"
 
 
 def test_decode_subprocess_output_prefers_utf8() -> None:
