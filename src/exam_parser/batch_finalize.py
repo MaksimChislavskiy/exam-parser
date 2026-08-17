@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from pathlib import Path
 
 from .catalog_classifier import DeepSeekCatalogClassifier
@@ -21,8 +22,14 @@ from .reference_catalogs import (
 )
 
 
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_WORK_ROOT = PROJECT_DIR / "output" / "work"
 VARIANT_YEAR_PATTERN = re.compile(r"(?i)\b[A-ZА-Я]{1,4}(?P<year>\d{2})\d{4,}\b")
 FOUR_DIGIT_YEAR_PATTERN = re.compile(r"(?<!\d)(?P<year>20\d{2})(?!\d)")
+DOCUMENT_TITLE_PATTERN = re.compile(
+    r"^#{1,6}\s+(?P<title>[^\n]*(?:тренировочн(?:ый|ая)\s+вариант|вариант)\s*№?\s*\d+[^\n]*)$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -42,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    _configure_utf8_output()
     args = build_parser().parse_args()
     finalized = finalize_document(
         args.document_output,
@@ -74,6 +82,7 @@ def finalize_document(
     exams = _scoped_catalog(exams_full, exams_scope_root)
     topics = _scoped_catalog(topics_full, topics_scope_root)
     classifier = DeepSeekCatalogClassifier(model=model)
+    document_title = extract_document_title(pdf_path.stem)
 
     def announce(target: ClassificationTarget, catalog: ReferenceCatalog) -> None:
         full = exams_full if target == "exams_id" else topics_full
@@ -112,6 +121,7 @@ def finalize_document(
             exams_scope_root=exams_scope_root,
             topics_scope_root=topics_scope_root,
             school_class=school_class,
+            document_title=document_title,
             existing=existing_about,
         )
         records = read_tasks_xlsx(workbook)
@@ -130,14 +140,15 @@ def build_variant_metadata(
     exams_scope_root: int,
     topics_scope_root: int,
     school_class: int,
+    document_title: str | None = None,
     existing: VariantMetadata | None = None,
 ) -> VariantMetadata:
     defaults = VariantMetadata(
         school_class=school_class,
-        year=infer_year(variant_code, pdf_path.stem),
+        year=infer_year(variant_code, pdf_path.stem, document_title or ""),
         topic=topics_scope_root,
         exam_id=exams_scope_root,
-        title=variant_code,
+        title=document_title or variant_code,
         code=variant_code,
         source_name=pdf_path.name,
     )
@@ -150,7 +161,37 @@ def build_variant_metadata(
         key: current.get(key) if current.get(key) not in (None, "") else value
         for key, value in fallback.items()
     }
+    if current.get("title") in (None, "", variant_code) and document_title:
+        merged["title"] = document_title
     return VariantMetadata.model_validate(merged)
+
+
+def extract_document_title(
+    document_stem: str,
+    *,
+    work_root: str | Path = DEFAULT_WORK_ROOT,
+) -> str | None:
+    """Берёт человекочитаемый заголовок варианта из уже готового Markdown."""
+
+    workspace = Path(work_root) / document_stem
+    roots = (
+        workspace / "markdown_verified",
+        workspace / "markdown_bounded",
+        workspace / "markdown",
+    )
+    for root in roots:
+        if not root.is_dir():
+            continue
+        pages = sorted(root.glob("page_*/page_*.md"))
+        for page in pages[:2]:
+            try:
+                text = page.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            match = DOCUMENT_TITLE_PATTERN.search(text)
+            if match:
+                return " ".join(match.group("title").split())
+    return None
 
 
 def infer_year(*values: str) -> int | None:
@@ -212,6 +253,18 @@ def _variant_code(
     if workbook.parent == document_output:
         return document_stem
     return workbook.parent.name
+
+
+def _configure_utf8_output() -> None:
+    """Стабилизирует русский вывод дочернего Python-процесса в Windows pipe."""
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
 
 
 def _scoped_catalog(catalog: ReferenceCatalog, root_id: int) -> ReferenceCatalog:
