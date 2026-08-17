@@ -2,29 +2,55 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
+import shutil
 import subprocess
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from .batch_exports import (
+    create_batch_metadata_archive,
+    create_private_archive,
+    create_send_archives,
+)
 from .excel import read_tasks_xlsx
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_INPUT_DIR = PROJECT_DIR / "output" / "input"
 DEFAULT_RESULT_ROOT = PROJECT_DIR / "output" / "result"
+DEFAULT_EXPORT_ROOT = PROJECT_DIR / "output" / "export"
+DEFAULT_WORK_ROOT = PROJECT_DIR / "output" / "work"
 REPORT_HEADERS = (
     "filename",
     "status",
+    "attempts",
     "started_at",
     "finished_at",
     "elapsed_seconds",
     "variants",
     "tasks",
     "error",
+    "export_error",
 )
+
+
+@dataclass
+class DocumentState:
+    pdf_path: Path
+    status: str = "pending"
+    attempts: int = 0
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    elapsed_seconds: float = 0.0
+    variants: int = 0
+    tasks: int = 0
+    error: str = ""
+    export_error: str = ""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,6 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_RESULT_ROOT,
         help="Корневая папка результатов. По умолчанию output/result.",
+    )
+    parser.add_argument(
+        "--export-root",
+        type=Path,
+        default=DEFAULT_EXPORT_ROOT,
+        help="Корневая папка ZIP-архивов. По умолчанию output/export.",
     )
     parser.add_argument(
         "--run-name",
@@ -68,6 +100,27 @@ def build_parser() -> argparse.ArgumentParser:
         default=19,
         help="Ожидаемое число задач в варианте; 0 отключает проверку.",
     )
+    parser.add_argument(
+        "--api-retries",
+        type=int,
+        default=12,
+        help="Число retry для API DeepSeek внутри одного запроса. По умолчанию 12.",
+    )
+    parser.add_argument(
+        "--failed-retry-rounds",
+        type=int,
+        default=2,
+        help=(
+            "Сколько дополнительных раз повторить PDF, не прошедшие основной "
+            "проход. По умолчанию 2."
+        ),
+    )
+    parser.add_argument(
+        "--failed-retry-delay-seconds",
+        type=float,
+        default=300.0,
+        help="Пауза перед повторным кругом упавших PDF. По умолчанию 300 секунд.",
+    )
     return parser
 
 
@@ -80,6 +133,17 @@ def main() -> None:
 def run_batch(args: argparse.Namespace) -> int:
     input_dir = args.input_dir.resolve()
     result_root = args.result_root.resolve()
+    export_root = getattr(args, "export_root", DEFAULT_EXPORT_ROOT).resolve()
+    api_retries = max(0, int(getattr(args, "api_retries", 12)))
+    failed_retry_rounds = max(
+        0,
+        int(getattr(args, "failed_retry_rounds", 2)),
+    )
+    failed_retry_delay_seconds = max(
+        0.0,
+        float(getattr(args, "failed_retry_delay_seconds", 300.0)),
+    )
+
     pdfs = discover_pdfs(input_dir)
     if not pdfs:
         print(f"В {input_dir} нет PDF для пакетной обработки.", flush=True)
@@ -88,26 +152,21 @@ def run_batch(args: argparse.Namespace) -> int:
     run_name = args.run_name or datetime.now().strftime("batch_%Y%m%d_%H%M%S")
     _validate_run_name(run_name)
     run_dir = result_root / run_name
+    export_dir = export_root / run_name
     if run_dir.exists():
         print(f"Папка пакетного запуска уже существует: {run_dir}", flush=True)
+        return 2
+    if export_dir.exists():
+        print(f"Папка экспортов уже существует: {export_dir}", flush=True)
         return 2
     run_dir.mkdir(parents=True, exist_ok=False)
 
     report_path = run_dir / "batch_report.csv"
     log_path = run_dir / "batch.log"
+    states = [DocumentState(pdf_path=pdf_path) for pdf_path in pdfs]
     total_started = time.perf_counter()
-    succeeded = 0
-    failed = 0
-    total_variants = 0
-    total_tasks = 0
 
-    with (
-        log_path.open("w", encoding="utf-8", newline="") as log_file,
-        report_path.open("w", encoding="utf-8-sig", newline="") as report_file,
-    ):
-        writer = csv.DictWriter(report_file, fieldnames=REPORT_HEADERS)
-        writer.writeheader()
-        report_file.flush()
+    with log_path.open("w", encoding="utf-8", newline="") as log_file:
 
         def emit(message: str = "") -> None:
             print(message, flush=True)
@@ -122,78 +181,123 @@ def run_batch(args: argparse.Namespace) -> int:
         emit(f"Пакетный запуск: {run_name}")
         emit(f"PDF: {len(pdfs)}")
         emit("Режим: только парсинг, без решений и ответов")
+        emit(f"API retry: {api_retries}")
+        emit(
+            "Повторные круги упавших PDF: "
+            f"{failed_retry_rounds}, пауза={failed_retry_delay_seconds:g} сек"
+        )
         emit(f"Результаты: {run_dir}")
         emit(f"Полный лог: {log_path}")
 
-        for index, pdf_path in enumerate(pdfs, start=1):
-            document_output = run_dir / pdf_path.stem
-            started_at = datetime.now()
-            started = time.perf_counter()
-            emit()
-            emit("=" * 88)
-            emit(
-                f"[{index}/{len(pdfs)}] {pdf_path.name} — старт "
-                f"{started_at:%Y-%m-%d %H:%M:%S}"
-            )
+        pending = states
+        max_attempts = failed_retry_rounds + 1
+        for round_number in range(1, max_attempts + 1):
+            if not pending:
+                break
 
-            error = ""
-            status = "ok"
-            variants = 0
-            tasks = 0
-            try:
-                return_code = run_document(
-                    pdf_path,
-                    document_output,
-                    provider=args.provider,
-                    model=args.model,
-                    device=args.device,
-                    dpi=args.dpi,
-                    expected_tasks=args.expected_tasks,
-                    on_output=emit_child,
+            if round_number > 1:
+                emit()
+                emit("=" * 88)
+                emit(
+                    f"ПОВТОРНЫЙ КРУГ {round_number - 1}/{failed_retry_rounds}: "
+                    f"PDF в очереди: {len(pending)}"
                 )
-                if return_code != 0:
-                    status = "error"
-                    error = f"process exit code {return_code}"
-                else:
-                    variants, tasks = count_document_results(document_output)
-                    if variants == 0:
+                if failed_retry_delay_seconds > 0:
+                    emit(
+                        "Ожидание перед повтором: "
+                        f"{failed_retry_delay_seconds:g} секунд"
+                    )
+                    time.sleep(failed_retry_delay_seconds)
+
+            next_pending: list[DocumentState] = []
+            for state in pending:
+                state.attempts += 1
+                pdf_path = state.pdf_path
+                document_output = run_dir / pdf_path.stem
+                if state.attempts > 1 and document_output.exists():
+                    shutil.rmtree(document_output)
+
+                started_at = datetime.now()
+                if state.started_at is None:
+                    state.started_at = started_at
+                started = time.perf_counter()
+                emit()
+                emit("=" * 88)
+                emit(
+                    f"[{pdfs.index(pdf_path) + 1}/{len(pdfs)}] {pdf_path.name} — "
+                    f"попытка {state.attempts}/{max_attempts}, "
+                    f"старт {started_at:%Y-%m-%d %H:%M:%S}"
+                )
+
+                error = ""
+                status = "ok"
+                variants = 0
+                tasks = 0
+                reuse_markdown = (
+                    state.attempts > 1
+                    and has_complete_markdown_workspace(pdf_path.stem)
+                )
+                if reuse_markdown:
+                    emit("Повтор использует готовый Markdown без повторного OCR")
+
+                try:
+                    return_code = run_document(
+                        pdf_path,
+                        document_output,
+                        provider=args.provider,
+                        model=args.model,
+                        device=args.device,
+                        dpi=args.dpi,
+                        expected_tasks=args.expected_tasks,
+                        api_retries=api_retries,
+                        reuse_markdown=reuse_markdown,
+                        on_output=emit_child,
+                    )
+                    if return_code != 0:
                         status = "error"
-                        error = "tasks.xlsx не создан"
-            except Exception as exc:  # пакет должен продолжаться после одного сбоя
-                status = "error"
-                error = f"{type(exc).__name__}: {exc}"
+                        error = f"process exit code {return_code}"
+                    else:
+                        variants, tasks = count_document_results(document_output)
+                        if variants == 0:
+                            status = "error"
+                            error = "tasks.xlsx не создан"
+                except Exception as exc:
+                    status = "error"
+                    error = f"{type(exc).__name__}: {exc}"
 
-            finished_at = datetime.now()
-            elapsed = time.perf_counter() - started
-            if status == "ok":
-                succeeded += 1
-                total_variants += variants
-                total_tasks += tasks
-            else:
-                failed += 1
+                finished_at = datetime.now()
+                elapsed = time.perf_counter() - started
+                state.finished_at = finished_at
+                state.elapsed_seconds += elapsed
+                state.status = status
+                state.variants = variants
+                state.tasks = tasks
+                state.error = error
 
-            writer.writerow(
-                {
-                    "filename": pdf_path.name,
-                    "status": status,
-                    "started_at": started_at.isoformat(timespec="seconds"),
-                    "finished_at": finished_at.isoformat(timespec="seconds"),
-                    "elapsed_seconds": f"{elapsed:.3f}",
-                    "variants": variants,
-                    "tasks": tasks,
-                    "error": error,
-                }
-            )
-            report_file.flush()
+                if status == "error":
+                    next_pending.append(state)
 
-            emit(
-                f"[{index}/{len(pdfs)}] {pdf_path.name} — {status.upper()}, "
-                f"{elapsed / 60:.1f} мин, вариантов={variants}, задач={tasks}"
-            )
-            if error:
-                emit(f"Ошибка: {error}")
+                _write_report(report_path, states)
+                emit(
+                    f"[{pdfs.index(pdf_path) + 1}/{len(pdfs)}] {pdf_path.name} — "
+                    f"{status.upper()}, попыток={state.attempts}, "
+                    f"{elapsed / 60:.1f} мин, вариантов={variants}, задач={tasks}"
+                )
+                if error:
+                    emit(f"Ошибка: {error}")
 
+            pending = next_pending
+
+        succeeded = sum(state.status == "ok" for state in states)
+        failed = len(states) - succeeded
+        total_variants = sum(
+            state.variants for state in states if state.status == "ok"
+        )
+        total_tasks = sum(
+            state.tasks for state in states if state.status == "ok"
+        )
         total_elapsed = time.perf_counter() - total_started
+
         emit()
         emit("=" * 88)
         emit("ПАКЕТНЫЙ ПРОГОН ЗАВЕРШЁН")
@@ -206,14 +310,103 @@ def run_batch(args: argparse.Namespace) -> int:
         emit(f"Отчёт: {report_path}")
         emit(f"Полный лог: {log_path}")
 
-    return 0 if failed == 0 else 1
+    packaging_failed = _create_exports(
+        states,
+        run_dir=run_dir,
+        export_dir=export_dir,
+    )
+    _write_report(report_path, states)
+
+    with log_path.open("a", encoding="utf-8", newline="") as log_file:
+
+        def export_emit(message: str) -> None:
+            print(message, flush=True)
+            log_file.write(message + "\n")
+            log_file.flush()
+
+        export_emit("")
+        export_emit("=" * 88)
+        export_emit(f"ZIP для отправки: {export_dir / 'send'}")
+        export_emit(f"ZIP для себя: {export_dir / 'archive'}")
+        if packaging_failed:
+            export_emit(f"Ошибок упаковки: {packaging_failed}")
+        else:
+            export_emit("Упаковка завершена без ошибок")
+
+    try:
+        create_batch_metadata_archive(
+            report_path,
+            log_path,
+            export_dir / "archive",
+            run_name=run_name,
+        )
+    except Exception as exc:
+        packaging_failed += 1
+        message = f"{type(exc).__name__}: {exc}"
+        print(f"Ошибка упаковки общего лога: {message}", flush=True)
+        with log_path.open("a", encoding="utf-8", newline="") as log_file:
+            log_file.write(f"Ошибка упаковки общего лога: {message}\n")
+
+    failed = sum(state.status != "ok" for state in states)
+    return 0 if failed == 0 and packaging_failed == 0 else 1
+
+
+def _create_exports(
+    states: list[DocumentState],
+    *,
+    run_dir: Path,
+    export_dir: Path,
+) -> int:
+    send_dir = export_dir / "send"
+    archive_dir = export_dir / "archive"
+    send_dir.mkdir(parents=True, exist_ok=False)
+    archive_dir.mkdir(parents=True, exist_ok=False)
+    errors = 0
+
+    for state in states:
+        document_output = run_dir / state.pdf_path.stem
+        export_errors: list[str] = []
+
+        if state.status == "ok":
+            try:
+                create_send_archives(
+                    document_output,
+                    state.pdf_path.stem,
+                    send_dir,
+                )
+            except Exception as exc:
+                export_errors.append(
+                    f"send: {type(exc).__name__}: {exc}"
+                )
+
+        try:
+            create_private_archive(
+                state.pdf_path,
+                document_output,
+                archive_dir,
+                work_root=DEFAULT_WORK_ROOT,
+            )
+        except Exception as exc:
+            export_errors.append(
+                f"archive: {type(exc).__name__}: {exc}"
+            )
+
+        if export_errors:
+            state.export_error = " | ".join(export_errors)
+            errors += 1
+
+    return errors
 
 
 def discover_pdfs(input_dir: Path) -> list[Path]:
     if not input_dir.is_dir():
         return []
     return sorted(
-        (path for path in input_dir.iterdir() if path.is_file() and path.suffix.lower() == ".pdf"),
+        (
+            path
+            for path in input_dir.iterdir()
+            if path.is_file() and path.suffix.lower() == ".pdf"
+        ),
         key=lambda path: path.name.casefold(),
     )
 
@@ -227,6 +420,8 @@ def run_document(
     device: str,
     dpi: int,
     expected_tasks: int,
+    api_retries: int = 12,
+    reuse_markdown: bool = False,
     on_output: Callable[[str], None] | None = None,
 ) -> int:
     command = [
@@ -237,7 +432,6 @@ def run_document(
         provider,
         "--no-solutions",
         "--no-answers",
-        "--run-ocr",
         "--output-dir",
         str(output_dir),
         "--device",
@@ -247,12 +441,17 @@ def run_document(
         "--expected-tasks",
         str(expected_tasks),
     ]
+    command.append("--reuse-markdown" if reuse_markdown else "--run-ocr")
     if model:
         command.extend(("--model", model))
+
+    child_env = os.environ.copy()
+    child_env["DEEPSEEK_MAX_RETRIES"] = str(api_retries)
 
     process = subprocess.Popen(
         command,
         cwd=PROJECT_DIR,
+        env=child_env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -264,6 +463,13 @@ def run_document(
     for raw_line in process.stdout:
         output(decode_subprocess_output(raw_line))
     return process.wait()
+
+
+def has_complete_markdown_workspace(document_stem: str) -> bool:
+    workspace = DEFAULT_WORK_ROOT / document_stem
+    pages = sorted((workspace / "pages").glob("page_*.png"))
+    markdown = sorted((workspace / "markdown").glob("page_*/page_*.md"))
+    return bool(pages) and len(markdown) == len(pages)
 
 
 def decode_subprocess_output(raw: bytes) -> str:
@@ -300,6 +506,39 @@ def count_document_results(output_dir: Path) -> tuple[int, int]:
     for workbook in workbooks:
         total_tasks += len(read_tasks_xlsx(workbook))
     return len(workbooks), total_tasks
+
+
+def _write_report(
+    report_path: Path,
+    states: list[DocumentState],
+) -> None:
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    with report_path.open("w", encoding="utf-8-sig", newline="") as report_file:
+        writer = csv.DictWriter(report_file, fieldnames=REPORT_HEADERS)
+        writer.writeheader()
+        for state in states:
+            writer.writerow(
+                {
+                    "filename": state.pdf_path.name,
+                    "status": state.status,
+                    "attempts": state.attempts,
+                    "started_at": (
+                        state.started_at.isoformat(timespec="seconds")
+                        if state.started_at
+                        else ""
+                    ),
+                    "finished_at": (
+                        state.finished_at.isoformat(timespec="seconds")
+                        if state.finished_at
+                        else ""
+                    ),
+                    "elapsed_seconds": f"{state.elapsed_seconds:.3f}",
+                    "variants": state.variants,
+                    "tasks": state.tasks,
+                    "error": state.error,
+                    "export_error": state.export_error,
+                }
+            )
 
 
 def _validate_run_name(run_name: str) -> None:
