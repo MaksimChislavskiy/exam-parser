@@ -106,6 +106,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ожидаемое число задач в варианте; 0 отключает проверку.",
     )
     parser.add_argument(
+        "--reuse-markdown",
+        action="store_true",
+        help=(
+            "Не запускать OCR в первом проходе: использовать уже готовый "
+            "output/work/<имя PDF>/markdown. Если рабочего Markdown нет, "
+            "пакетный запуск не начинается."
+        ),
+    )
+    parser.add_argument(
         "--exams-scope-root",
         type=int,
         default=2,
@@ -170,11 +179,27 @@ def run_batch(args: argparse.Namespace) -> int:
     topics_scope_root = int(getattr(args, "topics_scope_root", 1))
     school_class = int(getattr(args, "school_class", 11))
     classification_model = getattr(args, "classification_model", None)
+    reuse_markdown_first_pass = bool(getattr(args, "reuse_markdown", False))
 
     pdfs = discover_pdfs(input_dir)
     if not pdfs:
         print(f"В {input_dir} нет PDF для пакетной обработки.", flush=True)
         return 2
+
+    if reuse_markdown_first_pass:
+        missing_markdown = [
+            pdf_path.name
+            for pdf_path in pdfs
+            if not has_complete_markdown_workspace(pdf_path.stem)
+        ]
+        if missing_markdown:
+            print(
+                "Режим --reuse-markdown: не найден полный рабочий Markdown для: "
+                + ", ".join(missing_markdown),
+                flush=True,
+            )
+            print("OCR автоматически запускаться не будет.", flush=True)
+            return 2
 
     run_name = args.run_name or datetime.now().strftime("batch_%Y%m%d_%H%M%S")
     _validate_run_name(run_name)
@@ -211,6 +236,10 @@ def run_batch(args: argparse.Namespace) -> int:
             "Режим: парсинг без решений/ответов → классификация → "
             "конечный Excel Tasks + about"
         )
+        if reuse_markdown_first_pass:
+            emit("OCR: пропущен, используется готовый рабочий Markdown")
+        else:
+            emit("OCR: выполняется в первом проходе")
         emit(
             "Области классификации: "
             f"exams={exams_scope_root}, topics={topics_scope_root}, "
@@ -268,12 +297,15 @@ def run_batch(args: argparse.Namespace) -> int:
                 status = "ok"
                 variants = 0
                 tasks = 0
-                reuse_markdown = (
+                reuse_markdown = reuse_markdown_first_pass or (
                     state.attempts > 1
                     and has_complete_markdown_workspace(pdf_path.stem)
                 )
                 if reuse_markdown:
-                    emit("Повтор использует готовый Markdown без повторного OCR")
+                    if state.attempts == 1:
+                        emit("Используется готовый Markdown без OCR")
+                    else:
+                        emit("Повтор использует готовый Markdown без повторного OCR")
 
                 try:
                     return_code = run_document(
