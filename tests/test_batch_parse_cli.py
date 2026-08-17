@@ -13,12 +13,16 @@ def _args(input_dir: Path, result_root: Path) -> Namespace:
     return Namespace(
         input_dir=input_dir,
         result_root=result_root,
+        export_root=result_root.parent / "export",
         run_name="night_test",
         provider="deepseek",
         model=None,
         device="gpu:0",
         dpi=300,
         expected_tasks=19,
+        api_retries=12,
+        failed_retry_rounds=0,
+        failed_retry_delay_seconds=0.0,
     )
 
 
@@ -75,6 +79,7 @@ def test_batch_continues_after_document_failure_and_writes_report(
 
     assert [row["filename"] for row in rows] == ["a.pdf", "b.pdf"]
     assert rows[0]["status"] == "ok"
+    assert rows[0]["attempts"] == "1"
     assert rows[0]["variants"] == "1"
     assert rows[0]["tasks"] == "1"
     assert rows[1]["status"] == "error"
@@ -84,6 +89,45 @@ def test_batch_continues_after_document_failure_and_writes_report(
     assert "child output: a.pdf" in log_text
     assert "child output: b.pdf" in log_text
     assert "ПАКЕТНЫЙ ПРОГОН ЗАВЕРШЁН" in log_text
+
+
+def test_failed_document_is_requeued_and_can_recover(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    result_root = tmp_path / "result"
+    input_dir.mkdir()
+    pdf_path = input_dir / "flaky.pdf"
+    pdf_path.write_bytes(b"pdf")
+    calls = 0
+
+    def fake_run_document(pdf_path: Path, output_dir: Path, **kwargs) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 7
+        write_tasks_xlsx(
+            [TaskRecord(task_num="1", condition="Условие")],
+            output_dir / "tasks.xlsx",
+        )
+        return 0
+
+    monkeypatch.setattr(batch_parse_cli, "run_document", fake_run_document)
+    args = _args(input_dir, result_root)
+    args.failed_retry_rounds = 1
+
+    exit_code = batch_parse_cli.run_batch(args)
+
+    assert exit_code == 0
+    assert calls == 2
+    report_path = result_root / "night_test" / "batch_report.csv"
+    with report_path.open(encoding="utf-8-sig", newline="") as report_file:
+        rows = list(csv.DictReader(report_file))
+    assert rows[0]["status"] == "ok"
+    assert rows[0]["attempts"] == "2"
+    assert (tmp_path / "export" / "night_test" / "send" / "flaky.zip").is_file()
+    assert (tmp_path / "export" / "night_test" / "archive" / "flaky.zip").is_file()
 
 
 def test_run_document_forces_parse_only_flags(tmp_path: Path, monkeypatch) -> None:
@@ -124,6 +168,43 @@ def test_run_document_forces_parse_only_flags(tmp_path: Path, monkeypatch) -> No
     assert "--run-ocr" in command
     assert captured["kwargs"]["stdin"] is batch_parse_cli.subprocess.DEVNULL
     assert captured["kwargs"]["text"] is False
+    assert captured["kwargs"]["env"]["DEEPSEEK_MAX_RETRIES"] == "12"
+
+
+def test_run_document_can_reuse_markdown_on_retry(tmp_path: Path, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeStdout:
+        def __iter__(self):
+            return iter(())
+
+    class FakeProcess:
+        stdout = FakeStdout()
+
+        def wait(self) -> int:
+            return 0
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        return FakeProcess()
+
+    monkeypatch.setattr(batch_parse_cli.subprocess, "Popen", fake_popen)
+
+    batch_parse_cli.run_document(
+        Path("sample.pdf"),
+        tmp_path / "out",
+        provider="deepseek",
+        model=None,
+        device="gpu:0",
+        dpi=300,
+        expected_tasks=19,
+        reuse_markdown=True,
+    )
+
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert "--reuse-markdown" in command
+    assert "--run-ocr" not in command
 
 
 def test_decode_subprocess_output_prefers_utf8() -> None:
