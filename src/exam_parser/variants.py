@@ -74,7 +74,9 @@ def detect_document_variants(
     на начало работы. Если заголовок варианта OCR не распознал, допускаются
     осторожные запасные признаки: для современной нумерации после заданий
     13--19 снова начинаются часть 1 и задание 1; для старой нумерации В/С новый
-    вариант начинается с В1 после уже встречавшихся поздних В или заданий С.
+    вариант начинается с ранних В после уже встречавшихся поздних В или заданий
+    С. Если OCR потерял В1, сочетание В2+В3 также считается сильным признаком
+    начала следующего старого варианта.
     """
 
     markdown_dir = Path(markdown_dir)
@@ -172,7 +174,10 @@ def _starts_new_variant(
         part == "C" or (part == "B" and number >= 10)
         for part, number in current.legacy_task_numbers
     )
-    return ("B", 1) in legacy_task_numbers and has_completed_legacy_set
+    return (
+        has_completed_legacy_set
+        and _looks_like_legacy_variant_start(legacy_task_numbers)
+    )
 
 
 def _looks_like_variant_start(
@@ -192,14 +197,18 @@ def _looks_like_variant_start(
 def _looks_like_legacy_variant_start(
     task_numbers: set[tuple[str, int]],
 ) -> bool:
-    if ("B", 1) not in task_numbers:
-        return False
     early_b = {
         number
         for part, number in task_numbers
         if part == "B" and 1 <= number <= 7
     }
-    return len(early_b) >= 2
+    if ("B", 1) in task_numbers:
+        return len(early_b) >= 2
+
+    # В старых сканах номер В1 иногда целиком теряется OCR. После уже
+    # завершённого набора В/С последовательность В2+В3 в начале новой страницы
+    # достаточно сильна для границы и не привязывает детектор к числу страниц.
+    return {2, 3}.issubset(early_b)
 
 
 def _variant_identifier(markdown: str) -> str | None:
