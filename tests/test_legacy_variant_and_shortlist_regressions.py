@@ -37,13 +37,13 @@ def test_legacy_bc_numbering_splits_unlabeled_variants(tmp_path: Path) -> None:
     _write_page(
         tmp_path,
         1,
-        "В1. Первая\nВ2. Вторая\nВ10. Десятая\nВ14. Четырнадцатая",
+        "<p>В1. Первая</p>\n<p>В2. Вторая</p>\nВ10. Десятая\nВ14. Четырнадцатая",
     )
     _write_page(tmp_path, 2, "С1. Первая сложная\nС6. Последняя сложная")
     _write_page(
         tmp_path,
         3,
-        "B1. Первая нового варианта\nB2. Вторая нового варианта\nB14. Поздняя",
+        "## **B1. Первая нового варианта**\nB2. Вторая нового варианта\nB14. Поздняя",
     )
     _write_page(tmp_path, 4, "C1. Сложная\nC6. Последняя")
 
@@ -58,6 +58,21 @@ def test_legacy_bc_numbering_does_not_split_without_restart(tmp_path: Path) -> N
     _write_page(tmp_path, 1, "В1. Первая\nВ2. Вторая")
     _write_page(tmp_path, 2, "В10. Десятая\nВ14. Четырнадцатая")
     _write_page(tmp_path, 3, "С1. Сложная\nС6. Последняя")
+
+    variants = detect_document_variants(tmp_path)
+
+    assert len(variants) == 1
+    assert variants[0].page_numbers == (1, 2, 3)
+
+
+def test_legacy_answer_page_does_not_look_like_new_variant(tmp_path: Path) -> None:
+    _write_page(tmp_path, 1, "В1. Первая\nВ2. Вторая\nВ14. Последняя")
+    _write_page(tmp_path, 2, "С1. Сложная\nС6. Последняя сложная")
+    _write_page(
+        tmp_path,
+        3,
+        "# Ответы\nB1 12\nB2 7\nB3 4\nC1 15",
+    )
 
     variants = detect_document_variants(tmp_path)
 
