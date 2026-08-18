@@ -125,3 +125,56 @@ def test_in_place_file_is_unchanged_when_second_classification_errors(
     result = read_tasks_xlsx(input_path)[0]
     assert result.exams_id is None
     assert result.topics_id is None
+
+
+def test_confusable_task_numbers_are_collapsed_before_classification(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "tasks.xlsx"
+    write_tasks_xlsx(
+        [
+            TaskRecord(task_num="В3", condition="Первое условие"),
+            TaskRecord(task_num="B3", condition="Латинский дубль"),
+            TaskRecord(task_num="ВЗ", condition="OCR-дубль с буквой З"),
+            TaskRecord(task_num="C1", condition="Другая задача"),
+        ],
+        input_path,
+    )
+
+    classify_tasks_workbook(
+        input_path,
+        input_path,
+        classifier=FakeClassifier(),
+        exams_catalog=_catalog("exams", 171, "Exam category"),
+        topics_catalog=_catalog("topics", 163, "Topic category"),
+    )
+
+    result = read_tasks_xlsx(input_path)
+    assert [record.task_num for record in result] == ["В3", "C1"]
+    assert [record.condition for record in result] == [
+        "Первое условие",
+        "Другая задача",
+    ]
+    assert all(record.exams_id == 171 for record in result)
+    assert all(record.topics_id == 163 for record in result)
+
+
+def test_cyrillic_zhe_like_three_is_normalized_in_task_number(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "tasks.xlsx"
+    write_tasks_xlsx(
+        [TaskRecord(task_num="ВЗ", condition="Условие")],
+        input_path,
+    )
+
+    classify_tasks_workbook(
+        input_path,
+        input_path,
+        classifier=FakeClassifier(),
+        exams_catalog=_catalog("exams", 171, "Exam category"),
+        topics_catalog=_catalog("topics", 163, "Topic category"),
+    )
+
+    result = read_tasks_xlsx(input_path)
+    assert [record.task_num for record in result] == ["В3"]
