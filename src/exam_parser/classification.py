@@ -10,6 +10,22 @@ from .reference_catalogs import ReferenceCatalog
 
 ClassificationTarget = Literal["exams_id", "topics_id"]
 
+_TASK_NUM_CONFUSABLES = str.maketrans(
+    {
+        "А": "A",
+        "В": "B",
+        "С": "C",
+        "Е": "E",
+        "Н": "H",
+        "К": "K",
+        "М": "M",
+        "О": "O",
+        "Р": "P",
+        "Т": "T",
+        "Х": "X",
+    }
+)
+
 
 class ClassificationAssignment(BaseModel):
     task_num: str = Field(min_length=1)
@@ -29,6 +45,29 @@ class ClassificationReviewItem(BaseModel):
 
 class ClassificationReviewBatch(BaseModel):
     reviews: list[ClassificationReviewItem]
+
+
+def task_num_match_key(value: str) -> str:
+    """Нормализует визуально одинаковые латинские/кириллические номера задач."""
+
+    compact = "".join(value.upper().split())
+    return compact.translate(_TASK_NUM_CONFUSABLES)
+
+
+def build_task_num_lookup(records: list[TaskRecord]) -> dict[str, str]:
+    """Связывает нормализованный ключ с исходным task_num из Excel."""
+
+    lookup: dict[str, str] = {}
+    for record in records:
+        key = task_num_match_key(record.task_num)
+        previous = lookup.get(key)
+        if previous is not None and previous != record.task_num:
+            raise ValueError(
+                "Неоднозначные номера задач после нормализации: "
+                f"{previous!r} и {record.task_num!r}"
+            )
+        lookup[key] = record.task_num
+    return lookup
 
 
 def build_classification_prompt(
@@ -253,18 +292,21 @@ def validate_classification_batch(
 ) -> dict[str, ClassificationAssignment]:
     """Проверяет ответ модели до записи ID в итоговый Excel."""
 
-    expected_task_nums = {record.task_num for record in records}
+    expected_by_key = build_task_num_lookup(records)
+    expected_task_nums = set(expected_by_key.values())
     assignments: dict[str, ClassificationAssignment] = {}
     catalog_by_id = catalog.by_id()
 
     for assignment in batch.assignments:
-        if assignment.task_num not in expected_task_nums:
+        returned_task_num = assignment.task_num
+        task_num = expected_by_key.get(task_num_match_key(returned_task_num))
+        if task_num is None:
             raise ValueError(
-                f"Классификатор вернул неизвестную задачу {assignment.task_num!r}"
+                f"Классификатор вернул неизвестную задачу {returned_task_num!r}"
             )
-        if assignment.task_num in assignments:
+        if task_num in assignments:
             raise ValueError(
-                f"Классификатор дважды вернул задачу {assignment.task_num}"
+                f"Классификатор дважды вернул задачу {returned_task_num}"
             )
 
         catalog_item = catalog_by_id.get(assignment.catalog_id)
@@ -279,13 +321,15 @@ def validate_classification_batch(
             actual_name = _normalize_name(catalog_item.name)
             if returned_name != actual_name:
                 raise ValueError(
-                    f"Для задачи {assignment.task_num} классификатор вернул "
+                    f"Для задачи {returned_task_num} классификатор вернул "
                     f"id={assignment.catalog_id}, но название "
                     f"{assignment.catalog_name!r} не совпадает со справочником "
                     f"{catalog_item.name!r}"
                 )
 
-        assignments[assignment.task_num] = assignment
+        if returned_task_num != task_num:
+            assignment = assignment.model_copy(update={"task_num": task_num})
+        assignments[task_num] = assignment
 
     missing = sorted(expected_task_nums.difference(assignments), key=_task_sort_key)
     if missing:
@@ -325,20 +369,25 @@ def validate_classification_review(
     records: list[TaskRecord],
     batch: ClassificationReviewBatch,
 ) -> dict[str, ClassificationReviewItem]:
-    expected_task_nums = {record.task_num for record in records}
+    expected_by_key = build_task_num_lookup(records)
+    expected_task_nums = set(expected_by_key.values())
     reviews: dict[str, ClassificationReviewItem] = {}
 
     for review in batch.reviews:
-        if review.task_num not in expected_task_nums:
+        returned_task_num = review.task_num
+        task_num = expected_by_key.get(task_num_match_key(returned_task_num))
+        if task_num is None:
             raise ValueError(
                 f"Проверка классификации вернула неизвестную задачу "
-                f"{review.task_num!r}"
+                f"{returned_task_num!r}"
             )
-        if review.task_num in reviews:
+        if task_num in reviews:
             raise ValueError(
-                f"Проверка классификации дважды вернула задачу {review.task_num}"
+                f"Проверка классификации дважды вернула задачу {returned_task_num}"
             )
-        reviews[review.task_num] = review
+        if returned_task_num != task_num:
+            review = review.model_copy(update={"task_num": task_num})
+        reviews[task_num] = review
 
     missing = sorted(expected_task_nums.difference(reviews), key=_task_sort_key)
     if missing:
