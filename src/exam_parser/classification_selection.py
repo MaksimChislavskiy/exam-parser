@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field
 from .classification import (
     ClassificationAssignment,
     ClassificationBatch,
+    build_task_num_lookup,
+    task_num_match_key,
     validate_classification_batch,
 )
 from .models import TaskRecord
@@ -227,29 +229,32 @@ def validate_classification_shortlist(
     batch: ClassificationShortlistBatch,
     catalog: ReferenceCatalog,
 ) -> dict[str, tuple[int, ...]]:
-    expected = {record.task_num for record in records}
+    expected_by_key = build_task_num_lookup(records)
+    expected = set(expected_by_key.values())
     known_ids = set(catalog.by_id())
     result: dict[str, tuple[int, ...]] = {}
     minimum = 1 if len(catalog.items) <= 1 else 2
 
     for item in batch.shortlists:
-        if item.task_num not in expected:
+        returned_task_num = item.task_num
+        task_num = expected_by_key.get(task_num_match_key(returned_task_num))
+        if task_num is None:
             raise ValueError(
-                f"Shortlist вернул неизвестную задачу {item.task_num!r}"
+                f"Shortlist вернул неизвестную задачу {returned_task_num!r}"
             )
-        if item.task_num in result:
+        if task_num in result:
             raise ValueError(
-                f"Shortlist дважды вернул задачу {item.task_num}"
+                f"Shortlist дважды вернул задачу {returned_task_num}"
             )
         ids = tuple(item.candidate_ids)
         if len(ids) < minimum:
             raise ValueError(
-                f"Для задачи {item.task_num} shortlist должен содержать "
+                f"Для задачи {returned_task_num} shortlist должен содержать "
                 f"минимум {minimum} кандидата"
             )
         if len(set(ids)) != len(ids):
             raise ValueError(
-                f"Для задачи {item.task_num} shortlist содержит "
+                f"Для задачи {returned_task_num} shortlist содержит "
                 "повторяющиеся id"
             )
         unknown = [
@@ -259,10 +264,10 @@ def validate_classification_shortlist(
         ]
         if unknown:
             raise ValueError(
-                f"Для задачи {item.task_num} shortlist содержит отсутствующие id: "
+                f"Для задачи {returned_task_num} shortlist содержит отсутствующие id: "
                 + ", ".join(map(str, unknown))
             )
-        result[item.task_num] = ids
+        result[task_num] = ids
 
     missing = sorted(expected.difference(result), key=_task_sort_key)
     if missing:
