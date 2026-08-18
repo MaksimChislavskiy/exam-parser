@@ -23,6 +23,9 @@ PART_ONE_PATTERN = re.compile(r"(?im)^\s*#{0,6}\s*Часть\s*1\b")
 INSTRUCTION_PATTERN = re.compile(
     r"(?i)Инструкц(?:ия|ии)\s+по\s+выполнению\s+работы"
 )
+ANSWER_SECTION_PATTERN = re.compile(
+    r"(?im)^\s*(?:#{1,6}\s*)?(?:ответы|ответы\s+к\s+заданиям)\b"
+)
 CONFUSABLE_LETTERS = str.maketrans(
     {
         "А": "A",
@@ -181,6 +184,8 @@ def _looks_like_variant_start(
         return True
     if 1 in task_numbers and PART_ONE_PATTERN.search(markdown) is not None:
         return True
+    if ANSWER_SECTION_PATTERN.search(markdown):
+        return False
     return _looks_like_legacy_variant_start(legacy_task_numbers)
 
 
@@ -219,7 +224,8 @@ def _legacy_task_numbers(markdown: str) -> set[tuple[str, int]]:
 
     result: set[tuple[str, int]] = set()
     for raw_line in markdown.splitlines():
-        searchable = re.sub(r"^[\s#>*_`~-]+", "", raw_line)
+        searchable = re.sub(r"^(?:\s*<[^>]+>\s*)+", "", raw_line)
+        searchable = re.sub(r"^[\s#>*_`~-]+", "", searchable)
         match = LEGACY_TASK_LINE_PATTERN.match(searchable)
         if match is None:
             continue
