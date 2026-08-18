@@ -14,6 +14,11 @@ TASK_HEADING_PATTERN = re.compile(
     r"(?m)^[ \t]*((?:1[0-9]|[1-9]))"
     r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-яЁё0-9])|[ \t]*$)"
 )
+LEGACY_TASK_LINE_PATTERN = re.compile(
+    r"^(?P<part>[BВCС])\s*(?P<number>(?:1[0-9]|[1-9]|[Зз]))"
+    r"(?:\s*[.)]|\s+|$)",
+    re.IGNORECASE,
+)
 PART_ONE_PATTERN = re.compile(r"(?im)^\s*#{0,6}\s*Часть\s*1\b")
 INSTRUCTION_PATTERN = re.compile(
     r"(?i)Инструкц(?:ия|ии)\s+по\s+выполнению\s+работы"
@@ -54,6 +59,7 @@ class _VariantDraft:
     identifier: str | None
     page_numbers: list[int]
     task_numbers: set[int]
+    legacy_task_numbers: set[tuple[str, int]]
 
 
 def detect_document_variants(
@@ -62,9 +68,10 @@ def detect_document_variants(
     """Делит OCR Markdown на варианты, не привязываясь к числу страниц.
 
     Явная смена идентификатора считается границей только на странице, похожей
-    на начало работы. Если заголовок варианта OCR не распознал, допускается
-    осторожный запасной признак: после заданий 13--19 снова начинаются часть 1
-    и задание 1.
+    на начало работы. Если заголовок варианта OCR не распознал, допускаются
+    осторожные запасные признаки: для современной нумерации после заданий
+    13--19 снова начинаются часть 1 и задание 1; для старой нумерации В/С новый
+    вариант начинается с В1 после уже встречавшихся поздних В или заданий С.
     """
 
     markdown_dir = Path(markdown_dir)
@@ -83,12 +90,18 @@ def detect_document_variants(
         page_num = _page_number(page_path)
         identifier = _variant_identifier(markdown)
         task_numbers = _task_numbers(markdown)
-        looks_like_start = _looks_like_variant_start(markdown, task_numbers)
+        legacy_task_numbers = _legacy_task_numbers(markdown)
+        looks_like_start = _looks_like_variant_start(
+            markdown,
+            task_numbers,
+            legacy_task_numbers,
+        )
 
         if current is not None and _starts_new_variant(
             current,
             identifier=identifier,
             task_numbers=task_numbers,
+            legacy_task_numbers=legacy_task_numbers,
             looks_like_start=looks_like_start,
         ):
             drafts.append(current)
@@ -99,12 +112,14 @@ def detect_document_variants(
                 identifier=identifier,
                 page_numbers=[],
                 task_numbers=set(),
+                legacy_task_numbers=set(),
             )
         elif current.identifier is None and identifier is not None:
             current.identifier = identifier
 
         current.page_numbers.append(page_num)
         current.task_numbers.update(task_numbers)
+        current.legacy_task_numbers.update(legacy_task_numbers)
 
     if current is not None:
         drafts.append(current)
@@ -134,6 +149,7 @@ def _starts_new_variant(
     *,
     identifier: str | None,
     task_numbers: set[int],
+    legacy_task_numbers: set[tuple[str, int]],
     looks_like_start: bool,
 ) -> bool:
     if not looks_like_start:
@@ -146,13 +162,39 @@ def _starts_new_variant(
         return True
 
     has_completed_task_set = any(number >= 13 for number in current.task_numbers)
-    return 1 in task_numbers and has_completed_task_set
+    if 1 in task_numbers and has_completed_task_set:
+        return True
+
+    has_completed_legacy_set = any(
+        part == "C" or (part == "B" and number >= 10)
+        for part, number in current.legacy_task_numbers
+    )
+    return ("B", 1) in legacy_task_numbers and has_completed_legacy_set
 
 
-def _looks_like_variant_start(markdown: str, task_numbers: set[int]) -> bool:
+def _looks_like_variant_start(
+    markdown: str,
+    task_numbers: set[int],
+    legacy_task_numbers: set[tuple[str, int]],
+) -> bool:
     if INSTRUCTION_PATTERN.search(markdown):
         return True
-    return 1 in task_numbers and PART_ONE_PATTERN.search(markdown) is not None
+    if 1 in task_numbers and PART_ONE_PATTERN.search(markdown) is not None:
+        return True
+    return _looks_like_legacy_variant_start(legacy_task_numbers)
+
+
+def _looks_like_legacy_variant_start(
+    task_numbers: set[tuple[str, int]],
+) -> bool:
+    if ("B", 1) not in task_numbers:
+        return False
+    early_b = {
+        number
+        for part, number in task_numbers
+        if part == "B" and 1 <= number <= 7
+    }
+    return len(early_b) >= 2
 
 
 def _variant_identifier(markdown: str) -> str | None:
@@ -170,6 +212,23 @@ def _task_numbers(markdown: str) -> set[int]:
         int(match.group(1))
         for match in TASK_HEADING_PATTERN.finditer(markdown)
     }
+
+
+def _legacy_task_numbers(markdown: str) -> set[tuple[str, int]]:
+    """Извлекает старые номера В1..В15/С1..С6 из начала строк Markdown."""
+
+    result: set[tuple[str, int]] = set()
+    for raw_line in markdown.splitlines():
+        searchable = re.sub(r"^[\s#>*_`~-]+", "", raw_line)
+        match = LEGACY_TASK_LINE_PATTERN.match(searchable)
+        if match is None:
+            continue
+        part = match.group("part").upper().translate(CONFUSABLE_LETTERS)
+        number_text = match.group("number").upper().replace("З", "3")
+        if part not in {"B", "C"} or not number_text.isdigit():
+            continue
+        result.add((part, int(number_text)))
+    return result
 
 
 def _finalize_variants(drafts: list[_VariantDraft]) -> list[DocumentVariant]:
