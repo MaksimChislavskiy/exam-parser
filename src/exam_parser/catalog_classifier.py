@@ -196,9 +196,16 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
                 ClassificationShortlistBatch,
                 thinking=False,
             )
-            validate_classification_shortlist(chunk, chunk_batch, catalog)
-            for item in chunk_batch.shortlists:
-                items_by_task[item.task_num] = item
+            validated = validate_classification_shortlist(
+                chunk,
+                chunk_batch,
+                catalog,
+            )
+            for record in chunk:
+                items_by_task[record.task_num] = {
+                    "task_num": record.task_num,
+                    "candidate_ids": list(validated[record.task_num]),
+                }
 
         result = ClassificationShortlistBatch(
             shortlists=[items_by_task[record.task_num] for record in records]
