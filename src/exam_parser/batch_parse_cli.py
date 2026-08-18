@@ -54,6 +54,10 @@ class DocumentState:
     processed_pdf_path: Path | None = None
 
 
+class FatalBatchError(RuntimeError):
+    """Ошибка внешнего сервиса, после которой нельзя продолжать пакет."""
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -122,6 +126,14 @@ def build_parser() -> argparse.ArgumentParser:
             "Не запускать OCR в первом проходе: использовать уже готовый "
             "output/work/<имя PDF>/markdown. Если рабочего Markdown нет, "
             "пакетный запуск не начинается."
+        ),
+    )
+    parser.add_argument(
+        "--reuse-existing-markdown",
+        action="store_true",
+        help=(
+            "Пофайловое возобновление: если для PDF уже есть полный рабочий "
+            "Markdown, переиспользовать его без OCR; для остальных запустить OCR."
         ),
     )
     parser.add_argument(
@@ -196,6 +208,9 @@ def run_batch(args: argparse.Namespace) -> int:
     school_class = int(getattr(args, "school_class", 11))
     classification_model = getattr(args, "classification_model", None)
     reuse_markdown_first_pass = bool(getattr(args, "reuse_markdown", False))
+    reuse_existing_markdown = bool(
+        getattr(args, "reuse_existing_markdown", False)
+    )
 
     if processed_root == input_dir:
         print("--processed-dir не должен совпадать с --input-dir.", flush=True)
@@ -245,6 +260,7 @@ def run_batch(args: argparse.Namespace) -> int:
     log_path = run_dir / "batch.log"
     states = [DocumentState(pdf_path=pdf_path) for pdf_path in pdfs]
     total_started = time.perf_counter()
+    abort_reason: str | None = None
 
     with log_path.open("w", encoding="utf-8", newline="") as log_file:
 
@@ -266,6 +282,11 @@ def run_batch(args: argparse.Namespace) -> int:
         )
         if reuse_markdown_first_pass:
             emit("OCR: пропущен, используется готовый рабочий Markdown")
+        elif reuse_existing_markdown:
+            emit(
+                "OCR: готовый Markdown переиспользуется пофайлово; "
+                "для остальных PDF выполняется OCR"
+            )
         else:
             emit("OCR: выполняется в первом проходе")
         emit(
@@ -327,15 +348,19 @@ def run_batch(args: argparse.Namespace) -> int:
                 variants = 0
                 tasks = 0
                 processed_pdf_path: Path | None = None
-                reuse_markdown = reuse_markdown_first_pass or (
-                    state.attempts > 1
-                    and has_complete_markdown_workspace(pdf_path.stem)
+                workspace_ready = has_complete_markdown_workspace(pdf_path.stem)
+                reuse_markdown = (
+                    reuse_markdown_first_pass
+                    or (reuse_existing_markdown and workspace_ready)
+                    or (state.attempts > 1 and workspace_ready)
                 )
                 if reuse_markdown:
-                    if state.attempts == 1:
-                        emit("Используется готовый Markdown без OCR")
-                    else:
+                    if state.attempts > 1:
                         emit("Повтор использует готовый Markdown без повторного OCR")
+                    elif reuse_existing_markdown and not reuse_markdown_first_pass:
+                        emit("Найден готовый Markdown — OCR для PDF пропущен")
+                    else:
+                        emit("Используется готовый Markdown без OCR")
 
                 try:
                     return_code = run_document(
@@ -382,6 +407,10 @@ def run_batch(args: argparse.Namespace) -> int:
                                     "PDF перемещён в очередь проверки: "
                                     f"{processed_pdf_path}"
                                 )
+                except FatalBatchError as exc:
+                    status = "error"
+                    error = str(exc)
+                    abort_reason = error
                 except Exception as exc:
                     status = "error"
                     error = f"{type(exc).__name__}: {exc}"
@@ -408,11 +437,17 @@ def run_batch(args: argparse.Namespace) -> int:
                 )
                 if error:
                     emit(f"Ошибка: {error}")
+                if abort_reason:
+                    emit("Критическая ошибка API: дальнейший OCR остановлен.")
+                    break
 
             pending = next_pending
+            if abort_reason:
+                break
 
         succeeded = sum(state.status == "ok" for state in states)
-        failed = len(states) - succeeded
+        failed = sum(state.status == "error" for state in states)
+        not_started = sum(state.status == "pending" for state in states)
         total_variants = sum(
             state.variants for state in states if state.status == "ok"
         )
@@ -423,15 +458,27 @@ def run_batch(args: argparse.Namespace) -> int:
 
         emit()
         emit("=" * 88)
-        emit("ПАКЕТНЫЙ ПРОГОН ЗАВЕРШЁН")
+        emit(
+            "ПАКЕТНЫЙ ПРОГОН ОСТАНОВЛЕН"
+            if abort_reason
+            else "ПАКЕТНЫЙ ПРОГОН ЗАВЕРШЁН"
+        )
         emit(f"PDF всего: {len(pdfs)}")
         emit(f"Успешно: {succeeded}")
         emit(f"С ошибкой: {failed}")
+        if not_started:
+            emit(f"Не запущено: {not_started}")
         emit(f"Вариантов: {total_variants}")
         emit(f"Задач: {total_tasks}")
         emit(f"Общее время: {total_elapsed / 60:.1f} мин")
+        if abort_reason:
+            emit(f"Причина остановки: {abort_reason}")
         emit(f"Отчёт: {report_path}")
         emit(f"Полный лог: {log_path}")
+
+    if abort_reason:
+        _write_report(report_path, states)
+        return 1
 
     packaging_failed = _create_exports(
         states,
@@ -599,13 +646,7 @@ def run_document(
     )
     assert process.stdout is not None
     output = on_output or _print_child_output
-    try:
-        for raw_line in process.stdout:
-            output(decode_subprocess_output(raw_line))
-        return process.wait()
-    except KeyboardInterrupt:
-        _terminate_process(process)
-        raise
+    return _run_streamed_process(process, output)
 
 
 def run_finalization(
@@ -651,13 +692,44 @@ def run_finalization(
     )
     assert process.stdout is not None
     output = on_output or _print_child_output
+    return _run_streamed_process(process, output)
+
+
+def _run_streamed_process(
+    process: subprocess.Popen[bytes],
+    output: Callable[[str], None],
+) -> int:
+    """Пишет вывод дочернего процесса и ловит фатальные API-ошибки."""
+
+    assert process.stdout is not None
+    fatal_error: str | None = None
     try:
         for raw_line in process.stdout:
-            output(decode_subprocess_output(raw_line))
-        return process.wait()
+            text = decode_subprocess_output(raw_line)
+            output(text)
+            if fatal_error is None:
+                fatal_error = _fatal_api_error_from_output(text)
+        return_code = process.wait()
+        if fatal_error is not None:
+            raise FatalBatchError(fatal_error)
+        return return_code
     except KeyboardInterrupt:
         _terminate_process(process)
         raise
+
+
+def _fatal_api_error_from_output(text: str) -> str | None:
+    normalized = text.casefold()
+    if (
+        "insufficient balance" in normalized
+        or "402 payment required" in normalized
+        or "error code: 402" in normalized
+    ):
+        return (
+            "DeepSeek API вернул HTTP 402 Insufficient Balance; пакет остановлен, "
+            "чтобы не тратить OCR на следующие PDF"
+        )
+    return None
 
 
 def _terminate_process(process: subprocess.Popen[bytes]) -> None:
