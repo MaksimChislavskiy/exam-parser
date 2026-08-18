@@ -54,6 +54,22 @@ def test_legacy_bc_numbering_splits_unlabeled_variants(tmp_path: Path) -> None:
     assert [item.output_name for item in variants] == ["variant_1", "variant_2"]
 
 
+def test_legacy_bc_numbering_splits_when_b1_is_missed_by_ocr(tmp_path: Path) -> None:
+    _write_page(tmp_path, 1, "В1. Первая\nВ10. Десятая\nВ14. Четырнадцатая")
+    _write_page(tmp_path, 2, "С2. Сложная\nС6. Последняя сложная")
+    _write_page(
+        tmp_path,
+        3,
+        "B2. Вторая нового варианта\nB3. Третья нового варианта",
+    )
+    _write_page(tmp_path, 4, "B13. Поздняя\nB14. Последняя\nC2. Сложная\nC6. Последняя")
+
+    variants = detect_document_variants(tmp_path)
+
+    assert len(variants) == 2
+    assert [item.page_numbers for item in variants] == [(1, 2), (3, 4)]
+
+
 def test_legacy_bc_numbering_does_not_split_without_restart(tmp_path: Path) -> None:
     _write_page(tmp_path, 1, "В1. Первая\nВ2. Вторая")
     _write_page(tmp_path, 2, "В10. Десятая\nВ14. Четырнадцатая")
