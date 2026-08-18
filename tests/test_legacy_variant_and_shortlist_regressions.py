@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from exam_parser.catalog_classifier import DeepSeekCatalogClassifier
-from exam_parser.classification_selection import ClassificationShortlistBatch
+from exam_parser.classification import ClassificationBatch
 from exam_parser.models import TaskRecord
 from exam_parser.reference_catalogs import CatalogSpec, load_reference_catalog
 from exam_parser.variants import detect_document_variants
@@ -96,7 +96,7 @@ def test_legacy_answer_page_does_not_look_like_new_variant(tmp_path: Path) -> No
     assert variants[0].page_numbers == (1, 2, 3)
 
 
-def test_shortlist_batch_canonicalizes_latin_c_to_cyrillic_task_number(
+def test_direct_classifier_canonicalizes_latin_c_to_cyrillic_task_number(
     tmp_path: Path,
 ) -> None:
     records = [TaskRecord(task_num="С6", condition="Условие")]
@@ -105,16 +105,15 @@ def test_shortlist_batch_canonicalizes_latin_c_to_cyrillic_task_number(
     classifier.refresh_cache = False
 
     def fake_request(prompt, response_model, *, thinking):
-        assert response_model is ClassificationShortlistBatch
+        assert response_model is ClassificationBatch
         assert thinking is False
-        return ClassificationShortlistBatch(
-            shortlists=[{"task_num": "C6", "candidate_ids": [1, 2]}]
+        return ClassificationBatch(
+            assignments=[{"task_num": "C6", "catalog_id": 1, "catalog_name": "One"}]
         )
 
     classifier._request_structured = fake_request  # type: ignore[method-assign]
+    result = classifier.classify_catalog(records, _catalog(tmp_path))
 
-    result = classifier._build_shortlist_in_batches(records, _catalog(tmp_path))
-
-    assert len(result.shortlists) == 1
-    assert result.shortlists[0].task_num == "С6"
-    assert result.shortlists[0].candidate_ids == [1, 2]
+    assert len(result.assignments) == 1
+    assert result.assignments[0].task_num == "С6"
+    assert result.assignments[0].catalog_id == 1
