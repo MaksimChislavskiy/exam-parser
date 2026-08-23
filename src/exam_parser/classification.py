@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -25,6 +26,11 @@ _TASK_NUM_CONFUSABLES = str.maketrans(
         "Х": "X",
     }
 )
+_TASK_NUM_DECORATIVE_PREFIX_PATTERN = re.compile(
+    r"^\s*(?:(?:ЗАДАЧА|ЗАДАНИЕ)\s*[:.]?\s*)?"
+    r"(?:(?:№|NO\.)\s*)?",
+    re.IGNORECASE,
+)
 
 
 class ClassificationAssignment(BaseModel):
@@ -48,9 +54,12 @@ class ClassificationReviewBatch(BaseModel):
 
 
 def task_num_match_key(value: str) -> str:
-    """Нормализует визуально одинаковые латинские/кириллические номера задач."""
+    """Нормализует оформление и визуально одинаковые символы номера задачи."""
 
-    compact = "".join(value.upper().split())
+    without_prefix = _TASK_NUM_DECORATIVE_PREFIX_PATTERN.sub("", value, count=1)
+    if not without_prefix.strip():
+        without_prefix = value
+    compact = "".join(without_prefix.upper().split())
     return compact.translate(_TASK_NUM_CONFUSABLES)
 
 
