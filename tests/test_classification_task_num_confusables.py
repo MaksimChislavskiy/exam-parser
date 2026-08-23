@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from exam_parser.classification import (
     ClassificationBatch,
     ClassificationReviewBatch,
@@ -90,3 +92,57 @@ def test_shortlist_accepts_latin_confusables() -> None:
     shortlists = validate_classification_shortlist(_records(), batch, _catalog())
 
     assert shortlists == {"В1": (1, 2), "С2": (2, 1)}
+
+
+@pytest.mark.parametrize(
+    ("source_task_num", "returned_task_num"),
+    (
+        pytest.param("С2", "ЗАДАЧА С2", id="00405"),
+        pytest.param("1", "ЗАДАЧА 1", id="00559"),
+        pytest.param("№17.1", "17.1", id="33945"),
+        pytest.param("№10.1", "10.1", id="36544"),
+        pytest.param("16.1", "Задание16.1", id="dirty-successful-task-num"),
+        pytest.param("No.1.1", "1.1", id="35751"),
+    ),
+)
+def test_classification_accepts_only_decorative_task_num_prefix_changes(
+    source_task_num: str,
+    returned_task_num: str,
+) -> None:
+    records = [TaskRecord(task_num=source_task_num, condition="Условие")]
+    batch = ClassificationBatch(
+        assignments=[{"task_num": returned_task_num, "catalog_id": 1}]
+    )
+
+    assignments = validate_classification_batch(records, batch, _catalog())
+
+    assert set(assignments) == {source_task_num}
+    assert assignments[source_task_num].task_num == source_task_num
+
+
+def test_classification_does_not_drop_meaningful_task_num_suffix() -> None:
+    records = [
+        TaskRecord(
+            task_num="№1.1(Дальний Восток)",
+            condition="Условие",
+        )
+    ]
+    batch = ClassificationBatch(
+        assignments=[{"task_num": "1.1", "catalog_id": 1}]
+    )
+
+    with pytest.raises(ValueError, match="неизвестную задачу '1.1'"):
+        validate_classification_batch(records, batch, _catalog())
+
+
+def test_classification_rejects_ambiguous_numbers_after_prefix_cleanup() -> None:
+    records = [
+        TaskRecord(task_num="№10.1", condition="Первое условие"),
+        TaskRecord(task_num="10.1", condition="Второе условие"),
+    ]
+    batch = ClassificationBatch(
+        assignments=[{"task_num": "10.1", "catalog_id": 1}]
+    )
+
+    with pytest.raises(ValueError, match="Неоднозначные номера задач"):
+        validate_classification_batch(records, batch, _catalog())
