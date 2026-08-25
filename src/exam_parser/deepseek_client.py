@@ -15,6 +15,7 @@ from .models import (
     ExtractedAnswer,
     ExtractedTask,
     GeneratedAnswer,
+    MODEL_EMPTY_CONDITION_MARKER,
     PageExtraction,
     SolutionVerification,
     TaskDetailedSolution,
@@ -553,26 +554,92 @@ def _parse_structured_content(content: str, model: type[T]) -> T:
             lines = lines[:-1]
         stripped = "\n".join(lines).strip()
 
+    direct_error: ValidationError | None = None
     try:
-        return model.model_validate_json(stripped)
-    except ValidationError as direct_error:
-        decoder = json.JSONDecoder()
-        for index, character in enumerate(stripped):
-            if character not in "{[":
-                continue
-            try:
-                payload, _ = decoder.raw_decode(stripped[index:])
-            except json.JSONDecodeError:
-                continue
-            try:
-                return model.model_validate(payload)
-            except ValidationError:
-                continue
-        preview = stripped[:500]
-        raise ValueError(
-            "DeepSeek вернул ответ, не соответствующий ожидаемой структуре: "
-            f"{preview}"
-        ) from direct_error
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    else:
+        try:
+            return _validate_structured_payload(payload, model)
+        except ValidationError as error:
+            direct_error = error
+
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(stripped):
+        if character not in "{[":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(stripped[index:])
+        except json.JSONDecodeError:
+            continue
+        try:
+            return _validate_structured_payload(payload, model)
+        except ValidationError as error:
+            if direct_error is None:
+                direct_error = error
+            continue
+    preview = stripped[:500]
+    raise ValueError(
+        "DeepSeek вернул ответ, не соответствующий ожидаемой структуре: "
+        f"{preview}"
+    ) from direct_error
+
+
+def _validate_structured_payload(payload: object, model: type[T]) -> T:
+    try:
+        return model.model_validate(payload)
+    except ValidationError:
+        if model is not PageExtraction:
+            raise
+        repaired = _mark_empty_page_conditions(payload)
+        if repaired is None:
+            raise
+        return repaired  # type: ignore[return-value]
+
+
+def _mark_empty_page_conditions(payload: object) -> PageExtraction | None:
+    """Помечает отдельный пустой condition в законченном ответе страницы.
+
+    Маркер не является готовым условием: pipeline обязан заменить его точным
+    OCR-блоком и завершиться quality-ошибкой, если такого блока нет.
+    """
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("tasks"), list):
+        return None
+
+    repaired_payload = dict(payload)
+    repaired_tasks: list[object] = []
+    affected: list[str] = []
+    for raw_task in payload["tasks"]:
+        if not isinstance(raw_task, dict):
+            repaired_tasks.append(raw_task)
+            continue
+        task = dict(raw_task)
+        condition = task.get("condition")
+        if isinstance(condition, str) and not condition.strip():
+            task_num = task.get("task_num")
+            if not isinstance(task_num, str) or not task_num.strip():
+                return None
+            task["condition"] = MODEL_EMPTY_CONDITION_MARKER
+            affected.append(task_num.strip())
+        repaired_tasks.append(task)
+
+    if not affected:
+        return None
+    repaired_payload["tasks"] = repaired_tasks
+    try:
+        repaired = PageExtraction.model_validate(repaired_payload)
+    except ValidationError:
+        return None
+
+    print(
+        "DeepSeek: законченный JSON содержит пустое condition для задач "
+        + ", ".join(affected)
+        + "; повтор пропущен, будет использован точный OCR-блок",
+        flush=True,
+    )
+    return repaired
 
 
 def _env_bool(name: str, default: bool) -> bool:

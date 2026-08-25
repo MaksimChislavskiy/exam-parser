@@ -15,7 +15,12 @@ from .excel import read_tasks_xlsx, write_tasks_xlsx
 from .image_roles import is_non_content_image
 from .llm_client import LLMProvider, TaskClient, create_task_client
 from .math_text import normalize_ege_short_answer
-from .models import ExtractedAnswer, ExtractedTask, TaskRecord
+from .models import (
+    MODEL_EMPTY_CONDITION_MARKER,
+    ExtractedAnswer,
+    ExtractedTask,
+    TaskRecord,
+)
 from .ocr_noise import (
     OCR_UNREADABLE_REPEAT_MARKER,
     sanitize_pathological_ocr_repetitions,
@@ -66,8 +71,10 @@ HTML_WIDTH_PERCENT_PATTERN = re.compile(
 )
 TASK_HEADING_PATTERN = re.compile(
     r"(?m)^[ \t]*(?:#{1,6}[ \t]*)?"
+    r"(?:№[ \t]*)?"
     r"((?:[1-9]\d?)(?:\.\d+)?|[BВCС](?:1[0-9]|[1-9]))"
-    r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-яЁё0-9])|[ \t]*$)"
+    r"(?:\.[ \t]+|[ \t]+(?=[(A-Za-zА-Яа-яЁё0-9])|[ \t]*$)"
+    r"(?:\([^\n)]{1,80}\)[ \t]*(?=\n|$))?"
 )
 BOXED_TASK_HEADING_PATTERN = re.compile(
     r"(?im)^[ \t]*(?:\$\$[ \t]*)?"
@@ -356,7 +363,14 @@ def process_markdown(
             for task in tasks:
                 task = _clean_extracted_task(task)
                 source_condition = source_by_task.get(task.task_num)
-                if source_condition:
+                if task.condition == MODEL_EMPTY_CONDITION_MARKER:
+                    task = _restore_empty_model_condition(
+                        task,
+                        source_condition,
+                        provider_name=client.provider_name,
+                        page_num=page_num,
+                    )
+                elif source_condition:
                     task = _ensure_condition_fidelity(
                         client,
                         task,
@@ -870,6 +884,31 @@ def _ensure_condition_fidelity(
         image_id=task.image_id,
     )
     return _check_ambiguous_angle_notations(client, fallback)
+
+
+def _restore_empty_model_condition(
+    task: ExtractedTask,
+    source_condition: str | None,
+    *,
+    provider_name: str,
+    page_num: int,
+) -> ExtractedTask:
+    if not source_condition:
+        raise OCRQualityError(
+            f"{provider_name}: задача {task.task_num} на странице {page_num} "
+            "вернулась с пустым condition, а однозначный OCR-блок не найден. "
+            "Документ нельзя считать качественно обработанным."
+        )
+    print(
+        f"{provider_name}: пустое condition задачи {task.task_num} заменено "
+        "точным OCR-блоком без платного повтора",
+        flush=True,
+    )
+    return ExtractedTask(
+        task_num=task.task_num,
+        condition=source_condition,
+        image_id=task.image_id,
+    )
 
 
 def _check_ambiguous_angle_notations(

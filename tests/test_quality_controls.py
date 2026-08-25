@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from exam_parser.deepseek_client import DeepSeekTaskClient
 from exam_parser.markdown_pipeline import (
+    OCRQualityError,
     _SourceTaskBlock,
     _clean_extracted_task,
     _condition_fidelity_issues,
@@ -15,11 +16,13 @@ from exam_parser.markdown_pipeline import (
     _normalize_condition_artifacts,
     _recover_missing_expected_tasks,
     _remove_embedded_task_conditions,
+    _restore_empty_model_condition,
     _raise_unreadable_ocr_conditions,
     _task_condition_blocks,
 )
 from exam_parser.math_text import normalize_ege_short_answer
 from exam_parser.models import (
+    MODEL_EMPTY_CONDITION_MARKER,
     ExtractedTask,
     SolutionVerification,
     TaskRecord,
@@ -855,6 +858,40 @@ class _MissingTaskClient:
     ) -> list[ExtractedTask]:
         self.calls.append((markdown, image_ids))
         return self.retry_tasks
+
+
+class EmptyModelConditionTests(unittest.TestCase):
+    def test_uses_exact_source_block_without_model_call(self) -> None:
+        result = _restore_empty_model_condition(
+            ExtractedTask(
+                task_num="15.6",
+                condition=MODEL_EMPTY_CONDITION_MARKER,
+            ),
+            "Решите неравенство\n\n$$ 5^x - 1 \\leq 0. $$",
+            provider_name="Test",
+            page_num=15,
+        )
+
+        self.assertEqual(result.task_num, "15.6")
+        self.assertEqual(
+            result.condition,
+            "Решите неравенство\n\n$ 5^x - 1 \\leq 0. $",
+        )
+
+    def test_fails_quality_check_when_source_block_is_missing(self) -> None:
+        with self.assertRaisesRegex(
+            OCRQualityError,
+            "15.6.*странице 15.*OCR-блок не найден",
+        ):
+            _restore_empty_model_condition(
+                ExtractedTask(
+                    task_num="15.6",
+                    condition=MODEL_EMPTY_CONDITION_MARKER,
+                ),
+                None,
+                provider_name="Test",
+                page_num=15,
+            )
 
 
 class MissingTaskRecoveryTests(unittest.TestCase):

@@ -7,7 +7,10 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from exam_parser.markdown_boundaries import _normalize_page
-from exam_parser.boundary_repairs import _repair_legacy_task_marker_images
+from exam_parser.boundary_repairs import (
+    _repair_legacy_task_marker_images,
+    _repair_uniform_detached_math_tasks,
+)
 from exam_parser.markdown_pipeline import (
     _associate_images_with_tasks,
     _task_condition_blocks,
@@ -33,6 +36,42 @@ def _draw_cropped_boxed_marker(path: Path) -> None:
 
 
 class MarkdownBoundaryTests(unittest.TestCase):
+    def test_reattaches_uniform_formulas_by_task_order(self) -> None:
+        markdown = (
+            "### Задачи №15. Условия\n\n"
+            "№15.1 (Восток)\n\nРешите неравенство\n\n"
+            "№15.2 (Восток)\n\nРешите неравенство\n\n"
+            "№15.3 (Сибирь)\n\nРешите неравенство\n\n"
+            " $$ x_1>0. $$ \n\n"
+            "№15.4 (Сибирь)\n\nРешите неравенство\n\n"
+            " $$ x_2>0. $$ \n\n"
+            " $$ x_3>0. $$ \n\n"
+            " $$ x_4>0. $$ \n"
+        )
+
+        repaired = _repair_uniform_detached_math_tasks(markdown)
+        blocks = _task_condition_blocks(repaired)
+
+        self.assertEqual(
+            blocks,
+            {
+                "15.1": "Решите неравенство\n\n$$ x_1>0. $$",
+                "15.2": "Решите неравенство\n\n$$ x_2>0. $$",
+                "15.3": "Решите неравенство\n\n$$ x_3>0. $$",
+                "15.4": "Решите неравенство\n\n$$ x_4>0. $$",
+            },
+        )
+
+    def test_does_not_guess_when_uniform_formula_counts_differ(self) -> None:
+        markdown = (
+            "№15.1 (Восток)\nРешите неравенство\n$$ x_1>0 $$\n"
+            "№15.2 (Восток)\nРешите неравенство\n"
+            "№15.3 (Сибирь)\nРешите неравенство\n$$ x_3>0 $$\n"
+            "№15.4 (Сибирь)\nРешите неравенство\n"
+        )
+
+        self.assertEqual(_repair_uniform_detached_math_tasks(markdown), markdown)
+
     def test_recovers_small_legacy_task_marker_images_by_sequence(self) -> None:
         markdown = (
             "Для записи решений и ответов на задания C1–C6 используйте "

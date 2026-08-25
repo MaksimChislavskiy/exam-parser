@@ -51,6 +51,13 @@ _HTML_WIDTH_PERCENT_PATTERN = re.compile(
     r"width\s*=\s*[\"']?\s*(\d+(?:\.\d+)?)\s*%",
     re.IGNORECASE,
 )
+_NUMBERED_SET_HEADING_PATTERN = re.compile(
+    r"(?m)^[ \t]*(?:#{1,6}[ \t]*)?№?[ \t]*"
+    r"(?P<num>[1-9]\d?\.\d+)(?:[ \t]+\([^\n)]{1,80}\))?[ \t]*$"
+)
+_DISPLAY_MATH_PATTERN = re.compile(
+    r"(?m)^[ \t]*\$\$[^\n]*\$\$[ \t]*$"
+)
 _INSTALLED = False
 
 
@@ -112,7 +119,9 @@ def repair_long_task_boundaries(
         source_texts = [path.read_text(encoding="utf-8") for path in group]
         repaired_texts = [
             _remove_duplicate_task_prefixes(
-                _repair_legacy_task_marker_images(value)
+                _repair_uniform_detached_math_tasks(
+                    _repair_legacy_task_marker_images(value)
+                )
             )
             for value in repair_page_group(source_texts)
         ]
@@ -142,6 +151,72 @@ def _remove_duplicate_task_prefixes(value: str) -> str:
         lambda match: f"{match.group('num')}. ",
         value,
     )
+
+
+def _repair_uniform_detached_math_tasks(value: str) -> str:
+    """Возвращает формулы к однотипным заданиям по порядку страницы.
+
+    Paddle иногда сохраняет все заголовки в правильном порядке, но часть
+    формул переносит в конец Markdown. Правило срабатывает только для сильной
+    структуры: последовательные N.1..N.k, ровно k одинаковых однострочных
+    инструкций и ровно k однострочных display-math блоков.
+    """
+
+    headings = list(_NUMBERED_SET_HEADING_PATTERN.finditer(value))
+    if len(headings) < 4:
+        return value
+
+    number_parts = [match.group("num").split(".", 1) for match in headings]
+    base = number_parts[0][0]
+    suffixes = [int(part[1]) for part in number_parts]
+    if any(part[0] != base for part in number_parts):
+        return value
+    if suffixes != list(range(1, len(headings) + 1)):
+        return value
+
+    formulas = list(_DISPLAY_MATH_PATTERN.finditer(value))
+    if len(formulas) != len(headings):
+        return value
+    if formulas[0].start() < headings[0].end():
+        return value
+
+    instruction_lines: list[str] = []
+    for index, heading in enumerate(headings):
+        block_end = (
+            headings[index + 1].start()
+            if index + 1 < len(headings)
+            else len(value)
+        )
+        body = value[heading.end() : block_end]
+        without_math = _DISPLAY_MATH_PATTERN.sub("", body)
+        instruction_lines.extend(
+            line.strip() for line in without_math.splitlines() if line.strip()
+        )
+
+    if len(instruction_lines) != len(headings):
+        return value
+    canonical_instruction = " ".join(instruction_lines[0].split()).casefold()
+    if not canonical_instruction or any(
+        " ".join(line.split()).casefold() != canonical_instruction
+        for line in instruction_lines
+    ):
+        return value
+
+    formula_texts = [match.group(0).strip() for match in formulas]
+    prefix = value[: headings[0].start()].rstrip()
+    repaired_parts = [prefix] if prefix else []
+    for heading, instruction, formula in zip(
+        headings,
+        instruction_lines,
+        formula_texts,
+    ):
+        repaired_parts.append(
+            f"{heading.group(0).strip()}\n\n{instruction}\n\n{formula}"
+        )
+    repaired = "\n\n".join(repaired_parts).rstrip()
+    if value.endswith("\n"):
+        repaired += "\n"
+    return repaired
 
 
 def _repair_legacy_task_marker_images(value: str) -> str:

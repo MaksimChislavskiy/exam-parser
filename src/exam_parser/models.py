@@ -14,6 +14,7 @@ from .result_quality import (
 
 
 DEFAULT_MAX_SOLUTION_CHARS = 8000
+MODEL_EMPTY_CONDITION_MARKER = "[УСЛОВИЕ НЕ ИЗВЛЕЧЕНО МОДЕЛЬЮ]"
 
 EMPTY_HTML_CONTAINER_PATTERN = re.compile(
     r"<(?P<tag>div|p|figure|center)\b[^<>]*>\s*</(?P=tag)\s*>",
