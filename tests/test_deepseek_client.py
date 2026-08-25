@@ -4,10 +4,12 @@ import unittest
 from types import SimpleNamespace
 
 from exam_parser.deepseek_client import (
+    DeepSeekResponseLengthError,
     DeepSeekTaskClient,
     _parse_structured_content,
 )
 from exam_parser.models import PageExtraction
+from exam_parser.ocr_noise import OCR_UNREADABLE_REPEAT_MARKER
 
 
 class _FakeCompletions:
@@ -59,6 +61,24 @@ def _client_with_responses(
 
 
 class DeepSeekStructuredOutputTests(unittest.TestCase):
+    def test_direct_extraction_sanitizes_pathological_ocr_before_prompt(
+        self,
+    ) -> None:
+        client, completions = _client_with_responses(
+            [_response('{"tasks":[]}')]
+        )
+
+        tasks = client.extract_markdown(
+            "19. Дано число 4" + "0" * 512,
+            [],
+        )
+
+        self.assertEqual(tasks, [])
+        prompt = completions.calls[0]["messages"][0]["content"]
+        self.assertIn(OCR_UNREADABLE_REPEAT_MARKER, prompt)
+        self.assertNotIn("4" + "0" * 128, prompt)
+        self.assertIn("не восстанавливай пропущенное по", prompt)
+
     def test_angle_check_uses_dedicated_reasoning_request(self) -> None:
         client, completions = _client_with_responses(
             [_response('{"corrected_notation":"ABC"}')]
@@ -162,13 +182,35 @@ class DeepSeekStructuredOutputTests(unittest.TestCase):
 
         self.assertEqual(len(completions.calls), 1)
 
-    def test_truncated_json_retries_in_compact_mode(self) -> None:
+    def test_length_limited_extraction_does_not_repeat_same_request(self) -> None:
         client, completions = _client_with_responses(
             [
                 _response(
                     '{"tasks":[{"task_num":"1","condition":"оборвано',
                     finish_reason="length",
                     completion_tokens=100,
+                ),
+            ]
+        )
+
+        with self.assertRaisesRegex(
+            DeepSeekResponseLengthError,
+            "автоматический повтор пропущен.*finish_reason='length'",
+        ):
+            client._request_structured(
+                "prompt",
+                PageExtraction,
+                thinking=False,
+            )
+
+        self.assertEqual(len(completions.calls), 1)
+
+    def test_invalid_stopped_json_still_retries_in_compact_mode(self) -> None:
+        client, completions = _client_with_responses(
+            [
+                _response(
+                    '{"tasks":[{"task_num":"1","condition":"оборвано',
+                    finish_reason="stop",
                 ),
                 _response('{"tasks": []}'),
             ]

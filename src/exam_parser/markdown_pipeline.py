@@ -16,6 +16,10 @@ from .image_roles import is_non_content_image
 from .llm_client import LLMProvider, TaskClient, create_task_client
 from .math_text import normalize_ege_short_answer
 from .models import ExtractedAnswer, ExtractedTask, TaskRecord
+from .ocr_noise import (
+    OCR_UNREADABLE_REPEAT_MARKER,
+    sanitize_pathological_ocr_repetitions,
+)
 
 
 AnswerSource = Literal["generated", "document", "none"]
@@ -291,6 +295,17 @@ def process_markdown(
         for page_path in pages:
             page_num = _page_number(page_path)
             markdown = page_path.read_text(encoding="utf-8")
+            markdown, noise_replacements = (
+                sanitize_pathological_ocr_repetitions(markdown)
+            )
+            for replacement in noise_replacements:
+                print(
+                    f"OCR warning: страница {page_num}: патологический повтор "
+                    f"{replacement.character!r} × {replacement.repetitions} "
+                    f"({replacement.style}) заменён на "
+                    f"{OCR_UNREADABLE_REPEAT_MARKER}",
+                    flush=True,
+                )
             all_markdown.append(f"\n\n<!-- PAGE {page_num} -->\n{markdown}")
             image_dir = page_path.parent / "imgs"
             image_ids = _image_ids(markdown, image_dir=image_dir)
@@ -470,6 +485,12 @@ def _generate_solutions_and_answers(
                 flush=True,
             )
             continue
+        if _record_unreadable_ocr_failure(
+            client,
+            record,
+            failures,
+        ):
+            continue
 
         try:
             if has_solution:
@@ -533,6 +554,12 @@ def _generate_solutions_only(
                 flush=True,
             )
             continue
+        if _record_unreadable_ocr_failure(
+            client,
+            record,
+            failures,
+        ):
+            continue
 
         print(
             f"{client.provider_name}: подробное решение задачи {record.task_num}",
@@ -570,6 +597,12 @@ def _generate_answers_only(
                 flush=True,
             )
             continue
+        if _record_unreadable_ocr_failure(
+            client,
+            record,
+            failures,
+        ):
+            continue
 
         print(
             f"{client.provider_name}: короткий ответ для задачи {record.task_num}",
@@ -605,6 +638,26 @@ def _record_generation_failure(
         f"{type(error).__name__}: {error}; переход к следующей задаче",
         flush=True,
     )
+
+
+def _record_unreadable_ocr_failure(
+    client: TaskClient,
+    record: TaskRecord,
+    failures: list[tuple[str, Exception]],
+) -> bool:
+    if OCR_UNREADABLE_REPEAT_MARKER not in record.condition:
+        return False
+    error = ValueError(
+        f"условие содержит {OCR_UNREADABLE_REPEAT_MARKER}; генерация "
+        "пропущена, чтобы не придумывать утраченный OCR-текст"
+    )
+    _record_generation_failure(
+        client,
+        record.task_num,
+        error,
+        failures,
+    )
+    return True
 
 
 def _raise_generation_failures(
@@ -1210,7 +1263,8 @@ def _restore_terminal_punctuation(value: str) -> str:
 
 
 def _normalize_condition_artifacts(value: str, *, task_num: str | None) -> str:
-    cleaned = ANSWER_LINE_PATTERN.sub(" ", value)
+    cleaned, _ = sanitize_pathological_ocr_repetitions(value)
+    cleaned = ANSWER_LINE_PATTERN.sub(" ", cleaned)
     cleaned = SERVICE_LINE_PATTERN.sub(" ", cleaned)
     cleaned = TRAILING_SERVICE_INSTRUCTION_PATTERN.sub("", cleaned)
     cleaned = cleaned.translate(FULLWIDTH_PUNCTUATION)

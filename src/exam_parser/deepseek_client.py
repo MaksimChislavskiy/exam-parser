@@ -20,6 +20,7 @@ from .models import (
     TaskDetailedSolution,
     TaskSolution,
 )
+from .ocr_noise import sanitize_pathological_ocr_repetitions
 from .task_prompts import (
     ANSWER_ONLY_PROMPT,
     SOLUTION_ONLY_PROMPT,
@@ -32,6 +33,10 @@ from .task_prompts import (
 
 
 T = TypeVar("T", bound=BaseModel)
+
+
+class DeepSeekResponseLengthError(ValueError):
+    """Структурированный ответ без сокращаемого решения упёрся в лимит."""
 
 
 class DeepSeekTaskClient:
@@ -83,6 +88,7 @@ class DeepSeekTaskClient:
         markdown: str,
         image_ids: list[str],
     ) -> list[ExtractedTask]:
+        markdown, _ = sanitize_pathological_ocr_repetitions(markdown)
         prompt = build_task_extraction_prompt(markdown, image_ids)
         return self._request_structured(
             prompt,
@@ -102,6 +108,7 @@ class DeepSeekTaskClient:
         )
 
     def extract_document_answers(self, markdown: str) -> list[ExtractedAnswer]:
+        markdown, _ = sanitize_pathological_ocr_repetitions(markdown)
         prompt = build_document_answers_prompt(markdown)
         return self._request_structured(
             prompt,
@@ -252,6 +259,16 @@ JSON должен строго соответствовать этой схем�
         try:
             parsed = _parse_structured_content(content, response_model)
         except ValueError as first_error:
+            if (
+                _response_finish_reason(response) == "length"
+                and not _has_solution_field(response_model)
+            ):
+                raise DeepSeekResponseLengthError(
+                    "DeepSeek обрезал структурированный ответ по лимиту; "
+                    "автоматический повтор пропущен, потому что в схеме нет "
+                    "поля solution, которое можно безопасно сократить: "
+                    + _response_diagnostics(response)
+                ) from first_error
             print(
                 "DeepSeek: ответ обрезан или JSON некорректен; "
                 "повтор в компактном режиме",
@@ -491,6 +508,14 @@ def _response_content(response: object) -> str | None:
     if isinstance(content, str) and content.strip():
         return content
     return None
+
+
+def _response_finish_reason(response: object) -> str | None:
+    choices = getattr(response, "choices", None)
+    if not choices:
+        return None
+    finish_reason = getattr(choices[0], "finish_reason", None)
+    return finish_reason if isinstance(finish_reason, str) else None
 
 
 def _response_diagnostics(response: object) -> str:

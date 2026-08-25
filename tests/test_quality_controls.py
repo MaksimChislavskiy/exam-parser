@@ -24,6 +24,7 @@ from exam_parser.models import (
     TaskRecord,
     TaskSolution,
 )
+from exam_parser.ocr_noise import OCR_UNREADABLE_REPEAT_MARKER
 
 
 class _FakeCompletions:
@@ -1445,7 +1446,11 @@ class DeepSeekQualityTests(unittest.TestCase):
 class _PartiallyFailingClient:
     provider_name = "Test"
 
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
     def solve_task(self, task: ExtractedTask) -> TaskSolution:
+        self.calls.append(task.task_num)
         if task.task_num == "1":
             raise ValueError("сбой первой задачи")
         return TaskSolution(solution="решено", answer="2")
@@ -1462,16 +1467,48 @@ class PerTaskFailureTests(unittest.TestCase):
             (ExtractedTask(task_num="2", condition="Условие 2"), Path("2.md")),
         ]
 
+        client = _PartiallyFailingClient()
         with self.assertRaisesRegex(RuntimeError, "1: ValueError"):
             _generate_solutions_and_answers(
                 records,
                 extracted,
-                _PartiallyFailingClient(),
+                client,
             )
 
         self.assertEqual(records[0].solution, "")
         self.assertEqual(records[1].solution, "решено")
         self.assertEqual(records[1].answer, "2")
+        self.assertEqual(client.calls, ["1", "2"])
+
+    def test_unreadable_ocr_task_is_not_sent_for_paid_generation(self) -> None:
+        records = [
+            TaskRecord(
+                task_num="1",
+                condition=f"Условие {OCR_UNREADABLE_REPEAT_MARKER}",
+            ),
+            TaskRecord(task_num="2", condition="Условие 2"),
+        ]
+        extracted = [
+            (
+                ExtractedTask(
+                    task_num="1",
+                    condition=f"Условие {OCR_UNREADABLE_REPEAT_MARKER}",
+                ),
+                Path("1.md"),
+            ),
+            (ExtractedTask(task_num="2", condition="Условие 2"), Path("2.md")),
+        ]
+        client = _PartiallyFailingClient()
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "OCR_UNREADABLE_REPEAT.*Остальные результаты сохранены",
+        ):
+            _generate_solutions_and_answers(records, extracted, client)
+
+        self.assertEqual(client.calls, ["2"])
+        self.assertEqual(records[0].solution, "")
+        self.assertEqual(records[1].solution, "решено")
 
 
 if __name__ == "__main__":

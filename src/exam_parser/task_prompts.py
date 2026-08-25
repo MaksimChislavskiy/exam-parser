@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .ocr_noise import OCR_UNREADABLE_REPEAT_MARKER
+
 
 SOLUTION_PROMPT = """
 Реши математическую задачу. Верни подробное пошаговое решение и короткий
@@ -179,6 +181,9 @@ def build_task_extraction_prompt(markdown: str, image_ids: list[str]) -> str:
    условия. Если принадлежность изображения неочевидна, верни null.
 8. Не решай задачи и не придумывай отсутствующий текст.
 9. Если на странице нет условий задач, верни пустой список tasks.
+10. Маркер {OCR_UNREADABLE_REPEAT_MARKER} означает доказанный нечитаемый
+   OCR-фрагмент. Сохрани маркер дословно и не восстанавливай пропущенное по
+   догадке.
 
 Файлы изображений:
 {candidates}
