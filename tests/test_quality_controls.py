@@ -764,6 +764,35 @@ class ConditionFidelityTests(unittest.TestCase):
 
         self.assertEqual(blocks["15"], r"Решите неравенство $2^x\leq2$.")
 
+    def test_extracts_legacy_and_late_numeric_source_blocks(self) -> None:
+        blocks = _task_condition_blocks(
+            "## 20 Найдите параметр.\n"
+            "21 Докажите утверждение.\n"
+            "23.06.14 Образец варианта Часть С\n"
+            "C1 Решите уравнение.\n"
+            "С2 Найдите расстояние.\n"
+        )
+
+        self.assertEqual(blocks["20"], "Найдите параметр.")
+        self.assertEqual(blocks["21"], "Докажите утверждение.\n23.06.14 Образец варианта Часть С")
+        self.assertEqual(blocks["C1"], "Решите уравнение.")
+        self.assertEqual(blocks["C2"], "Найдите расстояние.")
+        self.assertNotIn("23.06", blocks)
+
+    def test_extracts_boxed_legacy_source_block(self) -> None:
+        blocks = _task_condition_blocks(
+            r"$$ \boxed{\mathrm{C3}}\quad\mathrm{Решите неравенство~}"
+            "$x>0$. $$\nC4 Найдите радиус."
+        )
+
+        self.assertIn("Решите неравенство", blocks["C3"])
+        self.assertEqual(blocks["C4"], "Найдите радиус.")
+
+    def test_canonicalizes_cyrillic_legacy_task_number(self) -> None:
+        task = ExtractedTask(task_num="С6", condition="Найдите число.")
+
+        self.assertEqual(_clean_extracted_task(task).task_num, "C6")
+
     def test_removes_transliterated_answer_field_and_ocr_artifacts(self) -> None:
         condition = (
             "<p>a) Найдите вероятность того, что в течение года в течение года "

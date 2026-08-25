@@ -31,6 +31,26 @@ _DUPLICATE_TASK_PREFIX_PATTERN = re.compile(
     r"(?P=num)(?=[ \t\n])",
     re.MULTILINE,
 )
+_LEGACY_SET_INSTRUCTION_PATTERN = re.compile(
+    r"(?i)задания\s+[CС]1\s*[-–—]\s*[CС]6"
+)
+_LEGACY_TEXT_HEADING_PATTERN = re.compile(
+    r"(?im)^[ \t]*(?:#{0,6}[ \t]*)?[CС][ \t]*(?P<num>[1-6])"
+    r"(?:[.)]?[ \t]+|[.)][ \t]*$)"
+)
+_LEGACY_BOXED_HEADING_PATTERN = re.compile(
+    r"(?i)\\boxed\s*\{\s*\\mathrm\s*\{\s*"
+    r"[CС](?P<num>[1-6])\s*\}\s*\}"
+)
+_HTML_IMAGE_BLOCK_PATTERN = re.compile(
+    r"(?im)^[ \t]*(?:<div\b[^>]*>\s*)?"
+    r"(?P<tag><img\b[^>]*>)"
+    r"(?:\s*</div>)?[ \t]*(?:\n|$)"
+)
+_HTML_WIDTH_PERCENT_PATTERN = re.compile(
+    r"width\s*=\s*[\"']?\s*(\d+(?:\.\d+)?)\s*%",
+    re.IGNORECASE,
+)
 _INSTALLED = False
 
 
@@ -91,7 +111,9 @@ def repair_long_task_boundaries(
     for group in groups:
         source_texts = [path.read_text(encoding="utf-8") for path in group]
         repaired_texts = [
-            _remove_duplicate_task_prefixes(value)
+            _remove_duplicate_task_prefixes(
+                _repair_legacy_task_marker_images(value)
+            )
             for value in repair_page_group(source_texts)
         ]
         for path, source, repaired in zip(group, source_texts, repaired_texts):
@@ -120,6 +142,62 @@ def _remove_duplicate_task_prefixes(value: str) -> str:
         lambda match: f"{match.group('num')}. ",
         value,
     )
+
+
+def _repair_legacy_task_marker_images(value: str) -> str:
+    """Восстанавливает C1/C3, сохранённые OCR как маленькие картинки."""
+
+    if _LEGACY_SET_INSTRUCTION_PATTERN.search(value) is None:
+        return value
+
+    known = [
+        (match.start(), match.end(), int(match.group("num")))
+        for pattern in (
+            _LEGACY_TEXT_HEADING_PATTERN,
+            _LEGACY_BOXED_HEADING_PATTERN,
+        )
+        for match in pattern.finditer(value)
+    ]
+    known.sort()
+    if not known:
+        return value
+
+    small_images = []
+    for match in _HTML_IMAGE_BLOCK_PATTERN.finditer(value):
+        width_match = _HTML_WIDTH_PERCENT_PATTERN.search(match.group("tag"))
+        if width_match is None or float(width_match.group(1)) > 5:
+            continue
+        small_images.append((match.start(), match.end()))
+    if not small_images:
+        return value
+
+    replacements: list[tuple[int, int, str]] = []
+    anchors = [(0, 0, 0), *known, (len(value), len(value), 7)]
+    for left, right in zip(anchors, anchors[1:]):
+        candidates = [
+            image
+            for image in small_images
+            if left[1] <= image[0] and image[1] <= right[0]
+        ]
+        missing = list(range(left[2] + 1, right[2]))
+        if candidates and len(candidates) == len(missing):
+            replacements.extend(
+                (start, end, f"C{number}. ")
+                for (start, end), number in zip(candidates, missing)
+            )
+            continue
+
+        # Иногда Paddle сохраняет рамку номера и одновременно распознаёт тот
+        # же номер текстом сразу после неё. Такая картинка служебная.
+        if not missing and right[2] <= 6:
+            for start, end in candidates:
+                if not value[end : right[0]].strip():
+                    replacements.append((start, end, ""))
+
+    repaired = value
+    for start, end, replacement in reversed(replacements):
+        repaired = repaired[:start] + replacement + repaired[end:]
+    return repaired
 
 
 def _resolve_groups(

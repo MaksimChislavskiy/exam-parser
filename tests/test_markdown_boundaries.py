@@ -7,6 +7,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from exam_parser.markdown_boundaries import _normalize_page
+from exam_parser.boundary_repairs import _repair_legacy_task_marker_images
 from exam_parser.markdown_pipeline import (
     _associate_images_with_tasks,
     _task_condition_blocks,
@@ -32,6 +33,31 @@ def _draw_cropped_boxed_marker(path: Path) -> None:
 
 
 class MarkdownBoundaryTests(unittest.TestCase):
+    def test_recovers_small_legacy_task_marker_images_by_sequence(self) -> None:
+        markdown = (
+            "Для записи решений и ответов на задания C1–C6 используйте "
+            "бланк ответов № 2.\n"
+            '<div><img src="imgs/c1.jpg" width="2%" /></div>\n'
+            "Решите первое уравнение.\n"
+            "C2 Найдите расстояние.\n"
+            '<div><img src="imgs/c3.jpg" width="2%" /></div>\n'
+            "Решите неравенство.\n"
+            '<div><img src="imgs/diagram.jpg" width="30%" /></div>\n'
+            "C4 Найдите радиус.\n"
+            "C5 Найдите параметр.\n"
+            '<div><img src="imgs/c6.jpg" width="2%" /></div>\n'
+            "C6 Докажите утверждение.\n"
+        )
+
+        repaired = _repair_legacy_task_marker_images(markdown)
+
+        self.assertIn("C1. Решите первое уравнение", repaired)
+        self.assertIn("C3. Решите неравенство", repaired)
+        self.assertIn("diagram.jpg", repaired)
+        self.assertNotIn("c1.jpg", repaired)
+        self.assertNotIn("c3.jpg", repaired)
+        self.assertNotIn("c6.jpg", repaired)
+
     def test_counts_unnumbered_first_page_without_marking_instruction_as_task(self) -> None:
         markdown = (
             "## Часть 1\n\n"

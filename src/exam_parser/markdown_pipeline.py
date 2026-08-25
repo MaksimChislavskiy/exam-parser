@@ -40,6 +40,13 @@ class _ComparableToken:
     canonical: str
 
 
+@dataclass(frozen=True)
+class _SourceTaskHeading:
+    start: int
+    end: int
+    task_num: str
+
+
 class OCRQualityError(RuntimeError):
     """Извлечение завершено, но точный OCR-текст одной из задач утрачен."""
 
@@ -58,8 +65,15 @@ HTML_WIDTH_PERCENT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 TASK_HEADING_PATTERN = re.compile(
-    r"(?m)^[ \t]*((?:1[0-9]|[1-9])(?:\.\d+)*)"
+    r"(?m)^[ \t]*(?:#{1,6}[ \t]*)?"
+    r"((?:[1-9]\d?)(?:\.\d+)?|[BВCС](?:1[0-9]|[1-9]))"
     r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-яЁё0-9])|[ \t]*$)"
+)
+BOXED_TASK_HEADING_PATTERN = re.compile(
+    r"(?im)^[ \t]*(?:\$\$[ \t]*)?"
+    r"\\boxed\s*\{\s*\\mathrm\s*\{\s*"
+    r"([BВCС](?:1[0-9]|[1-9]))\s*\}\s*\}"
+    r"[ \t]*\\quad[ \t]*"
 )
 ANSWER_LINE_PATTERN = re.compile(
     r"(?im)^[ \t]*[ОOоo][ТTтt][ВVвv][ЕEеe][ТTтt][ \t]*:.*$"
@@ -1263,20 +1277,51 @@ def _canonical_fidelity_text(value: str) -> str:
 
 
 def _task_condition_blocks(markdown: str) -> dict[str, str]:
-    headings = list(TASK_HEADING_PATTERN.finditer(markdown))
+    headings = _source_task_headings(markdown)
     result: dict[str, str] = {}
     for index, heading in enumerate(headings):
         block_end = (
-            headings[index + 1].start()
+            headings[index + 1].start
             if index + 1 < len(headings)
             else len(markdown)
         )
-        body = markdown[heading.end() : block_end]
-        task_num = heading.group(1)
+        body = markdown[heading.end : block_end]
+        task_num = heading.task_num
         condition = _clean_source_condition(body, task_num=task_num)
         if condition:
             result[task_num] = condition
     return result
+
+
+def _source_task_headings(markdown: str) -> list[_SourceTaskHeading]:
+    headings = [
+        _SourceTaskHeading(
+            start=match.start(),
+            end=match.end(),
+            task_num=_canonical_task_num(match.group(1)),
+        )
+        for match in TASK_HEADING_PATTERN.finditer(markdown)
+    ]
+    headings.extend(
+        _SourceTaskHeading(
+            start=match.start(),
+            end=match.end(),
+            task_num=_canonical_task_num(match.group(1)),
+        )
+        for match in BOXED_TASK_HEADING_PATTERN.finditer(markdown)
+    )
+    headings.sort(key=lambda item: item.start)
+    return headings
+
+
+def _canonical_task_num(value: str) -> str:
+    compact = re.sub(r"\s+", "", value).upper()
+    if len(compact) >= 2:
+        part = compact[0].translate(CONFUSABLE_LETTERS)
+        suffix = compact[1:].replace("З", "3")
+        if part in {"B", "C"} and suffix.isdigit():
+            return part + suffix
+    return compact
 
 
 def _clean_source_condition(value: str, *, task_num: str | None = None) -> str:
@@ -1945,14 +1990,15 @@ def _split_html_subparts(value: str) -> str:
 
 
 def _clean_extracted_task(task: ExtractedTask) -> ExtractedTask:
+    task_num = _canonical_task_num(task.task_num)
     condition = _normalize_condition_artifacts(
         task.condition,
-        task_num=task.task_num,
+        task_num=task_num,
     )
-    if condition == task.condition:
+    if condition == task.condition and task_num == task.task_num:
         return task
     return ExtractedTask(
-        task_num=task.task_num,
+        task_num=task_num,
         condition=condition,
         image_id=task.image_id,
     )
@@ -2326,18 +2372,18 @@ def _associate_images_with_tasks(
     *,
     image_dir: Path | None = None,
 ) -> dict[str, str]:
-    headings = list(TASK_HEADING_PATTERN.finditer(markdown))
+    headings = _source_task_headings(markdown)
     associations: dict[str, str] = {}
     visual_tasks: set[str] = set()
     ordered_task_nums: list[str] = []
     for index, heading in enumerate(headings):
         block_end = (
-            headings[index + 1].start()
+            headings[index + 1].start
             if index + 1 < len(headings)
             else len(markdown)
         )
-        block = markdown[heading.end() : block_end]
-        task_num = heading.group(1)
+        block = markdown[heading.end : block_end]
+        task_num = heading.task_num
         ordered_task_nums.append(task_num)
         condition = _clean_source_condition(block, task_num=task_num)
         if VISUAL_REFERENCE_PATTERN.search(condition):
