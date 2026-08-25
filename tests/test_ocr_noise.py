@@ -10,7 +10,7 @@ from exam_parser.ocr_noise import (
 
 
 @pytest.mark.parametrize(
-    ("pdf_stem", "markdown", "character", "style"),
+    ("pdf_stem", "markdown", "unit", "style"),
     [
         (
             "00801",
@@ -30,12 +30,18 @@ from exam_parser.ocr_noise import (
             "0",
             "contiguous",
         ),
+        (
+            "33937-page-5",
+            "x(2x-5)>0 " + r"\frac{1}{2.5} " * 512,
+            r"\frac{1}{2.5}",
+            "spaced",
+        ),
     ],
 )
 def test_sanitizes_uploaded_length_failure_patterns(
     pdf_stem: str,
     markdown: str,
-    character: str,
+    unit: str,
     style: str,
 ) -> None:
     cleaned, replacements = sanitize_pathological_ocr_repetitions(markdown)
@@ -43,7 +49,7 @@ def test_sanitizes_uploaded_length_failure_patterns(
     assert OCR_UNREADABLE_REPEAT_MARKER in cleaned, pdf_stem
     assert len(cleaned) < 100, pdf_stem
     assert len(replacements) == 1
-    assert replacements[0].character == character
+    assert replacements[0].unit == unit
     assert replacements[0].repetitions == 512
     assert replacements[0].style == style
 

@@ -252,6 +252,7 @@ def process_markdown(
 
     client = create_task_client(provider, model=model)
     output_path = output_dir / "tasks.xlsx"
+    ocr_noise_pages: list[int] = []
 
     if resume_results:
         if not output_path.is_file():
@@ -302,10 +303,15 @@ def process_markdown(
             markdown, noise_replacements = (
                 sanitize_pathological_ocr_repetitions(markdown)
             )
+            if noise_replacements:
+                ocr_noise_pages.append(page_num)
             for replacement in noise_replacements:
+                unit = replacement.unit
+                if len(unit) > 40:
+                    unit = unit[:37] + "..."
                 print(
                     f"OCR warning: страница {page_num}: патологический повтор "
-                    f"{replacement.character!r} × {replacement.repetitions} "
+                    f"{unit!r} × {replacement.repetitions} "
                     f"({replacement.style}) заменён на "
                     f"{OCR_UNREADABLE_REPEAT_MARKER}",
                     flush=True,
@@ -393,7 +399,10 @@ def process_markdown(
         answer_source=answer_source,
         checkpoint_path=output_path,
     )
-    _raise_unreadable_ocr_conditions(records)
+    _raise_unreadable_ocr_conditions(
+        records,
+        affected_pages=ocr_noise_pages,
+    )
 
     write_tasks_xlsx(records, output_path)
     return records
@@ -681,18 +690,28 @@ def _raise_generation_failures(
     )
 
 
-def _raise_unreadable_ocr_conditions(records: list[TaskRecord]) -> None:
-    affected = [
+def _raise_unreadable_ocr_conditions(
+    records: list[TaskRecord],
+    *,
+    affected_pages: Iterable[int] = (),
+) -> None:
+    affected_tasks = [
         record.task_num
         for record in records
         if OCR_UNREADABLE_REPEAT_MARKER in record.condition
     ]
-    if not affected:
+    pages = sorted(set(affected_pages))
+    if not affected_tasks and not pages:
         return
+    locations: list[str] = []
+    if pages:
+        locations.append("на страницах " + ", ".join(map(str, pages)))
+    if affected_tasks:
+        locations.append("в задачах " + ", ".join(affected_tasks))
     raise OCRQualityError(
         "Патологический OCR-повтор заменён маркером "
-        f"{OCR_UNREADABLE_REPEAT_MARKER} в задачах "
-        f"{', '.join(affected)}. Результат сохранён в tasks.xlsx, но документ "
+        f"{OCR_UNREADABLE_REPEAT_MARKER} {'; '.join(locations)}. "
+        "Результат сохранён в tasks.xlsx, но документ "
         "нельзя считать качественно обработанным до повторного OCR или ручной "
         "сверки с PDF."
     )
@@ -752,6 +771,18 @@ def _ensure_condition_fidelity(
         task_num=task.task_num,
     )
     task = _clean_extracted_task(task)
+    if OCR_UNREADABLE_REPEAT_MARKER in source_condition:
+        print(
+            f"{client.provider_name}: условие задачи {task.task_num} содержит "
+            f"{OCR_UNREADABLE_REPEAT_MARKER}; используется исходный OCR-блок "
+            "без повтора",
+            flush=True,
+        )
+        return ExtractedTask(
+            task_num=task.task_num,
+            condition=source_condition,
+            image_id=task.image_id,
+        )
     issues = _condition_fidelity_issues(source_condition, task.condition)
     if not issues:
         return _check_ambiguous_angle_notations(
@@ -2131,16 +2162,11 @@ def _recover_missing_expected_tasks(
 
     recovered_items = list(extracted)
     for task_num, source in selected_sources.items():
-        isolated_markdown = f"{task_num}. {source.condition}"
-        retry_tasks = client.extract_markdown(isolated_markdown, [])
-        recovered = next(
-            (item for item in retry_tasks if item.task_num == task_num),
-            None,
-        )
-        if recovered is None:
+        if OCR_UNREADABLE_REPEAT_MARKER in source.condition:
             print(
-                f"{client.provider_name}: задача {task_num} повторно пропущена; "
-                "используется исходный OCR-блок",
+                f"{client.provider_name}: задача {task_num} содержит "
+                f"{OCR_UNREADABLE_REPEAT_MARKER}; используется исходный "
+                "OCR-блок без изолированного повтора",
                 flush=True,
             )
             recovered = ExtractedTask(
@@ -2148,11 +2174,28 @@ def _recover_missing_expected_tasks(
                 condition=source.condition,
             )
         else:
-            recovered = _ensure_condition_fidelity(
-                client,
-                recovered,
-                source.condition,
+            isolated_markdown = f"{task_num}. {source.condition}"
+            retry_tasks = client.extract_markdown(isolated_markdown, [])
+            recovered = next(
+                (item for item in retry_tasks if item.task_num == task_num),
+                None,
             )
+            if recovered is None:
+                print(
+                    f"{client.provider_name}: задача {task_num} повторно "
+                    "пропущена; используется исходный OCR-блок",
+                    flush=True,
+                )
+                recovered = ExtractedTask(
+                    task_num=task_num,
+                    condition=source.condition,
+                )
+            else:
+                recovered = _ensure_condition_fidelity(
+                    client,
+                    recovered,
+                    source.condition,
+                )
 
         recovered.image_id = _resolve_image_id(
             recovered.image_id,

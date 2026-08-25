@@ -106,6 +106,33 @@ class ShortAnswerTests(unittest.TestCase):
 
 
 class ConditionFidelityTests(unittest.TestCase):
+    def test_unreadable_ocr_marker_uses_source_without_paid_retry(self) -> None:
+        source = f"Условие {OCR_UNREADABLE_REPEAT_MARKER}"
+        changed = ExtractedTask(
+            task_num="19",
+            condition="Модель попыталась восстановить условие",
+            image_id="task.jpg",
+        )
+
+        class _NoRetryClient:
+            provider_name = "Test"
+
+            def extract_markdown(
+                self,
+                markdown: str,
+                image_ids: list[str],
+            ) -> list[ExtractedTask]:
+                raise AssertionError("изолированный повтор не должен вызываться")
+
+        result = _ensure_condition_fidelity(
+            _NoRetryClient(),
+            changed,
+            source,
+        )
+
+        self.assertEqual(result.condition, source)
+        self.assertEqual(result.image_id, "task.jpg")
+
     def test_detects_omitted_single_letter_prose_word(self) -> None:
         source = (
             "Плотность жидкости равна $\\rho=1000$, а $g=9,8$ — "
@@ -802,6 +829,34 @@ class _MissingTaskClient:
 
 
 class MissingTaskRecoveryTests(unittest.TestCase):
+    def test_recovers_unreadable_ocr_source_without_paid_retry(self) -> None:
+        client = _MissingTaskClient([])
+        page_path = Path("page_1.md")
+        source = f"Условие {OCR_UNREADABLE_REPEAT_MARKER}"
+
+        result = _recover_missing_expected_tasks(
+            client,
+            [
+                (ExtractedTask(task_num="1", condition="Первая"), page_path),
+                (ExtractedTask(task_num="3", condition="Третья"), page_path),
+            ],
+            {
+                "2": [
+                    _SourceTaskBlock(
+                        condition=source,
+                        page_path=page_path,
+                        image_id=None,
+                        available_image_ids=(),
+                    )
+                ]
+            },
+            expected_tasks=3,
+        )
+
+        recovered = next(task for task, _ in result if task.task_num == "2")
+        self.assertEqual(recovered.condition, source)
+        self.assertEqual(client.calls, [])
+
     def test_recovers_model_omission_from_isolated_source_block(self) -> None:
         client = _MissingTaskClient(
             [ExtractedTask(task_num="2", condition="Найдите число $5$.")]
@@ -1494,6 +1549,12 @@ class PerTaskFailureTests(unittest.TestCase):
             "задачах C5.*нельзя считать качественно обработанным",
         ):
             _raise_unreadable_ocr_conditions(records)
+
+    def test_unattached_ocr_noise_page_prevents_false_ok_status(self) -> None:
+        records = [TaskRecord(task_num="1", condition="Читаемое условие")]
+
+        with self.assertRaisesRegex(RuntimeError, "на страницах 5"):
+            _raise_unreadable_ocr_conditions(records, affected_pages=[5])
 
     def test_unreadable_ocr_task_is_not_sent_for_paid_generation(self) -> None:
         records = [

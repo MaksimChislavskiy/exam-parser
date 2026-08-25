@@ -9,15 +9,15 @@ OCR_UNREADABLE_REPEAT_MARKER = "⟦OCR_UNREADABLE_REPEAT⟧"
 PATHOLOGICAL_REPEAT_MIN = 128
 
 NON_WHITESPACE_TOKEN_PATTERN = re.compile(r"\S+")
-SPACED_SINGLE_CHAR_REPEAT_PATTERN = re.compile(
-    rf"(?<!\S)(?P<char>\S)(?:[ \t]+(?P=char))"
+SPACED_TOKEN_REPEAT_PATTERN = re.compile(
+    rf"(?<!\S)(?P<unit>\S+)(?:[ \t]+(?P=unit))"
     rf"{{{PATHOLOGICAL_REPEAT_MIN - 1},}}(?!\S)"
 )
 
 
 @dataclass(frozen=True)
 class OCRNoiseReplacement:
-    character: str
+    unit: str
     repetitions: int
     style: Literal["contiguous", "spaced"]
 
@@ -43,7 +43,7 @@ def sanitize_pathological_ocr_repetitions(
             return token
         replacements.append(
             OCRNoiseReplacement(
-                character=character,
+                unit=character,
                 repetitions=repetitions,
                 style="contiguous",
             )
@@ -66,20 +66,18 @@ def sanitize_pathological_ocr_repetitions(
     )
 
     def replace_spaced_run(match: re.Match[str]) -> str:
-        character = match.group("char")
-        repetitions = sum(
-            1 for item in match.group(0) if item == character
-        )
+        unit = match.group("unit")
+        repetitions = len(NON_WHITESPACE_TOKEN_PATTERN.findall(match.group(0)))
         replacements.append(
             OCRNoiseReplacement(
-                character=character,
+                unit=unit,
                 repetitions=repetitions,
                 style="spaced",
             )
         )
         return OCR_UNREADABLE_REPEAT_MARKER
 
-    cleaned = SPACED_SINGLE_CHAR_REPEAT_PATTERN.sub(
+    cleaned = SPACED_TOKEN_REPEAT_PATTERN.sub(
         replace_spaced_run,
         cleaned,
     )
