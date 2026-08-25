@@ -40,6 +40,10 @@ class _ComparableToken:
     canonical: str
 
 
+class OCRQualityError(RuntimeError):
+    """Извлечение завершено, но точный OCR-текст одной из задач утрачен."""
+
+
 IMAGE_PATTERN = re.compile(
     r"(?P<html><img\b[^>]*>)|"
     r"(?P<markdown>!\[[^]]*]\((?:imgs/)?(?P<markdown_src>[^)]+)\))",
@@ -389,6 +393,7 @@ def process_markdown(
         answer_source=answer_source,
         checkpoint_path=output_path,
     )
+    _raise_unreadable_ocr_conditions(records)
 
     write_tasks_xlsx(records, output_path)
     return records
@@ -673,6 +678,23 @@ def _raise_generation_failures(
         "Не удалось обработать отдельные задачи: "
         + details
         + ". Остальные результаты сохранены в tasks.xlsx."
+    )
+
+
+def _raise_unreadable_ocr_conditions(records: list[TaskRecord]) -> None:
+    affected = [
+        record.task_num
+        for record in records
+        if OCR_UNREADABLE_REPEAT_MARKER in record.condition
+    ]
+    if not affected:
+        return
+    raise OCRQualityError(
+        "Патологический OCR-повтор заменён маркером "
+        f"{OCR_UNREADABLE_REPEAT_MARKER} в задачах "
+        f"{', '.join(affected)}. Результат сохранён в tasks.xlsx, но документ "
+        "нельзя считать качественно обработанным до повторного OCR или ручной "
+        "сверки с PDF."
     )
 
 

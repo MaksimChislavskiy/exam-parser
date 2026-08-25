@@ -15,6 +15,7 @@ from exam_parser.markdown_pipeline import (
     _normalize_condition_artifacts,
     _recover_missing_expected_tasks,
     _remove_embedded_task_conditions,
+    _raise_unreadable_ocr_conditions,
     _task_condition_blocks,
 )
 from exam_parser.math_text import normalize_ege_short_answer
@@ -1479,6 +1480,20 @@ class PerTaskFailureTests(unittest.TestCase):
         self.assertEqual(records[1].solution, "решено")
         self.assertEqual(records[1].answer, "2")
         self.assertEqual(client.calls, ["1", "2"])
+
+    def test_unreadable_ocr_condition_prevents_false_ok_status(self) -> None:
+        records = [
+            TaskRecord(
+                task_num="C5",
+                condition=OCR_UNREADABLE_REPEAT_MARKER,
+            )
+        ]
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "задачах C5.*нельзя считать качественно обработанным",
+        ):
+            _raise_unreadable_ocr_conditions(records)
 
     def test_unreadable_ocr_task_is_not_sent_for_paid_generation(self) -> None:
         records = [
