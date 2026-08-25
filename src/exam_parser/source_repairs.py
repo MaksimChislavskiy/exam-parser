@@ -7,13 +7,33 @@ import re
 
 _EXTENDED_ANSWER_LINE_PATTERN = re.compile(
     r"^[ \t]*(?:<[^>\n]+>[ \t]*)*"
-    r"[ОOоo][ТTтt][ВVвv][ЕEеe][ТTтt][ \t]*:"
+    r"(?:[ОOоo][ТTтt][ВVвv][ЕEеe][ТTтt][ \t]*:|"
+    r"Записать[ \t]+ответ\b|Верный[ \t]+ответ\b)"
     r"[^\n]*(?:[ \t]*</[^>\n]+>)*[ \t]*$",
     re.IGNORECASE | re.MULTILINE,
 )
 _SOLUTION_SECTION_PATTERN = re.compile(
-    r"^[ \t]*#{0,6}[ \t]*(?:Ответ|Решение)[ \t]*$",
+    r"^[ \t]*#{0,6}[ \t]*(?:Решени[ея]\b[^\n]*|Ответ[ \t]*)$",
     re.IGNORECASE | re.MULTILINE,
+)
+_LEGACY_WRITTEN_ANSWER_PATTERN = re.compile(
+    r"^[ \t]*(?:<[^>\n]+>[ \t]*)*Записать[ \t]+ответ\b[^\n]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_SOLUTION_PARAGRAPH_PATTERN = re.compile(
+    r"(?:\r?\n[ \t]*){2,}(?=(?:Построим|Рассмотрим|Исследуем|Найд[её]м|"
+    r"Составим|Возвед[её]м)\b)",
+    re.IGNORECASE,
+)
+_SYSTEM_TASK_PROMPT_PATTERN = re.compile(
+    r"^\s*(?:Решите|Найдите[ \t]+решени[ея])[ \t]+"
+    r"систем\w*[ \t]+уравнен\w*[^\n]*",
+    re.IGNORECASE,
+)
+_SYSTEM_SOLUTION_EVIDENCE_PATTERN = re.compile(
+    r"(?:\\Rightarrow|услови[ея][ \t]+существования|\bЗначит\b|"
+    r"\bРешением[ \t]+будет\b)",
+    re.IGNORECASE,
 )
 _PART_TWO_TAIL_PATTERN = re.compile(
     r"^[ \t]*(?:<[^>\n]+>[ \t]*)*#{0,6}[ \t]*"
@@ -26,9 +46,15 @@ _PART_TWO_TAIL_PATTERN = re.compile(
 )
 _HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
 _ANSWER_PREFIX_PATTERN = re.compile(
-    r"^[ \t]*[ОOоo][ТTтt][ВVвv][ЕEеe][ТTтt][ \t]*:[ \t]*",
+    r"^[ \t]*(?:[ОOоo][ТTтt][ВVвv][ЕEеe][ТTтt][ \t]*:|"
+    r"Записать[ \t]+ответ\b|Верный[ \t]+ответ\b)[ \t]*",
     re.IGNORECASE,
 )
+_CORRECT_ANSWER_LINE_PATTERN = re.compile(
+    r"^[ \t]*(?:<[^>\n]+>[ \t]*)*Верный[ \t]+ответ\b[^\n]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_OPTION_MARKER_PATTERN = re.compile(r"(?m)(?:^|[ \t])([1-9])\)")
 _INSTALLED = False
 
 
@@ -53,6 +79,10 @@ def _first_condition_tail(value: str) -> tuple[int | None, bool]:
     part_two = _PART_TWO_TAIL_PATTERN.search(value)
     if part_two is not None:
         candidates.append((part_two.start(), False))
+
+    solution_paragraph = _SOLUTION_PARAGRAPH_PATTERN.search(value)
+    if solution_paragraph is not None:
+        candidates.append((solution_paragraph.start(), False))
 
     if not candidates:
         return None, False
@@ -110,9 +140,76 @@ def image_source_prefix(value: str) -> str:
     if part_two is not None:
         candidates.append(part_two.start())
 
+    solution_paragraph = _SOLUTION_PARAGRAPH_PATTERN.search(value)
+    if solution_paragraph is not None:
+        candidates.append(solution_paragraph.start())
+
     if not candidates:
         return value
     return value[: min(candidates)].rstrip()
+
+
+def _trim_solved_system(value: str) -> str:
+    """Оставляет первую систему, если OCR склеил условие с её решением."""
+
+    prompt = _SYSTEM_TASK_PROMPT_PATTERN.match(value)
+    if prompt is None:
+        return value
+
+    structures = (
+        (r"\left\{\begin{aligned}", r"\end{aligned}\right."),
+        (r"\begin{cases}", r"\end{cases}"),
+    )
+    for opening, closing in structures:
+        start = value.find(opening, prompt.end())
+        if start < 0:
+            continue
+        end = value.find(closing, start + len(opening))
+        if end < 0:
+            continue
+        end += len(closing)
+        if _SYSTEM_SOLUTION_EVIDENCE_PATTERN.search(value[end:]) is None:
+            continue
+
+        intro = prompt.group(0).strip()
+        system = value[start:end].strip()
+        return f"{intro}\n\n$$ {system} $$"
+
+    return value
+
+
+def _trim_multiple_choice_solution(value: str) -> str:
+    """Отсекает разбор после последнего варианта ответа 1–4."""
+
+    answer = _CORRECT_ANSWER_LINE_PATTERN.search(value)
+    if answer is None:
+        return value
+
+    markers = [
+        (int(match.group(1)), match.start(), match.end())
+        for match in _OPTION_MARKER_PATTERN.finditer(value, 0, answer.start())
+    ]
+    last_option_end: int | None = None
+    expected = 1
+    for number, _start, end in markers:
+        if number == expected:
+            if number == 4:
+                last_option_end = end
+                expected = 1
+            else:
+                expected += 1
+        elif number == 1:
+            expected = 2
+        else:
+            expected = 1
+
+    if last_option_end is None:
+        return value
+
+    paragraph_end = re.search(r"\n[ \t]*\n", value[last_option_end : answer.start()])
+    if paragraph_end is None:
+        return value[: answer.start()].rstrip()
+    return value[: last_option_end + paragraph_end.start()].rstrip()
 
 
 def install_source_repairs() -> None:
@@ -135,9 +232,18 @@ def install_source_repairs() -> None:
         *,
         task_num: str | None = None,
     ) -> str:
+        value = _trim_multiple_choice_solution(value)
+        value = _trim_solved_system(value)
+        legacy_answer = _LEGACY_WRITTEN_ANSWER_PATTERN.search(value)
         tail_start, had_answer_field = _first_condition_tail(value)
         if tail_start is not None:
             value = value[:tail_start].rstrip()
+
+        if legacy_answer is not None:
+            value = re.split(r"\n\s*\n", value.strip(), maxsplit=1)[0]
+            transition = pipeline.SOLUTION_TRANSITION_PATTERN.search(value)
+            if transition is not None:
+                value = value[: transition.start()]
 
         cleaned = original(value, task_num=task_num)
         if had_answer_field:

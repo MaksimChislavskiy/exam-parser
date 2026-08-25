@@ -15,6 +15,7 @@ from exam_parser.markdown_pipeline import (
     _generate_solutions_and_answers,
     _normalize_condition_artifacts,
     _recover_missing_expected_tasks,
+    _reconcile_lettered_source_tasks,
     _remove_embedded_task_conditions,
     _restore_empty_model_condition,
     _restore_empty_model_task_number,
@@ -771,6 +772,106 @@ class ConditionFidelityTests(unittest.TestCase):
         self.assertEqual(blocks["1"], "Найдите угол АСВ.")
         self.assertEqual(blocks["2"], "Найдите число 5.")
 
+    def test_extracts_legacy_a_task_source_block(self) -> None:
+        blocks = _task_condition_blocks(
+            "А1 Найдите значение выражения.\n"
+            "Решение: вычислим выражение.\n"
+            "А2 Найдите число."
+        )
+
+        self.assertEqual(blocks["A1"], "Найдите значение выражения.")
+        self.assertEqual(blocks["A2"], "Найдите число.")
+
+    def test_removes_explicit_solution_from_source_condition(self) -> None:
+        blocks = _task_condition_blocks(
+            "B1\nНайдите значение выражения.\n\n"
+            "Решение: выполним вычисления.\n\n"
+            "Записать ответ 5."
+        )
+
+        self.assertEqual(blocks["B1"], "Найдите значение выражения.")
+
+    def test_uses_first_paragraph_before_unlabeled_worked_solution(self) -> None:
+        blocks = _task_condition_blocks(
+            "B2\nНайдите точку касания.\n\n"
+            "Значение производной равно коэффициенту касательной.\n\n"
+            "Записать ответ -6."
+        )
+
+        self.assertEqual(blocks["B2"], "Найдите точку касания.")
+
+    def test_removes_same_paragraph_solution_transition(self) -> None:
+        blocks = _task_condition_blocks(
+            "B4\nВычислите площадь фигуры. Построим графики этих функций.\n\n"
+            "Записать ответ 30."
+        )
+
+        self.assertEqual(blocks["B4"], "Вычислите площадь фигуры.")
+
+    def test_removes_unlabeled_solution_paragraph_without_answer_field(self) -> None:
+        blocks = _task_condition_blocks(
+            "C2\nНайдите наименьшую площадь треугольника.\n\n"
+            "Построим систему координат и выполним вычисления."
+        )
+
+        self.assertEqual(
+            blocks["C2"],
+            "Найдите наименьшую площадь треугольника.",
+        )
+
+    def test_keeps_only_first_system_when_ocr_appends_its_solution(self) -> None:
+        blocks = _task_condition_blocks(
+            "C1\nРешите систему уравнений\n\n"
+            r"$$ \begin{aligned}&\left\{\begin{aligned}"
+            r"&x+y=2,\\&x-y=0.\end{aligned}\right.\\"
+            r"&x=1\Rightarrow y=1.\end{aligned} $$"
+            "\n\nРешением будет пара (1; 1)."
+        )
+
+        self.assertEqual(
+            blocks["C1"],
+            "Решите систему уравнений\n\n"
+            r"$$ \left\{\begin{aligned}&x+y=2,\\&x-y=0."
+            r"\end{aligned}\right. $$",
+        )
+
+    def test_keeps_legitimate_multi_system_condition_without_solution_evidence(self) -> None:
+        source = (
+            "C1\nРешите систему уравнений\n\n"
+            r"$$ \left\{\begin{aligned}x+y&=2\\x-y&=0"
+            r"\end{aligned}\right. $$"
+        )
+
+        blocks = _task_condition_blocks(source)
+
+        self.assertIn(r"x+y&=2", blocks["C1"])
+
+    def test_removes_unlabeled_multiple_choice_solution(self) -> None:
+        blocks = _task_condition_blocks(
+            "A8\nУкажите убывающую функцию.\n\n"
+            "1) $y=2^x$\n\n2) $y=3^x$\n\n"
+            "3) $y=0.5^{-x}$\n\n4) $y=0.5^x$\n\n"
+            "Показательная функция убывает при основании от нуля до единицы.\n\n"
+            "Верный ответ 4)."
+        )
+
+        self.assertEqual(
+            blocks["A8"],
+            "Укажите убывающую функцию.\n\n"
+            "1) $y=2^x$\n\n2) $y=3^x$\n\n"
+            "3) $y=0.5^{-x}$\n\n4) $y=0.5^x$",
+        )
+
+    def test_keeps_multiple_choice_options_without_correct_answer_tail(self) -> None:
+        source = (
+            "A2\nНайдите значение выражения.\n"
+            "1) 1 2) 2 3) 3 4) 4"
+        )
+
+        blocks = _task_condition_blocks(source)
+
+        self.assertIn("4) 4", blocks["A2"])
+
     def test_removes_checkbox_and_repeated_task_number(self) -> None:
         blocks = _task_condition_blocks(
             "2. ☐ 2 Даны три вектора.\nОтвет: ___"
@@ -820,6 +921,11 @@ class ConditionFidelityTests(unittest.TestCase):
         task = ExtractedTask(task_num="С6", condition="Найдите число.")
 
         self.assertEqual(_clean_extracted_task(task).task_num, "C6")
+
+    def test_canonicalizes_cyrillic_a_task_number(self) -> None:
+        task = ExtractedTask(task_num="А6", condition="Найдите число.")
+
+        self.assertEqual(_clean_extracted_task(task).task_num, "A6")
 
     def test_removes_transliterated_answer_field_and_ocr_artifacts(self) -> None:
         condition = (
@@ -964,6 +1070,63 @@ class EmptyModelConditionTests(unittest.TestCase):
 
 
 class MissingTaskRecoveryTests(unittest.TestCase):
+    def test_lettered_scheme_drops_numeric_solution_fragments_and_recovers_source(self) -> None:
+        client = _MissingTaskClient([])
+        page_path = Path("page_8.md")
+        source_blocks = {
+            task_num: [
+                _SourceTaskBlock(
+                    condition=f"Точное условие {task_num}.",
+                    page_path=page_path,
+                    image_id=f"{task_num}.jpg" if task_num == "C3" else None,
+                    available_image_ids=(),
+                )
+            ]
+            for task_num in ("C1", "C2", "C3", "C4")
+        }
+        extracted = [
+            (ExtractedTask(task_num="C1", condition="Точное условие C1."), page_path),
+            (ExtractedTask(task_num="1", condition="Фрагмент решения."), page_path),
+            (ExtractedTask(task_num="2", condition="Другой фрагмент."), page_path),
+        ]
+
+        result = _reconcile_lettered_source_tasks(
+            client,
+            extracted,
+            source_blocks,
+        )
+
+        by_number = {task.task_num: task for task, _ in result}
+        self.assertEqual(set(by_number), {"C1", "C2", "C3", "C4"})
+        self.assertEqual(by_number["C3"].condition, "Точное условие C3.")
+        self.assertEqual(by_number["C3"].image_id, "C3.jpg")
+        self.assertEqual(client.calls, [])
+
+    def test_lettered_scheme_is_not_assumed_from_isolated_heading(self) -> None:
+        client = _MissingTaskClient([])
+        page_path = Path("page_1.md")
+        extracted = [
+            (ExtractedTask(task_num="1", condition="Первая задача."), page_path)
+        ]
+        source_blocks = {
+            "C1": [
+                _SourceTaskBlock(
+                    condition="Единственная буквенная задача.",
+                    page_path=page_path,
+                    image_id=None,
+                    available_image_ids=(),
+                )
+            ]
+        }
+
+        result = _reconcile_lettered_source_tasks(
+            client,
+            extracted,
+            source_blocks,
+        )
+
+        self.assertEqual(result, extracted)
+
     def test_recovers_unreadable_ocr_source_without_paid_retry(self) -> None:
         client = _MissingTaskClient([])
         page_path = Path("page_1.md")

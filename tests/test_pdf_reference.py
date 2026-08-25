@@ -93,6 +93,49 @@ class PdfReferenceTests(unittest.TestCase):
         self.assertIn("14.1 Все рёбра правильной", repaired)
         self.assertEqual(changes, [("14.1", "пропущенный номер", "14.1")])
 
+    def test_restores_lettered_heading_from_previous_page_number(self) -> None:
+        markdown = (
+            "Основание прямой призмы является треугольником с равными "
+            "сторонами. Найдите радиус сферы.\n"
+        )
+        pdf_text = (
+            "С3* Основание прямой призмы является треугольником с равными "
+            "сторонами. Найдите радиус сферы.\n"
+        )
+
+        repaired, changes = _restore_missing_task_headings(
+            markdown,
+            pdf_text,
+            known_task_numbers={"C2"},
+        )
+
+        self.assertTrue(repaired.startswith("C3 Основание прямой призмы"))
+        self.assertEqual(changes, [("C3", "пропущенный номер", "C3")])
+
+    def test_restores_next_page_heading_after_previous_recovery(self) -> None:
+        markdown = (
+            "Найдите положительные значения параметра при которых множество "
+            "решений содержит указанные числа.\n"
+        )
+        pdf_text = (
+            "C4 Найдите положительные значения параметра при которых множество "
+            "решений содержит указанные числа.\n"
+        )
+
+        repaired, changes = _restore_missing_task_headings(
+            markdown,
+            pdf_text,
+            known_task_numbers={"C2", "C3"},
+        )
+
+        self.assertTrue(repaired.startswith("C4 Найдите положительные"))
+        self.assertEqual(changes, [("C4", "пропущенный номер", "C4")])
+
+    def test_canonicalizes_cyrillic_a_heading(self) -> None:
+        blocks = _task_blocks("А1 Найдите значение выражения.")
+
+        self.assertEqual([block.task_num for block in blocks], ["A1"])
+
     def test_restored_block_keeps_ocr_words_over_pdf_text_layer(self) -> None:
         markdown = (
             "13.7 Решите уравнение.\n\n"
@@ -113,6 +156,62 @@ class PdfReferenceTests(unittest.TestCase):
         self.assertIn("соответственно условию", repaired)
         self.assertNotIn("соотвественно", repaired)
         self.assertEqual(changes, [("14.1", "пропущенный номер", "14.1")])
+
+    def test_restores_missing_short_condition_intro_from_sorted_pdf(self) -> None:
+        markdown = (
+            "C1\n"
+            r"$$ \left\{\begin{aligned}x+y&=2\\x-y&=0"
+            r"\end{aligned}\right. $$"
+        )
+        sorted_pdf_text = (
+            "C1\n"
+            "Решите систему уравнений\n"
+            "x + y = 2\nx - y = 0\n"
+        )
+
+        repaired, changes = _repair_page(
+            markdown,
+            "",
+            heading_pdf_text=sorted_pdf_text,
+        )
+
+        self.assertIn("C1\nРешите систему уравнений\n\n$$", repaired)
+        self.assertEqual(
+            changes,
+            [("C1", "пропущенное начало условия", "Решите систему уравнений")],
+        )
+
+    def test_does_not_duplicate_existing_condition_intro(self) -> None:
+        markdown = "C1\nРешите систему уравнений\n$$ x+y=2 $$"
+        sorted_pdf_text = "C1\nРешите систему уравнений\nx + y = 2\n"
+
+        repaired, changes = _repair_page(
+            markdown,
+            "",
+            heading_pdf_text=sorted_pdf_text,
+        )
+
+        self.assertEqual(repaired, markdown)
+        self.assertEqual(changes, [])
+
+    def test_removes_conflicting_decorative_prefix_before_pdf_intro(self) -> None:
+        markdown = "A3 B3\n\nВычислите $\\cos 210^\\circ$."
+        sorted_pdf_text = "A3\nВычислите cos 210 градусов.\n"
+
+        repaired, changes = _repair_page(
+            markdown,
+            "",
+            heading_pdf_text=sorted_pdf_text,
+        )
+
+        self.assertIn("A3 Вычислите", repaired)
+        self.assertNotIn("B3.", repaired)
+        self.assertEqual(changes, [("A3", "B3", "удалено")])
+
+    def test_lettered_heading_accepts_condition_starting_with_yo(self) -> None:
+        blocks = _task_blocks("A14 Ёж движется по прямой.")
+
+        self.assertEqual([block.task_num for block in blocks], ["A14"])
 
     def test_does_not_restore_heading_without_unique_condition_anchor(self) -> None:
         markdown = "B8 Решите предыдущую задачу.\n"
@@ -197,6 +296,29 @@ class PdfReferenceTests(unittest.TestCase):
             "Окружность пересекает гипотенузу треугольника.",
         )
         self.assertEqual(changes, [("гипотензу", "гипотенузу")])
+
+    def test_repairs_short_first_word_only_with_matching_context(self) -> None:
+        repaired, changes = _reconcile_block_words(
+            "\nЁтою движется по прямой так, что расстояние изменяется.",
+            "\nТело движется по прямой так, что расстояние изменяется.",
+        )
+
+        self.assertEqual(
+            repaired,
+            "\nТело движется по прямой так, что расстояние изменяется.",
+        )
+        self.assertEqual(changes, [("Ётою", "Тело")])
+
+    def test_does_not_repair_short_first_word_without_matching_context(self) -> None:
+        markdown = "Мода меняется каждый сезон очень быстро."
+
+        repaired, changes = _reconcile_block_words(
+            markdown,
+            "Тело движется по прямой и меняет положение.",
+        )
+
+        self.assertEqual(repaired, markdown)
+        self.assertEqual(changes, [])
 
     def test_page_fallback_repairs_only_missing_character(self) -> None:
         markdown = "В кубе $ABCD_1B_1C_1D_1$."

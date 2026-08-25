@@ -73,18 +73,31 @@ HTML_WIDTH_PERCENT_PATTERN = re.compile(
 TASK_HEADING_PATTERN = re.compile(
     r"(?m)^[ \t]*(?:#{1,6}[ \t]*)?"
     r"(?:№[ \t]*)?"
-    r"((?:[1-9]\d?)(?:\.\d+)?|[BВCС](?:1[0-9]|[1-9]))"
+    r"((?:[1-9]\d?)(?:\.\d+)?|[AАBВCС](?:1[0-9]|[1-9]))"
+    r"(?:[ \t]*\*|[ \t]*\$\s*\^\s*\{\s*\*\s*\}\s*\$)?"
     r"(?:\.[ \t]+|[ \t]+(?=[(A-Za-zА-Яа-яЁё0-9])|[ \t]*$)"
     r"(?:\([^\n)]{1,80}\)[ \t]*(?=\n|$))?"
 )
 BOXED_TASK_HEADING_PATTERN = re.compile(
     r"(?im)^[ \t]*(?:\$\$[ \t]*)?"
     r"\\boxed\s*\{\s*\\mathrm\s*\{\s*"
-    r"([BВCС](?:1[0-9]|[1-9]))\s*\}\s*\}"
+    r"([AАBВCС](?:1[0-9]|[1-9]))\s*\}\s*\}"
     r"[ \t]*\\quad[ \t]*"
 )
 ANSWER_LINE_PATTERN = re.compile(
-    r"(?im)^[ \t]*[ОOоo][ТTтt][ВVвv][ЕEеe][ТTтt][ \t]*:.*$"
+    r"(?im)^[ \t]*(?:"
+    r"[ОOоo][ТTтt][ВVвv][ЕEеe][ТTтt][ \t]*:|"
+    r"Записать[ \t]+ответ\b|"
+    r"Верный[ \t]+ответ\b"
+    r").*$"
+)
+SOLUTION_HEADING_PATTERN = re.compile(
+    r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?Решени[ея]\b[^\n]*"
+)
+SOLUTION_TRANSITION_PATTERN = re.compile(
+    r"(?<=[.!?])\s+(?=(?:Построим|Рассмотрим|Исследуем|Найд[её]м|"
+    r"Составим|Возвед[её]м)\b)",
+    re.IGNORECASE,
 )
 SERVICE_LINE_PATTERN = re.compile(
     r"(?im)^[^\n]*(?:"
@@ -394,6 +407,11 @@ def process_markdown(
                 extracted.append((task, page_path))
 
         extracted = _deduplicate_tasks(extracted)
+        extracted = _reconcile_lettered_source_tasks(
+            client,
+            extracted,
+            source_blocks,
+        )
         extracted = _recover_missing_expected_tasks(
             client,
             extracted,
@@ -1411,13 +1429,25 @@ def _canonical_task_num(value: str) -> str:
     if len(compact) >= 2:
         part = compact[0].translate(CONFUSABLE_LETTERS)
         suffix = compact[1:].replace("З", "3")
-        if part in {"B", "C"} and suffix.isdigit():
+        if part in {"A", "B", "C"} and suffix.isdigit():
             return part + suffix
     return compact
 
 
 def _clean_source_condition(value: str, *, task_num: str | None = None) -> str:
     has_answer_field = ANSWER_LINE_PATTERN.search(value) is not None
+    solution_heading = SOLUTION_HEADING_PATTERN.search(value)
+    if solution_heading is not None:
+        value = value[: solution_heading.start()]
+    elif has_answer_field:
+        answer_line = ANSWER_LINE_PATTERN.search(value)
+        prefix = value[: answer_line.start()] if answer_line is not None else value
+        paragraphs = re.split(r"\n\s*\n", prefix, maxsplit=1)
+        value = paragraphs[0]
+        transition = SOLUTION_TRANSITION_PATTERN.search(value)
+        if transition is not None:
+            value = value[: transition.start()]
+
     cleaned = SERVICE_LINE_PATTERN.sub(" ", value)
     cleaned = IMAGE_PATTERN.sub(" ", cleaned)
     cleaned = ANSWER_LINE_PATTERN.sub(" ", cleaned)
@@ -2344,6 +2374,80 @@ def _recover_missing_expected_tasks(
         recovered_items.append((recovered, source.page_path))
 
     return recovered_items
+
+
+def _reconcile_lettered_source_tasks(
+    client: TaskClient,
+    extracted: list[tuple[ExtractedTask, Path]],
+    source_blocks: dict[str, list[_SourceTaskBlock]],
+) -> list[tuple[ExtractedTask, Path]]:
+    """Сверяет устойчивую схему A/B/C с явными OCR-заголовками.
+
+    В старых сборниках модель иногда нумерует фрагмент готового решения как
+    ``1`` или ``2``. Если OCR содержит не меньше трёх последовательных
+    буквенных заголовков, числовые задачи другой схемы отбрасываются, а
+    однозначно пропущенные буквенные блоки восстанавливаются без платного
+    повтора модели.
+    """
+
+    by_prefix: dict[str, set[int]] = {}
+    for task_num in source_blocks:
+        match = re.fullmatch(r"([ABC])([1-9]|1[0-9])", task_num)
+        if match is None:
+            return extracted
+        number = int(match.group(2))
+        by_prefix.setdefault(match.group(1), set()).add(number)
+
+    reliable = any(
+        any(
+            {number, number + 1, number + 2}.issubset(numbers)
+            for number in numbers
+        )
+        for numbers in by_prefix.values()
+    )
+    if not reliable:
+        return extracted
+
+    filtered = [
+        item
+        for item in extracted
+        if not item[0].task_num.isdigit()
+    ]
+    removed = [
+        task.task_num
+        for task, _page_path in extracted
+        if task.task_num.isdigit()
+    ]
+    if removed:
+        print(
+            f"{client.provider_name}: числовые задачи другой схемы "
+            f"{', '.join(removed)} пропущены; документ использует A/B/C",
+            flush=True,
+        )
+
+    present = {task.task_num for task, _page_path in filtered}
+    for task_num, candidates in source_blocks.items():
+        if task_num in present or len(candidates) != 1:
+            continue
+        source = candidates[0]
+        filtered.append(
+            (
+                ExtractedTask(
+                    task_num=task_num,
+                    condition=source.condition,
+                    image_id=source.image_id,
+                ),
+                source.page_path,
+            )
+        )
+        present.add(task_num)
+        print(
+            f"{client.provider_name}: задача {task_num} восстановлена из "
+            "явного OCR-блока без повтора модели",
+            flush=True,
+        )
+
+    return filtered
 
 
 def _select_source_task_block(
