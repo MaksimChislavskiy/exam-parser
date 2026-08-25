@@ -9,6 +9,7 @@ from exam_parser.pdf_reference import (
     _reconcile_block_words,
     _reconcile_reference_symbols,
     _repair_page,
+    _restore_missing_task_headings,
     _task_blocks,
 )
 
@@ -56,6 +57,81 @@ class _MathItalicPdfPage:
 
 
 class PdfReferenceTests(unittest.TestCase):
+    def test_restores_missing_lettered_heading_from_pdf_text(self) -> None:
+        markdown = (
+            "B8 Решите предыдущую задачу.\n\n"
+            "В равнобедренную трапецию вписана окружность. Боковая сторона "
+            "трапеции делится точкой касания.\n"
+        )
+        pdf_text = (
+            "B8*\nРешите предыдущую задачу.\n"
+            "B9*\nВ равнобедренную трапецию вписана окружность. Боковая "
+            "сторона трапеции делится точкой касания.\n"
+        )
+
+        repaired, changes = _restore_missing_task_headings(markdown, pdf_text)
+
+        self.assertIn("B9 В равнобедренную трапецию", repaired)
+        self.assertEqual(changes, [("B9", "пропущенный номер", "B9")])
+
+    def test_restores_missing_composite_heading_from_pdf_text(self) -> None:
+        markdown = (
+            "13.7 Решите уравнение.\n\n"
+            "Все рёбра правильной четырёхугольной пирамиды равны десяти. "
+            "Докажите утверждение.\n\n"
+            "14.2 Дана правильная пирамида.\n"
+        )
+        pdf_text = (
+            "13.7 Решите уравнение.\n"
+            "14.1 Все рёбра правильной четырёхугольной пирамиды равны "
+            "десяти. Докажите утверждение.\n"
+            "14.2 Дана правильная пирамида.\n"
+        )
+
+        repaired, changes = _restore_missing_task_headings(markdown, pdf_text)
+
+        self.assertIn("14.1 Все рёбра правильной", repaired)
+        self.assertEqual(changes, [("14.1", "пропущенный номер", "14.1")])
+
+    def test_restored_block_keeps_ocr_words_over_pdf_text_layer(self) -> None:
+        markdown = (
+            "13.7 Решите уравнение.\n\n"
+            "Все рёбра правильной четырёхугольной пирамиды расположены "
+            "параллельно основанию соответственно условию.\n\n"
+            "14.2 Дана правильная пирамида.\n"
+        )
+        pdf_text = (
+            "13.7 Решите уравнение.\n"
+            "14.1 Все рёбра правильной четырёхугольной пирамиды расположены "
+            "параллельно основанию соотвественно условию.\n"
+            "14.2 Дана правильная пирамида.\n"
+        )
+
+        repaired, changes = _repair_page(markdown, pdf_text)
+
+        self.assertIn("14.1 Все рёбра", repaired)
+        self.assertIn("соответственно условию", repaired)
+        self.assertNotIn("соотвественно", repaired)
+        self.assertEqual(changes, [("14.1", "пропущенный номер", "14.1")])
+
+    def test_does_not_restore_heading_without_unique_condition_anchor(self) -> None:
+        markdown = "B8 Решите предыдущую задачу.\n"
+        pdf_text = "B8*\nРешите предыдущую задачу.\nB9*\nНайдите число.\n"
+
+        repaired, changes = _restore_missing_task_headings(markdown, pdf_text)
+
+        self.assertEqual(repaired, markdown)
+        self.assertEqual(changes, [])
+
+    def test_does_not_restore_isolated_composite_heading(self) -> None:
+        markdown = "Все рёбра правильной четырёхугольной пирамиды равны.\n"
+        pdf_text = "14.1 Все рёбра правильной четырёхугольной пирамиды равны.\n"
+
+        repaired, changes = _restore_missing_task_headings(markdown, pdf_text)
+
+        self.assertEqual(repaired, markdown)
+        self.assertEqual(changes, [])
+
     def test_repairs_reordered_angle_name(self) -> None:
         markdown = (
             "В треугольнике АВС проведены высоты АА1 и ВВ1. "

@@ -17,12 +17,14 @@ from exam_parser.markdown_pipeline import (
     _recover_missing_expected_tasks,
     _remove_embedded_task_conditions,
     _restore_empty_model_condition,
+    _restore_empty_model_task_number,
     _raise_unreadable_ocr_conditions,
     _task_condition_blocks,
 )
 from exam_parser.math_text import normalize_ege_short_answer
 from exam_parser.models import (
     MODEL_EMPTY_CONDITION_MARKER,
+    MODEL_EMPTY_TASK_NUM_MARKER,
     ExtractedTask,
     SolutionVerification,
     TaskRecord,
@@ -426,6 +428,29 @@ class ConditionFidelityTests(unittest.TestCase):
         result = _ensure_condition_fidelity(client, corrupted, source)
 
         self.assertEqual(result.condition, source)
+
+    def test_stops_when_isolated_retry_finds_tasks_without_numbers(self) -> None:
+        source = (
+            "$9^{x-1} = 81$\n\n"
+            "Угол DBC равен 36 градусам. Найдите угол BAD."
+        )
+        extracted = ExtractedTask(task_num="5", condition="$9^{x-1} = 81$")
+        client = SimpleNamespace(
+            provider_name="Test",
+            extract_markdown=lambda markdown, image_ids: [
+                extracted,
+                ExtractedTask(
+                    task_num=MODEL_EMPTY_TASK_NUM_MARKER,
+                    condition="Угол DBC равен 36 градусам. Найдите угол BAD.",
+                ),
+            ],
+        )
+
+        with self.assertRaisesRegex(
+            OCRQualityError,
+            "изолированной проверке задачи 5.*без task_num: 1",
+        ):
+            _ensure_condition_fidelity(client, extracted, source)
 
     def test_accepts_obvious_text_only_ocr_correction(self) -> None:
         source = "В основании ширамиды лежит треугольник."
@@ -891,6 +916,50 @@ class EmptyModelConditionTests(unittest.TestCase):
                 None,
                 provider_name="Test",
                 page_num=15,
+            )
+
+    def test_restores_empty_task_num_from_unique_exact_source_block(self) -> None:
+        result = _restore_empty_model_task_number(
+            ExtractedTask(
+                task_num=MODEL_EMPTY_TASK_NUM_MARKER,
+                condition="Найдите площадь трапеции.",
+            ),
+            {
+                "B8": "Найдите площадь пирамиды.",
+                "B9": "Найдите площадь трапеции.",
+            },
+            provider_name="Test",
+            page_num=6,
+        )
+
+        self.assertEqual(result.task_num, "B9")
+        self.assertEqual(result.condition, "Найдите площадь трапеции.")
+
+    def test_fails_quality_check_for_unresolved_empty_task_num(self) -> None:
+        with self.assertRaisesRegex(
+            OCRQualityError,
+            "без task_num.*странице 1.*совпадений: 0",
+        ):
+            _restore_empty_model_task_number(
+                ExtractedTask(
+                    task_num=MODEL_EMPTY_TASK_NUM_MARKER,
+                    condition="Неразборчивое рукописное условие.",
+                ),
+                {"5": "Решите уравнение."},
+                provider_name="Test",
+                page_num=1,
+            )
+
+    def test_does_not_guess_task_num_from_reordered_condition(self) -> None:
+        with self.assertRaisesRegex(OCRQualityError, "совпадений: 0"):
+            _restore_empty_model_task_number(
+                ExtractedTask(
+                    task_num=MODEL_EMPTY_TASK_NUM_MARKER,
+                    condition="Найдите площадь трапеции равнобедренной.",
+                ),
+                {"B9": "Найдите площадь равнобедренной трапеции."},
+                provider_name="Test",
+                page_num=6,
             )
 
 

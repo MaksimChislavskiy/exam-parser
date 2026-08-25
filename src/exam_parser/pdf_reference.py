@@ -10,12 +10,17 @@ from pathlib import Path
 
 
 TASK_HEADING_PATTERN = re.compile(
-    r"(?m)^[ \t]*((?:1[0-9]|[1-9])(?:\.\d+)*)"
+    r"(?m)^[ \t]*((?:(?:1[0-9]|[1-9])(?:\.\d+)*|"
+    r"[BВCС](?:1[0-9]|[1-9])))"
+    r"(?:[ \t]*\*|[ \t]*\$\s*\^\s*\{\s*\*\s*\}\s*\$)?"
     r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-я])|[ \t]*$)"
 )
 PDF_TASK_HEADING_PATTERN = re.compile(
-    r"(?m)^[ \t]*((?:1[0-9]|[1-9]))"
-    r"(?P<separator>\.[ \t]+|[ \t]*$)"
+    r"(?m)^[ \t]*((?:(?:1[0-9]|[1-9])(?:\.\d+)*|"
+    r"[BВCС](?:1[0-9]|[1-9])))"
+    r"(?:[ \t]*\*)?"
+    r"(?P<separator>\.[ \t]+|"
+    r"[ \t]+(?=[A-Za-zА-Яа-яЁё])|[ \t]*$)"
 )
 GEOMETRY_TOKEN_PATTERN = re.compile(
     r"(?<![A-Za-zА-Яа-яЁё0-9_])"
@@ -120,7 +125,16 @@ def repair_markdown_from_pdf(
             page = document[page_num - 1]
             markdown = markdown_path.read_text(encoding="utf-8")
             pdf_text = page.get_text("text")
-            repaired, task_changes = _repair_page(markdown, pdf_text)
+            # В некоторых PDF номера задач находятся в отдельных текстовых
+            # блоках и в сыром порядке оказываются после условий. Сортированный
+            # текст нужен только для границ; старые точечные сверки продолжают
+            # работать с прежним сырым текстовым слоем.
+            heading_pdf_text = page.get_text("text", sort=True)
+            repaired, task_changes = _repair_page(
+                markdown,
+                pdf_text,
+                heading_pdf_text=heading_pdf_text,
+            )
             repaired, page_changes = _reconcile_reference_symbols(
                 repaired,
                 _pdf_geometry_symbols(page),
@@ -159,7 +173,18 @@ def repair_markdown_from_pdf(
 def _repair_page(
     markdown: str,
     pdf_text: str,
+    *,
+    heading_pdf_text: str | None = None,
 ) -> tuple[str, list[tuple[str, str, str]]]:
+    markdown, heading_changes = _restore_missing_task_headings(
+        markdown,
+        heading_pdf_text if heading_pdf_text is not None else pdf_text,
+    )
+    restored_task_numbers = {
+        task_num
+        for task_num, old, _new in heading_changes
+        if old == "пропущенный номер"
+    }
     markdown_blocks = {
         block.task_num: block
         for block in _task_blocks(markdown, heading_pattern=TASK_HEADING_PATTERN)
@@ -171,6 +196,8 @@ def _repair_page(
     page_changes: list[tuple[int, int, str, list[tuple[str, str, str]]]] = []
 
     for task_num, markdown_block in markdown_blocks.items():
+        if task_num in restored_task_numbers:
+            continue
         pdf_block = pdf_blocks.get(task_num)
         if pdf_block is None:
             continue
@@ -194,19 +221,88 @@ def _repair_page(
             )
 
     if not page_changes:
-        return markdown, []
+        return markdown, heading_changes
 
     result = markdown
-    changes: list[tuple[str, str, str]] = []
+    block_changes_result: list[tuple[str, str, str]] = []
     for start, end, repaired, block_changes in sorted(
         page_changes,
         key=lambda item: item[0],
         reverse=True,
     ):
         result = result[:start] + repaired + result[end:]
-        changes.extend(block_changes)
-    changes.reverse()
-    return result, changes
+        block_changes_result.extend(block_changes)
+    block_changes_result.reverse()
+    return result, heading_changes + block_changes_result
+
+
+def _restore_missing_task_headings(
+    markdown: str,
+    pdf_text: str,
+) -> tuple[str, list[tuple[str, str, str]]]:
+    """Вставляет номер, видимый в текстовом PDF, перед точным OCR-условием."""
+
+    markdown_blocks = _task_blocks(
+        markdown,
+        heading_pattern=TASK_HEADING_PATTERN,
+    )
+    pdf_blocks = _task_blocks(
+        pdf_text,
+        heading_pattern=PDF_TASK_HEADING_PATTERN,
+    )
+    markdown_numbers = {block.task_num for block in markdown_blocks}
+    insertions: list[tuple[int, str]] = []
+    changes: list[tuple[str, str, str]] = []
+
+    for index, pdf_block in enumerate(pdf_blocks):
+        if pdf_block.task_num in markdown_numbers:
+            continue
+        neighbours = []
+        if index > 0:
+            neighbours.append(pdf_blocks[index - 1].task_num)
+        if index + 1 < len(pdf_blocks):
+            neighbours.append(pdf_blocks[index + 1].task_num)
+        if not any(task_num in markdown_numbers for task_num in neighbours):
+            continue
+        anchor = _unique_condition_anchor(markdown, pdf_block.text)
+        if anchor is None:
+            continue
+        line_start = markdown.rfind("\n", 0, anchor) + 1
+        if anchor - line_start > 80:
+            continue
+        insertions.append((line_start, f"{pdf_block.task_num} "))
+        changes.append(
+            (pdf_block.task_num, "пропущенный номер", pdf_block.task_num)
+        )
+
+    if not insertions:
+        return markdown, []
+    if len({position for position, _ in insertions}) != len(insertions):
+        return markdown, []
+
+    repaired = markdown
+    for position, prefix in sorted(insertions, reverse=True):
+        repaired = repaired[:position] + prefix + repaired[position:]
+    return repaired, changes
+
+
+def _unique_condition_anchor(markdown: str, pdf_condition: str) -> int | None:
+    pdf_tokens = _russian_word_tokens(pdf_condition)
+    markdown_tokens = _russian_word_tokens(markdown)
+    anchor_size = min(5, len(pdf_tokens))
+    if anchor_size < 4:
+        return None
+
+    expected = [token.canonical for token in pdf_tokens[:anchor_size]]
+    matches: list[int] = []
+    for index in range(len(markdown_tokens) - anchor_size + 1):
+        actual = [
+            token.canonical
+            for token in markdown_tokens[index : index + anchor_size]
+        ]
+        if actual == expected:
+            matches.append(markdown_tokens[index].start)
+    return matches[0] if len(matches) == 1 else None
 
 
 def _reconcile_block_symbols(
@@ -573,7 +669,7 @@ def _task_blocks(
         end = headings[index + 1].start() if index + 1 < len(headings) else len(value)
         result.append(
             _TaskBlock(
-                task_num=heading.group(1),
+                task_num=_canonical_task_num(heading.group(1)),
                 start=start,
                 end=end,
                 text=value[start:end],
@@ -592,6 +688,15 @@ def _select_pdf_task_headings(
     входит в последовательность соседних номеров заданий.
     """
 
+    complex_headings = [
+        heading
+        for heading in headings
+        if "." in heading.group(1)
+        or _canonical_task_num(heading.group(1)).startswith(("B", "C"))
+    ]
+    if complex_headings:
+        return complex_headings
+
     if len(headings) < 2:
         if not headings:
             return []
@@ -602,9 +707,9 @@ def _select_pdf_task_headings(
     best_dotted = -1
     for start_index, start in enumerate(headings):
         chain = [start]
-        expected = int(start.group(1)) + 1
+        expected = int(_canonical_task_num(start.group(1))) + 1
         for candidate in headings[start_index + 1 :]:
-            number = int(candidate.group(1))
+            number = int(_canonical_task_num(candidate.group(1)))
             if number == expected:
                 chain.append(candidate)
                 expected += 1
@@ -619,6 +724,15 @@ def _select_pdf_task_headings(
             best_dotted = dotted
 
     return best if len(best) >= 2 else headings
+
+
+def _canonical_task_num(value: str) -> str:
+    compact = re.sub(r"\s+", "", value).upper()
+    if compact.startswith("В"):
+        return "B" + compact[1:]
+    if compact.startswith("С"):
+        return "C" + compact[1:]
+    return compact
 
 
 def _page_number(path: Path) -> int:

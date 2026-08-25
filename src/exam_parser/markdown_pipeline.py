@@ -17,6 +17,7 @@ from .llm_client import LLMProvider, TaskClient, create_task_client
 from .math_text import normalize_ege_short_answer
 from .models import (
     MODEL_EMPTY_CONDITION_MARKER,
+    MODEL_EMPTY_TASK_NUM_MARKER,
     ExtractedAnswer,
     ExtractedTask,
     TaskRecord,
@@ -362,6 +363,13 @@ def process_markdown(
             tasks = client.extract_markdown(markdown, image_ids)
             for task in tasks:
                 task = _clean_extracted_task(task)
+                if task.task_num == MODEL_EMPTY_TASK_NUM_MARKER:
+                    task = _restore_empty_model_task_number(
+                        task,
+                        source_by_task,
+                        provider_name=client.provider_name,
+                        page_num=page_num,
+                    )
                 source_condition = source_by_task.get(task.task_num)
                 if task.condition == MODEL_EMPTY_CONDITION_MARKER:
                     task = _restore_empty_model_condition(
@@ -828,6 +836,18 @@ def _ensure_condition_fidelity(
         isolated_markdown,
         _image_ids(source_condition),
     )
+    unresolved_numbers = [
+        item
+        for item in retry_tasks
+        if item.task_num == MODEL_EMPTY_TASK_NUM_MARKER
+    ]
+    if unresolved_numbers:
+        raise OCRQualityError(
+            f"{client.provider_name}: в изолированной проверке задачи "
+            f"{task.task_num} обнаружено задач без task_num: "
+            f"{len(unresolved_numbers)}. OCR не содержит надёжных границ; "
+            "документ нельзя считать качественно обработанным."
+        )
     retry = next(
         (item for item in retry_tasks if item.task_num == task.task_num),
         None,
@@ -906,6 +926,39 @@ def _restore_empty_model_condition(
     )
     return ExtractedTask(
         task_num=task.task_num,
+        condition=source_condition,
+        image_id=task.image_id,
+    )
+
+
+def _restore_empty_model_task_number(
+    task: ExtractedTask,
+    source_by_task: dict[str, str],
+    *,
+    provider_name: str,
+    page_num: int,
+) -> ExtractedTask:
+    matches = [
+        (task_num, source_condition)
+        for task_num, source_condition in source_by_task.items()
+        if _conditions_match(source_condition, task.condition)
+    ]
+    if len(matches) != 1:
+        raise OCRQualityError(
+            f"{provider_name}: задача в позиции без task_num на странице "
+            f"{page_num} не сопоставлена с единственным точным OCR-блоком "
+            f"(совпадений: {len(matches)}). Документ нельзя считать "
+            "качественно обработанным."
+        )
+
+    task_num, source_condition = matches[0]
+    print(
+        f"{provider_name}: пустой task_num на странице {page_num} "
+        f"восстановлен как {task_num} по точному OCR-блоку без платного повтора",
+        flush=True,
+    )
+    return ExtractedTask(
+        task_num=task_num,
         condition=source_condition,
         image_id=task.image_id,
     )

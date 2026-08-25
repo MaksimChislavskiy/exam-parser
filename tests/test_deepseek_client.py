@@ -8,7 +8,11 @@ from exam_parser.deepseek_client import (
     DeepSeekTaskClient,
     _parse_structured_content,
 )
-from exam_parser.models import MODEL_EMPTY_CONDITION_MARKER, PageExtraction
+from exam_parser.models import (
+    MODEL_EMPTY_CONDITION_MARKER,
+    MODEL_EMPTY_TASK_NUM_MARKER,
+    PageExtraction,
+)
 from exam_parser.ocr_noise import OCR_UNREADABLE_REPEAT_MARKER
 
 
@@ -258,6 +262,30 @@ class DeepSeekStructuredOutputTests(unittest.TestCase):
         self.assertEqual(
             result.tasks[1].condition,
             MODEL_EMPTY_CONDITION_MARKER,
+        )
+
+    def test_empty_page_task_num_uses_marker_without_paid_retry(self) -> None:
+        client, completions = _client_with_responses(
+            [
+                _response(
+                    '{"tasks":['
+                    '{"task_num":"B8","condition":"Первая","image_id":null},'
+                    '{"task_num":"","condition":"Вторая","image_id":null}'
+                    ']}'
+                )
+            ]
+        )
+
+        result = client._request_structured(
+            "prompt",
+            PageExtraction,
+            thinking=False,
+        )
+
+        self.assertEqual(len(completions.calls), 1)
+        self.assertEqual(
+            result.tasks[1].task_num,
+            MODEL_EMPTY_TASK_NUM_MARKER,
         )
 
 

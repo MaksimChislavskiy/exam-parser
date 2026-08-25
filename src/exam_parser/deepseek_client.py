@@ -16,6 +16,7 @@ from .models import (
     ExtractedTask,
     GeneratedAnswer,
     MODEL_EMPTY_CONDITION_MARKER,
+    MODEL_EMPTY_TASK_NUM_MARKER,
     PageExtraction,
     SolutionVerification,
     TaskDetailedSolution,
@@ -592,17 +593,17 @@ def _validate_structured_payload(payload: object, model: type[T]) -> T:
     except ValidationError:
         if model is not PageExtraction:
             raise
-        repaired = _mark_empty_page_conditions(payload)
+        repaired = _mark_empty_page_fields(payload)
         if repaired is None:
             raise
         return repaired  # type: ignore[return-value]
 
 
-def _mark_empty_page_conditions(payload: object) -> PageExtraction | None:
-    """Помечает отдельный пустой condition в законченном ответе страницы.
+def _mark_empty_page_fields(payload: object) -> PageExtraction | None:
+    """Помечает отдельное пустое поле задачи в законченном ответе страницы.
 
-    Маркер не является готовым условием: pipeline обязан заменить его точным
-    OCR-блоком и завершиться quality-ошибкой, если такого блока нет.
+    Маркеры не являются готовыми данными: pipeline обязан заменить их точным
+    OCR-блоком и завершиться quality-ошибкой, если однозначной замены нет.
     """
 
     if not isinstance(payload, dict) or not isinstance(payload.get("tasks"), list):
@@ -610,22 +611,26 @@ def _mark_empty_page_conditions(payload: object) -> PageExtraction | None:
 
     repaired_payload = dict(payload)
     repaired_tasks: list[object] = []
-    affected: list[str] = []
-    for raw_task in payload["tasks"]:
+    affected_conditions: list[str] = []
+    affected_numbers: list[int] = []
+    for index, raw_task in enumerate(payload["tasks"]):
         if not isinstance(raw_task, dict):
             repaired_tasks.append(raw_task)
             continue
         task = dict(raw_task)
+        task_num = task.get("task_num")
         condition = task.get("condition")
+        if isinstance(task_num, str) and not task_num.strip():
+            task["task_num"] = MODEL_EMPTY_TASK_NUM_MARKER
+            affected_numbers.append(index)
         if isinstance(condition, str) and not condition.strip():
-            task_num = task.get("task_num")
             if not isinstance(task_num, str) or not task_num.strip():
                 return None
             task["condition"] = MODEL_EMPTY_CONDITION_MARKER
-            affected.append(task_num.strip())
+            affected_conditions.append(task_num.strip())
         repaired_tasks.append(task)
 
-    if not affected:
+    if not affected_conditions and not affected_numbers:
         return None
     repaired_payload["tasks"] = repaired_tasks
     try:
@@ -633,10 +638,16 @@ def _mark_empty_page_conditions(payload: object) -> PageExtraction | None:
     except ValidationError:
         return None
 
+    messages: list[str] = []
+    if affected_conditions:
+        messages.append("пустое condition для задач " + ", ".join(affected_conditions))
+    if affected_numbers:
+        positions = ", ".join(str(index + 1) for index in affected_numbers)
+        messages.append("пустой task_num в позициях " + positions)
     print(
-        "DeepSeek: законченный JSON содержит пустое condition для задач "
-        + ", ".join(affected)
-        + "; повтор пропущен, будет использован точный OCR-блок",
+        "DeepSeek: законченный JSON содержит "
+        + "; ".join(messages)
+        + "; повтор пропущен, будет выполнена сверка с OCR-блоком",
         flush=True,
     )
     return repaired
