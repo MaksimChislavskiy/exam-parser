@@ -12,7 +12,11 @@ from .markdown_pipeline import process_markdown
 from .models import TaskRecord
 from .paddle import PaddleDeviceError, recognize_pages
 from .pdf_reference import repair_markdown_from_pdf
-from .variants import detect_document_variants, variant_page_paths
+from .variants import (
+    detect_document_variants,
+    materialize_variant_markdown,
+    variant_page_paths,
+)
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -233,24 +237,49 @@ def main() -> None:
         )
 
     variants = detect_document_variants(processing_markdown_dir)
-    bounded_markdown_dir = normalize_task_boundaries(
-        processing_markdown_dir,
-        workspace / "markdown_bounded",
-        page_groups=(variant.page_numbers for variant in variants),
-    )
-    if bounded_markdown_dir != processing_markdown_dir:
+    variant_markdown_dirs: list[Path] = []
+    if any(variant.has_partial_pages for variant in variants):
         print(
-            "Используется Markdown с восстановленными границами задач: "
-            f"{bounded_markdown_dir}",
+            "Найдены несколько вариантов внутри одной PDF-страницы; "
+            "создаются отдельные рабочие фрагменты Markdown",
             flush=True,
         )
-    processing_markdown_dir = bounded_markdown_dir
+        for variant in variants:
+            materialized_dir = materialize_variant_markdown(
+                processing_markdown_dir,
+                workspace / "markdown_variants" / variant.output_name,
+                variant,
+            )
+            variant_markdown_dirs.append(
+                normalize_task_boundaries(
+                    materialized_dir,
+                    workspace / "markdown_bounded" / variant.output_name,
+                )
+            )
+    else:
+        bounded_markdown_dir = normalize_task_boundaries(
+            processing_markdown_dir,
+            workspace / "markdown_bounded",
+            page_groups=(variant.page_numbers for variant in variants),
+        )
+        if bounded_markdown_dir != processing_markdown_dir:
+            print(
+                "Используется Markdown с восстановленными границами задач: "
+                f"{bounded_markdown_dir}",
+                flush=True,
+            )
+        variant_markdown_dirs = [bounded_markdown_dir] * len(variants)
 
     if len(variants) == 1:
+        variant_markdown_dir = variant_markdown_dirs[0]
         records = _process_variant(
-            processing_markdown_dir,
+            variant_markdown_dir,
             output_dir,
-            page_paths=variant_page_paths(processing_markdown_dir, variants[0]),
+            page_paths=variant_page_paths(
+                variant_markdown_dir,
+                variants[0],
+                materialized_fragments=variants[0].has_partial_pages,
+            ),
             include_solutions=include_solutions,
             answer_source=answer_source,
             provider=provider,
@@ -270,7 +299,7 @@ def main() -> None:
         flush=True,
     )
     total_records = 0
-    for variant in variants:
+    for variant, variant_markdown_dir in zip(variants, variant_markdown_dirs):
         variant_output_dir = output_dir / variant.output_name
         pages_text = _format_page_numbers(variant.page_numbers)
         print(
@@ -278,9 +307,13 @@ def main() -> None:
             flush=True,
         )
         records = _process_variant(
-            processing_markdown_dir,
+            variant_markdown_dir,
             variant_output_dir,
-            page_paths=variant_page_paths(processing_markdown_dir, variant),
+            page_paths=variant_page_paths(
+                variant_markdown_dir,
+                variant,
+                materialized_fragments=variant.has_partial_pages,
+            ),
             include_solutions=include_solutions,
             answer_source=answer_source,
             provider=provider,

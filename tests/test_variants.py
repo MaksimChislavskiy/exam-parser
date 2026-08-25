@@ -12,6 +12,7 @@ from exam_parser.markdown_boundaries import normalize_task_boundaries
 from exam_parser.models import TaskRecord
 from exam_parser.variants import (
     detect_document_variants,
+    materialize_variant_markdown,
     variant_page_paths,
 )
 
@@ -176,6 +177,93 @@ class VariantDetectionTests(unittest.TestCase):
 
         self.assertEqual(paths, [first, second])
 
+    def test_33925_partial_exam_sets_and_two_variants_on_one_page(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            markdown_dir = Path(temp)
+            long_instruction = (
+                "Для записи решений и ответов на задания 13–19 используйте "
+                "бланк ответов № 2."
+            )
+            _write_page(
+                markdown_dir,
+                1,
+                f"{long_instruction}\n13 Первая\n19 Последняя",
+            )
+            _write_page(
+                markdown_dir,
+                2,
+                f"{long_instruction}\n13 Новая первая\n19 Новая последняя",
+            )
+            _write_page(
+                markdown_dir,
+                3,
+                "## Часть 2\nC1 Первая\nC6 Последняя\n"
+                "<div>Часть 2</div>\nC1 Другая первая\nC6 Другая последняя",
+            )
+
+            variants = detect_document_variants(markdown_dir)
+
+        self.assertEqual(len(variants), 4)
+        self.assertEqual(
+            [item.page_numbers for item in variants],
+            [(1,), (2,), (3,), (3,)],
+        )
+        self.assertFalse(variants[1].has_partial_pages)
+        self.assertTrue(variants[2].has_partial_pages)
+        self.assertTrue(variants[3].has_partial_pages)
+
+    def test_materializes_exact_page_fragments_and_keeps_images(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            markdown_dir = root / "source"
+            source = (
+                "## Часть 2\nC1 Первая\n"
+                '<img src="imgs/first.jpg">\nC6 Последняя\n'
+                "<div>Часть 2</div>\nC1 Другая первая\n"
+                '<img src="imgs/second.jpg">\nC6 Другая последняя'
+            )
+            page_path = _write_page(markdown_dir, 10, source)
+            images_dir = page_path.parent / "imgs"
+            images_dir.mkdir()
+            (images_dir / "first.jpg").write_bytes(b"first")
+            (images_dir / "second.jpg").write_bytes(b"second")
+            variants = detect_document_variants(markdown_dir)
+
+            first_dir = materialize_variant_markdown(
+                markdown_dir,
+                root / "first",
+                variants[0],
+            )
+            second_dir = materialize_variant_markdown(
+                markdown_dir,
+                root / "second",
+                variants[1],
+            )
+            first_path = variant_page_paths(
+                first_dir,
+                variants[0],
+                materialized_fragments=True,
+            )[0]
+            second_path = variant_page_paths(
+                second_dir,
+                variants[1],
+                materialized_fragments=True,
+            )[0]
+
+            first = first_path.read_text(encoding="utf-8")
+            second = second_path.read_text(encoding="utf-8")
+            boundary = variants[0].page_fragments[0].end
+
+            assert boundary is not None
+            self.assertEqual(first, source[:boundary])
+            self.assertEqual(second, source[boundary:])
+            self.assertTrue(
+                (first_path.parent / "imgs" / "first.jpg").is_file()
+            )
+            self.assertTrue(
+                (second_path.parent / "imgs" / "second.jpg").is_file()
+            )
+
 
 class VariantBoundaryTests(unittest.TestCase):
     def test_task_number_state_is_reset_between_variants(self) -> None:
@@ -313,6 +401,68 @@ class MultiVariantCliTests(unittest.TestCase):
             ],
             [["page_1.md"], ["page_2.md"], ["page_3.md"], ["page_4.md"]],
         )
+
+    def test_variants_inside_one_page_use_separate_exact_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            markdown_dir = root / "markdown"
+            output_dir = root / "result"
+            input_path = root / "document.pdf"
+            input_path.write_bytes(b"pdf")
+            source = (
+                "## Часть 2\nC1 Первая\nC6 Последняя\n"
+                "<div>Часть 2</div>\nC1 Другая первая\nC6 Другая последняя"
+            )
+            _write_page(markdown_dir, 10, source)
+            fake_records = [TaskRecord(task_num="C1", condition="Условие")]
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "main.py",
+                        "document.pdf",
+                        "--reuse-markdown",
+                        "--no-solutions",
+                        "--no-answers",
+                        "--markdown-dir",
+                        str(markdown_dir),
+                        "--output-dir",
+                        str(output_dir),
+                    ],
+                ),
+                patch(
+                    "exam_parser.cli.resolve_input_path",
+                    return_value=input_path,
+                ),
+                patch(
+                    "exam_parser.cli.repair_markdown_from_pdf",
+                    return_value=markdown_dir,
+                ),
+                patch(
+                    "exam_parser.cli.normalize_task_boundaries",
+                    side_effect=lambda source_dir, target_dir, **kwargs: Path(
+                        source_dir
+                    ),
+                ),
+                patch(
+                    "exam_parser.cli.process_markdown",
+                    return_value=fake_records,
+                ) as process,
+                redirect_stdout(StringIO()),
+            ):
+                main()
+
+            first_path = process.call_args_list[0].kwargs["page_paths"][0]
+            second_path = process.call_args_list[1].kwargs["page_paths"][0]
+            first = first_path.read_text(encoding="utf-8")
+            second = second_path.read_text(encoding="utf-8")
+
+        self.assertEqual(process.call_count, 2)
+        self.assertNotEqual(first_path.parent.parent, second_path.parent.parent)
+        self.assertEqual(first + second, source)
+        self.assertIn("C1 Первая", first)
+        self.assertNotIn("C1 Другая первая", first)
+        self.assertIn("C1 Другая первая", second)
 
     def test_single_variant_keeps_original_output_layout(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
