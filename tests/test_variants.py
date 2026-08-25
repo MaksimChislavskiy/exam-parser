@@ -106,6 +106,32 @@ class VariantDetectionTests(unittest.TestCase):
             [(1, 2), (3, 4)],
         )
 
+    def test_00558_instructions_split_when_ocr_loses_b1_and_b2(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            markdown_dir = Path(temp)
+            _write_page(
+                markdown_dir,
+                1,
+                "Инструкция по выполнению работы\nЧасть 1\nВ1 Первая\nВ3 Третья",
+            )
+            _write_page(markdown_dir, 2, "В14 Последняя краткая")
+            _write_page(markdown_dir, 3, "Часть 2\nC1 Первая сложная\nC6 Последняя")
+            _write_page(
+                markdown_dir,
+                4,
+                "Инструкция по выполнению работы\nЧасть 1\n"
+                "Первое задание без номера\nВ3 Третья нового варианта",
+            )
+            _write_page(markdown_dir, 5, "В14 Последняя краткая нового варианта")
+            _write_page(markdown_dir, 6, "Часть 2\nC1 Новая сложная\nC6 Последняя")
+
+            variants = detect_document_variants(markdown_dir)
+
+        self.assertEqual(
+            [item.page_numbers for item in variants],
+            [(1, 2, 3), (4, 5, 6)],
+        )
+
     def test_numbered_list_without_part_one_does_not_split_variant(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             markdown_dir = Path(temp)

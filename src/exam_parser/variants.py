@@ -96,6 +96,7 @@ def detect_document_variants(
         identifier = _variant_identifier(markdown)
         task_numbers = _task_numbers(markdown)
         legacy_task_numbers = _legacy_task_numbers(markdown)
+        has_work_instructions = INSTRUCTION_PATTERN.search(markdown) is not None
         looks_like_start = _looks_like_variant_start(
             markdown,
             task_numbers,
@@ -108,6 +109,7 @@ def detect_document_variants(
             task_numbers=task_numbers,
             legacy_task_numbers=legacy_task_numbers,
             looks_like_start=looks_like_start,
+            has_work_instructions=has_work_instructions,
         ):
             drafts.append(current)
             current = None
@@ -156,6 +158,7 @@ def _starts_new_variant(
     task_numbers: set[int],
     legacy_task_numbers: set[tuple[str, int]],
     looks_like_start: bool,
+    has_work_instructions: bool,
 ) -> bool:
     if not looks_like_start:
         return False
@@ -167,13 +170,18 @@ def _starts_new_variant(
         return True
 
     has_completed_task_set = any(number >= 13 for number in current.task_numbers)
-    if 1 in task_numbers and has_completed_task_set:
-        return True
-
     has_completed_legacy_set = any(
         part == "C" or (part == "B" and number >= 10)
         for part, number in current.legacy_task_numbers
     )
+    if has_work_instructions and (
+        has_completed_task_set or has_completed_legacy_set
+    ):
+        return True
+
+    if 1 in task_numbers and has_completed_task_set:
+        return True
+
     return (
         has_completed_legacy_set
         and _looks_like_legacy_variant_start(legacy_task_numbers)
