@@ -1433,7 +1433,7 @@ class ConditionArtifactRepairTests(unittest.TestCase):
             _normalize_condition_artifacts(condition, task_num="17"),
             (
                 "Докажите, что острые углы $ABC$ и $ACH$ равны. "
-                "Найдите длину стороны $AC$, если $AK$ = 10, $BK$ = 30."
+                "Найдите длину стороны $AC$, если $AK=10$, $BK=30$."
             ),
         )
 
@@ -1488,11 +1488,26 @@ class ConditionArtifactRepairTests(unittest.TestCase):
             _normalize_condition_artifacts(condition, task_num="C3"),
             (
                 "Основание прямой призмы $ABCA_1B_1C_1$ — треугольник "
-                "$ABC$, в котором $AB=BC=8$, $AC$ = 2. "
+                "$ABC$, в котором $AB=BC=8$, $AC=2$. "
                 "Вершины $A_1$, $A$, $C_1$ и точка $D$ ребра $AB$ "
                 "лежат на сфере. Найдите радиус, если $AD:DB=1:3$."
             ),
         )
+
+    def test_geometry_assignment_normalization_avoids_false_fidelity_issue(
+        self,
+    ) -> None:
+        source = _normalize_condition_artifacts(
+            "В треугольнике $ABC$ сторона $AC$ = 2.",
+            task_num="C3",
+        )
+        candidate = _normalize_condition_artifacts(
+            "В треугольнике $ABC$ сторона $AC=2$.",
+            task_num="C3",
+        )
+
+        self.assertEqual(source, candidate)
+        self.assertEqual(_condition_fidelity_issues(source, candidate), [])
 
     def test_repairs_split_geometry_ratio(self) -> None:
         condition = (

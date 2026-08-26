@@ -1651,6 +1651,23 @@ def _repair_geometry_math_relations(value: str) -> str:
         cleaned,
     )
 
+    assignment_label = (
+        r"[A-ZАВСДЕНКМОРТХУ]{2,4}"
+        r"(?:_?(?:\{\d+\}|\d+)|[₀-₉]+)?"
+    )
+    assignment_atom = rf"(?:\$\s*{assignment_label}\s*\$|{assignment_label})"
+    assignment_pattern = re.compile(
+        rf"(?<![A-Za-zА-Яа-яЁё0-9_$=:])"
+        rf"(?P<label>{assignment_atom})\s*=\s*"
+        rf"(?P<number>{number})\s*\$?"
+    )
+    cleaned = assignment_pattern.sub(
+        lambda match: (
+            f"${normalized(match.group('label'))}={match.group('number')}$"
+        ),
+        cleaned,
+    )
+
     return cleaned
 
 
