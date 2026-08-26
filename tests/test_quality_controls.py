@@ -5,13 +5,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from exam_parser.deepseek_client import DeepSeekTaskClient
+from exam_parser.deepseek_client import (
+    DeepSeekResponseLengthError,
+    DeepSeekTaskClient,
+)
 from exam_parser.markdown_pipeline import (
     OCRQualityError,
     _SourceTaskBlock,
     _clean_extracted_task,
     _condition_fidelity_issues,
     _ensure_condition_fidelity,
+    _extract_page_tasks,
     _generate_solutions_and_answers,
     _normalize_condition_artifacts,
     _recover_missing_expected_tasks,
@@ -110,6 +114,114 @@ class ShortAnswerTests(unittest.TestCase):
     def test_does_not_treat_single_latin_marker_as_subpart_sequence(self) -> None:
         answer = "a) — значение параметра"
         self.assertEqual(normalize_ege_short_answer("18", answer), answer)
+
+
+class LengthLimitedPageRecoveryTests(unittest.TestCase):
+    class _Client:
+        provider_name = "Test"
+
+        def __init__(self, responses: list[object]) -> None:
+            self.responses = responses
+            self.calls: list[tuple[str, list[str]]] = []
+
+        def extract_markdown(
+            self,
+            markdown: str,
+            image_ids: list[str],
+        ) -> list[ExtractedTask]:
+            self.calls.append((markdown, image_ids))
+            response = self.responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response  # type: ignore[return-value]
+
+    def test_splits_only_by_unique_source_task_boundaries(self) -> None:
+        client = self._Client(
+            [
+                DeepSeekResponseLengthError("length"),
+                [ExtractedTask(task_num="1", condition="Условие 1.")],
+                [
+                    ExtractedTask(
+                        task_num="2",
+                        condition="Условие 2.",
+                        image_id="task_2.png",
+                    )
+                ],
+            ]
+        )
+
+        result = _extract_page_tasks(
+            client,
+            "1. Условие 1.\n\n2. Условие 2.",
+            ["task_2.png", "service.png"],
+            source_by_task={"1": "Условие 1.", "2": "Условие 2."},
+            image_by_task={"2": "task_2.png"},
+            page_num=28,
+        )
+
+        self.assertEqual([task.task_num for task in result], ["1", "2"])
+        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(client.calls[1], ("1. Условие 1.", []))
+        self.assertEqual(
+            client.calls[2],
+            ("2. Условие 2.", ["task_2.png"]),
+        )
+
+    def test_single_source_task_does_not_make_second_paid_request(self) -> None:
+        client = self._Client([DeepSeekResponseLengthError("length")])
+
+        result = _extract_page_tasks(
+            client,
+            "13. Длинное условие.",
+            ["diagram.png"],
+            source_by_task={"13": "Длинное условие."},
+            image_by_task={"13": "diagram.png"},
+            page_num=5,
+        )
+
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(result[0].condition, "Длинное условие.")
+        self.assertEqual(result[0].image_id, "diagram.png")
+
+    def test_isolated_length_uses_exact_source_without_third_request(self) -> None:
+        client = self._Client(
+            [
+                DeepSeekResponseLengthError("page length"),
+                DeepSeekResponseLengthError("task length"),
+                [ExtractedTask(task_num="2", condition="Условие 2.")],
+            ]
+        )
+
+        result = _extract_page_tasks(
+            client,
+            "1. Условие 1.\n\n2. Условие 2.",
+            [],
+            source_by_task={"1": "Условие 1.", "2": "Условие 2."},
+            image_by_task={},
+            page_num=28,
+        )
+
+        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(result[0].condition, "Условие 1.")
+        self.assertEqual(result[1].condition, "Условие 2.")
+
+    def test_refuses_split_when_task_numbers_repeat(self) -> None:
+        client = self._Client([DeepSeekResponseLengthError("length")])
+
+        with self.assertRaisesRegex(
+            OCRQualityError,
+            "уникальные OCR-границы.*не найдены",
+        ):
+            _extract_page_tasks(
+                client,
+                "1. Первый вариант.\n\n1. Второй вариант.",
+                [],
+                source_by_task={"1": "Второй вариант."},
+                image_by_task={},
+                page_num=7,
+            )
+
+        self.assertEqual(len(client.calls), 1)
 
 
 class ConditionFidelityTests(unittest.TestCase):

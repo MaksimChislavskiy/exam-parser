@@ -11,6 +11,7 @@ from typing import Literal
 
 from PIL import Image
 
+from .deepseek_client import DeepSeekResponseLengthError
 from .excel import read_tasks_xlsx, write_tasks_xlsx
 from .extraction_cache import PageExtractionCache
 from .image_roles import is_non_content_image
@@ -410,7 +411,14 @@ def process_markdown(
                     f"{page_num}",
                     flush=True,
                 )
-                tasks = client.extract_markdown(extraction_markdown, image_ids)
+                tasks = _extract_page_tasks(
+                    client,
+                    extraction_markdown,
+                    image_ids,
+                    source_by_task=source_by_task,
+                    image_by_task=image_by_task,
+                    page_num=page_num,
+                )
                 page_tasks = []
                 for task in tasks:
                     task = _clean_extracted_task(task)
@@ -1471,6 +1479,110 @@ def _task_extraction_markdown(markdown: str) -> str:
         return f"{_canonical_task_num(match.group(1))}."
 
     return TASK_HEADING_PATTERN.sub(replace_heading, markdown)
+
+
+def _extract_page_tasks(
+    client: TaskClient,
+    extraction_markdown: str,
+    image_ids: list[str],
+    *,
+    source_by_task: dict[str, str],
+    image_by_task: dict[str, str],
+    page_num: int,
+) -> list[ExtractedTask]:
+    """Изолирует надёжные OCR-блоки после единственного ответа ``length``.
+
+    Обычная страница по-прежнему обрабатывается одним запросом. Разбиение
+    разрешено только по уже найденным строгим заголовкам задач с уникальными
+    номерами. Оно не режет Markdown по числу символов и поэтому не разрывает
+    формулы или связь задачи с назначенным ей изображением.
+    """
+
+    try:
+        return client.extract_markdown(extraction_markdown, image_ids)
+    except DeepSeekResponseLengthError as error:
+        headings = _source_task_headings(extraction_markdown)
+        ordered_task_nums = [heading.task_num for heading in headings]
+        unique_boundaries = (
+            bool(ordered_task_nums)
+            and len(set(ordered_task_nums)) == len(ordered_task_nums)
+            and all(task_num in source_by_task for task_num in ordered_task_nums)
+        )
+        if not unique_boundaries:
+            raise OCRQualityError(
+                f"{client.provider_name}: ответ страницы {page_num} упёрся "
+                "в лимит, но однозначные уникальные OCR-границы задач для "
+                "безопасного разбиения не найдены. Страница не разбита по "
+                "произвольному числу символов, чтобы не повредить формулы и "
+                "изображения."
+            ) from error
+
+        if len(ordered_task_nums) == 1:
+            task_num = ordered_task_nums[0]
+            print(
+                f"{client.provider_name}: ответ страницы {page_num} упёрся "
+                f"в лимит; задача {task_num} восстановлена из точного "
+                "OCR-блока без повторного платного запроса",
+                flush=True,
+            )
+            return [
+                ExtractedTask(
+                    task_num=task_num,
+                    condition=source_by_task[task_num],
+                    image_id=image_by_task.get(task_num),
+                )
+            ]
+
+        print(
+            f"{client.provider_name}: ответ страницы {page_num} упёрся в "
+            f"лимит; безопасное разбиение по {len(ordered_task_nums)} "
+            "OCR-границам задач",
+            flush=True,
+        )
+        result: list[ExtractedTask] = []
+        for task_num in ordered_task_nums:
+            source_condition = source_by_task[task_num]
+            task_image_id = image_by_task.get(task_num)
+            isolated_images = [task_image_id] if task_image_id else []
+            isolated_markdown = f"{task_num}. {source_condition}"
+            try:
+                isolated_tasks = client.extract_markdown(
+                    isolated_markdown,
+                    isolated_images,
+                )
+            except DeepSeekResponseLengthError:
+                isolated_tasks = []
+                print(
+                    f"{client.provider_name}: изолированная задача "
+                    f"{task_num} снова упёрлась в лимит; используется точный "
+                    "OCR-блок без следующего повтора",
+                    flush=True,
+                )
+
+            extracted = next(
+                (
+                    task
+                    for task in isolated_tasks
+                    if _canonical_task_num(task.task_num) == task_num
+                ),
+                None,
+            )
+            if extracted is None:
+                print(
+                    f"{client.provider_name}: изолированная задача "
+                    f"{task_num} не возвращена с ожидаемым номером; "
+                    "используется точный OCR-блок",
+                    flush=True,
+                )
+                extracted = ExtractedTask(
+                    task_num=task_num,
+                    condition=source_condition,
+                    image_id=task_image_id,
+                )
+            elif extracted.image_id is None:
+                extracted.image_id = task_image_id
+            result.append(extracted)
+        return result
 
 
 def _source_task_headings(markdown: str) -> list[_SourceTaskHeading]:

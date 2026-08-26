@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from exam_parser.deepseek_client import DeepSeekResponseLengthError
 from exam_parser.extraction_cache import PageExtractionCache
 from exam_parser.markdown_pipeline import process_markdown
 from exam_parser.models import (
@@ -129,6 +130,64 @@ class PageExtractionCacheTests(unittest.TestCase):
 
 
 class ExtractionCheckpointPipelineTests(unittest.TestCase):
+    def test_length_fallback_is_cached_as_successful_page(self) -> None:
+        class _Client:
+            provider_name = "Test"
+            model = "test-model"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def extract_markdown(
+                self,
+                markdown: str,
+                image_ids: list[str],
+            ) -> list[ExtractedTask]:
+                self.calls += 1
+                if self.calls == 1:
+                    raise DeepSeekResponseLengthError("length")
+                task_num = "1" if markdown.startswith("1.") else "2"
+                return [
+                    ExtractedTask(
+                        task_num=task_num,
+                        condition=f"Условие {task_num}.",
+                    )
+                ]
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            page = root / "markdown" / "page_28" / "page_28.md"
+            page.parent.mkdir(parents=True)
+            page.write_text(
+                "1. Условие 1.\n\n2. Условие 2.\n",
+                encoding="utf-8",
+            )
+            client = _Client()
+
+            with patch(
+                "exam_parser.markdown_pipeline.create_task_client",
+                return_value=client,
+            ):
+                first = process_markdown(
+                    root / "markdown",
+                    root / "result-first",
+                    include_solutions=False,
+                    answer_source="none",
+                    expected_tasks=2,
+                    extraction_cache_dir=root / "extraction-cache",
+                )
+                second = process_markdown(
+                    root / "markdown",
+                    root / "result-second",
+                    include_solutions=False,
+                    answer_source="none",
+                    expected_tasks=2,
+                    extraction_cache_dir=root / "extraction-cache",
+                )
+
+            self.assertEqual(client.calls, 3)
+            self.assertEqual(first, second)
+
     def test_heading_metadata_is_not_sent_to_extraction_client(self) -> None:
         class _Client:
             provider_name = "Test"
