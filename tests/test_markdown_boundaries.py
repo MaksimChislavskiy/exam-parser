@@ -72,6 +72,34 @@ class MarkdownBoundaryTests(unittest.TestCase):
 
         self.assertEqual(_repair_uniform_detached_math_tasks(markdown), markdown)
 
+    def test_reattaches_formulas_when_one_repeated_instruction_is_displaced(
+        self,
+    ) -> None:
+        markdown = (
+            "### Задачи №15. Условия\n\n"
+            "№15.1 (Восток)\n\nРешите неравенство\n\n"
+            "№15.2 (Восток)\n\nРешите неравенство\n\n"
+            " $$ x_1>0. $$ \n\n"
+            "№15.3 (Сибирь)\n\n"
+            "№15.4 (Сибирь)\n\nРешите неравенство\n\n"
+            "Решите неравенство\n\n"
+            " $$ x_2>0. $$ \n\n"
+            " $$ x_3>0. $$ \n\n"
+            " $$ x_4>0. $$ \n"
+        )
+
+        repaired = _repair_uniform_detached_math_tasks(markdown)
+        blocks = _task_condition_blocks(repaired)
+
+        self.assertEqual(
+            blocks["15.3"],
+            "Решите неравенство\n\n$$ x_3>0. $$",
+        )
+        self.assertEqual(
+            blocks["15.4"],
+            "Решите неравенство\n\n$$ x_4>0. $$",
+        )
+
     def test_recovers_small_legacy_task_marker_images_by_sequence(self) -> None:
         markdown = (
             "Для записи решений и ответов на задания C1–C6 используйте "

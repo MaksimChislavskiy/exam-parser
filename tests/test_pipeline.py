@@ -89,9 +89,17 @@ class CliTests(unittest.TestCase):
         self.assertIn("--no-solutions", help_text)
         self.assertIn("--document-answers", help_text)
         self.assertIn("--no-answers", help_text)
+        self.assertIn("--refresh-extraction-cache", help_text)
         self.assertNotIn("--verify-conditions", help_text)
         self.assertNotIn("mistral", help_text.lower())
         self.assertIn("uv run python main.py trvar540.pdf", help_text)
+
+    def test_refresh_extraction_cache_flag_is_accepted(self) -> None:
+        args = build_parser().parse_args(
+            ["variant_951.pdf", "--refresh-extraction-cache"]
+        )
+
+        self.assertTrue(args.refresh_extraction_cache)
 
     def test_input_is_resolved_inside_standard_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

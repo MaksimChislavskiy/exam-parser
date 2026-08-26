@@ -133,6 +133,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--refresh-extraction-cache",
+        action="store_true",
+        help=(
+            "Не читать постраничный extraction-checkpoint, заново извлечь "
+            "условия и заменить успешные записи кэша."
+        ),
+    )
+    parser.add_argument(
         "--expected-tasks",
         type=int,
         default=19,
@@ -286,6 +294,8 @@ def main() -> None:
             model=args.model,
             expected_tasks=args.expected_tasks or None,
             resume_results=args.resume_results,
+            extraction_cache_dir=workspace / "extraction_cache",
+            refresh_extraction_cache=args.refresh_extraction_cache,
         )
         print(
             f"Готово: {len(records)} задач, файл {output_dir / 'tasks.xlsx'}",
@@ -320,6 +330,8 @@ def main() -> None:
             model=args.model,
             expected_tasks=args.expected_tasks or None,
             resume_results=args.resume_results,
+            extraction_cache_dir=workspace / "extraction_cache",
+            refresh_extraction_cache=args.refresh_extraction_cache,
         )
         total_records += len(records)
         print(
@@ -347,6 +359,8 @@ def _process_variant(
     model: str | None,
     expected_tasks: int | None,
     resume_results: bool,
+    extraction_cache_dir: Path,
+    refresh_extraction_cache: bool,
 ) -> list[TaskRecord]:
     return process_markdown(
         markdown_dir,
@@ -358,6 +372,8 @@ def _process_variant(
         model=model,
         expected_tasks=expected_tasks,
         resume_results=resume_results,
+        extraction_cache_dir=extraction_cache_dir,
+        refresh_extraction_cache=refresh_extraction_cache,
     )
 
 

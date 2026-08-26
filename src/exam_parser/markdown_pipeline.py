@@ -12,6 +12,7 @@ from typing import Literal
 from PIL import Image
 
 from .excel import read_tasks_xlsx, write_tasks_xlsx
+from .extraction_cache import PageExtractionCache
 from .image_roles import is_non_content_image
 from .llm_client import LLMProvider, TaskClient, create_task_client
 from .math_text import normalize_ege_short_answer
@@ -272,6 +273,8 @@ def process_markdown(
     model: str | None = None,
     expected_tasks: int | None = 19,
     resume_results: bool = False,
+    extraction_cache_dir: str | Path | None = None,
+    refresh_extraction_cache: bool = False,
 ) -> list[TaskRecord]:
     markdown_dir = Path(markdown_dir)
     output_dir = Path(output_dir)
@@ -290,6 +293,15 @@ def process_markdown(
         raise FileNotFoundError(f"В {markdown_dir} нет page_N/page_N.md")
 
     client = create_task_client(provider, model=model)
+    extraction_cache = (
+        PageExtractionCache(
+            extraction_cache_dir,
+            provider=provider,
+            model=str(getattr(client, "model", model or "")),
+        )
+        if extraction_cache_dir is not None
+        else None
+    )
     output_path = output_dir / "tasks.xlsx"
     ocr_noise_pages: list[int] = []
 
@@ -376,42 +388,70 @@ def process_markdown(
                     )
                 )
 
-            print(
-                f"{client.provider_name}: извлечение задач со страницы {page_num}",
-                flush=True,
-            )
-            tasks = client.extract_markdown(markdown, image_ids)
-            for task in tasks:
-                task = _clean_extracted_task(task)
-                if task.task_num == MODEL_EMPTY_TASK_NUM_MARKER:
-                    task = _restore_empty_model_task_number(
-                        task,
-                        source_by_task,
-                        provider_name=client.provider_name,
-                        page_num=page_num,
-                    )
-                source_condition = source_by_task.get(task.task_num)
-                if task.condition == MODEL_EMPTY_CONDITION_MARKER:
-                    task = _restore_empty_model_condition(
-                        task,
-                        source_condition,
-                        provider_name=client.provider_name,
-                        page_num=page_num,
-                    )
-                elif source_condition:
-                    task = _ensure_condition_fidelity(
-                        client,
-                        task,
-                        source_condition,
-                    )
-                fallback = image_by_task.get(task.task_num)
-                task.image_id = _resolve_image_id(
-                    task.image_id,
-                    fallback,
+            page_tasks = None
+            if extraction_cache is not None and not refresh_extraction_cache:
+                page_tasks = extraction_cache.load(
+                    page_num,
+                    markdown,
                     image_ids,
-                    task_block_found=task.task_num in source_by_task,
+                    image_dir=image_dir,
                 )
-                extracted.append((task, page_path))
+            if page_tasks is not None:
+                print(
+                    f"{client.provider_name}: страница {page_num} загружена "
+                    "из extraction-checkpoint",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"{client.provider_name}: извлечение задач со страницы "
+                    f"{page_num}",
+                    flush=True,
+                )
+                tasks = client.extract_markdown(markdown, image_ids)
+                page_tasks = []
+                for task in tasks:
+                    task = _clean_extracted_task(task)
+                    if task.task_num == MODEL_EMPTY_TASK_NUM_MARKER:
+                        task = _restore_empty_model_task_number(
+                            task,
+                            source_by_task,
+                            provider_name=client.provider_name,
+                            page_num=page_num,
+                        )
+                    source_condition = source_by_task.get(task.task_num)
+                    if task.condition == MODEL_EMPTY_CONDITION_MARKER:
+                        task = _restore_empty_model_condition(
+                            task,
+                            source_condition,
+                            provider_name=client.provider_name,
+                            page_num=page_num,
+                        )
+                    elif source_condition:
+                        task = _ensure_condition_fidelity(
+                            client,
+                            task,
+                            source_condition,
+                        )
+                    fallback = image_by_task.get(task.task_num)
+                    task.image_id = _resolve_image_id(
+                        task.image_id,
+                        fallback,
+                        image_ids,
+                        task_block_found=task.task_num in source_by_task,
+                    )
+                    page_tasks.append(task)
+
+                if extraction_cache is not None:
+                    extraction_cache.save(
+                        page_num,
+                        markdown,
+                        image_ids,
+                        page_tasks,
+                        image_dir=image_dir,
+                    )
+
+            extracted.extend((task, page_path) for task in page_tasks)
 
         extracted = _deduplicate_tasks(extracted)
         extracted = _reconcile_lettered_source_tasks(
