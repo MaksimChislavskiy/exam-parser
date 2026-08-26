@@ -129,6 +129,58 @@ class PageExtractionCacheTests(unittest.TestCase):
 
 
 class ExtractionCheckpointPipelineTests(unittest.TestCase):
+    def test_heading_metadata_is_not_sent_to_extraction_client(self) -> None:
+        class _Client:
+            provider_name = "Test"
+            model = "test-model"
+
+            def __init__(self) -> None:
+                self.markdowns: list[str] = []
+
+            def extract_markdown(
+                self,
+                markdown: str,
+                image_ids: list[str],
+            ) -> list[ExtractedTask]:
+                self.markdowns.append(markdown)
+                return [
+                    ExtractedTask(
+                        task_num="15.1",
+                        condition="Решите неравенство $x>0$.",
+                    )
+                ]
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            page = root / "markdown" / "page_15" / "page_15.md"
+            page.parent.mkdir(parents=True)
+            page.write_text(
+                "№15.1 (Дальний восток)\n\n"
+                "Решите неравенство $x>0$.\n",
+                encoding="utf-8",
+            )
+            client = _Client()
+
+            with patch(
+                "exam_parser.markdown_pipeline.create_task_client",
+                return_value=client,
+            ):
+                records = process_markdown(
+                    root / "markdown",
+                    root / "result",
+                    include_solutions=False,
+                    answer_source="none",
+                    expected_tasks=1,
+                    extraction_cache_dir=root / "extraction-cache",
+                )
+
+            self.assertEqual(len(client.markdowns), 1)
+            self.assertNotIn("Дальний восток", client.markdowns[0])
+            self.assertEqual(
+                records[0].condition,
+                "Решите неравенство $x>0$.",
+            )
+
     def test_second_run_reuses_successful_page_without_llm_call(self) -> None:
         class _Client:
             provider_name = "Test"

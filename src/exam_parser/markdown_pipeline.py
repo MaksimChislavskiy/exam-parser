@@ -378,6 +378,7 @@ def process_markdown(
                 if associated_image not in image_ids:
                     image_ids.append(associated_image)
             source_by_task = _task_condition_blocks(markdown)
+            extraction_markdown = _task_extraction_markdown(markdown)
             for task_num, condition in source_by_task.items():
                 source_blocks.setdefault(task_num, []).append(
                     _SourceTaskBlock(
@@ -392,7 +393,7 @@ def process_markdown(
             if extraction_cache is not None and not refresh_extraction_cache:
                 page_tasks = extraction_cache.load(
                     page_num,
-                    markdown,
+                    extraction_markdown,
                     image_ids,
                     image_dir=image_dir,
                 )
@@ -408,7 +409,7 @@ def process_markdown(
                     f"{page_num}",
                     flush=True,
                 )
-                tasks = client.extract_markdown(markdown, image_ids)
+                tasks = client.extract_markdown(extraction_markdown, image_ids)
                 page_tasks = []
                 for task in tasks:
                     task = _clean_extracted_task(task)
@@ -445,7 +446,7 @@ def process_markdown(
                 if extraction_cache is not None:
                     extraction_cache.save(
                         page_num,
-                        markdown,
+                        extraction_markdown,
                         image_ids,
                         page_tasks,
                         image_dir=image_dir,
@@ -1448,6 +1449,23 @@ def _task_condition_blocks(markdown: str) -> dict[str, str]:
         if condition:
             result[task_num] = condition
     return result
+
+
+def _task_extraction_markdown(markdown: str) -> str:
+    """Не передаёт модели служебную скобочную часть заголовка задачи.
+
+    ``_task_condition_blocks`` уже исключает такую часть из точного условия.
+    Здесь та же граница применяется к копии Markdown для LLM, чтобы источник,
+    регион, баллы и другие метки не возвращались моделью внутри ``condition``.
+    """
+
+    def replace_heading(match: re.Match[str]) -> str:
+        heading = match.group(0)
+        if re.search(r"\([^\n)]{1,80}\)[ \t]*$", heading) is None:
+            return heading
+        return f"{_canonical_task_num(match.group(1))}."
+
+    return TASK_HEADING_PATTERN.sub(replace_heading, markdown)
 
 
 def _source_task_headings(markdown: str) -> list[_SourceTaskHeading]:

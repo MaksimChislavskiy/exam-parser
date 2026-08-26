@@ -21,6 +21,7 @@ from exam_parser.markdown_pipeline import (
     _restore_empty_model_task_number,
     _raise_unreadable_ocr_conditions,
     _task_condition_blocks,
+    _task_extraction_markdown,
 )
 from exam_parser.math_text import normalize_ege_short_answer
 from exam_parser.models import (
@@ -112,6 +113,20 @@ class ShortAnswerTests(unittest.TestCase):
 
 
 class ConditionFidelityTests(unittest.TestCase):
+    def test_extraction_markdown_drops_only_heading_metadata(self) -> None:
+        markdown = (
+            "### Задачи №15. Условия\n\n"
+            "№15.1 (Дальний восток)\n\n"
+            "Решите неравенство $x>0$.\n\n"
+            "15.2. (а) Решите уравнение $x=1$.\n"
+        )
+
+        prepared = _task_extraction_markdown(markdown)
+
+        self.assertIn("15.1.\n\nРешите неравенство", prepared)
+        self.assertNotIn("Дальний восток", prepared)
+        self.assertIn("15.2. (а) Решите уравнение", prepared)
+
     def test_unreadable_ocr_marker_uses_source_without_paid_retry(self) -> None:
         source = f"Условие {OCR_UNREADABLE_REPEAT_MARKER}"
         changed = ExtractedTask(
