@@ -22,6 +22,7 @@ from .models import (
     ExtractedAnswer,
     ExtractedTask,
     TaskRecord,
+    normalize_math_text,
 )
 from .ocr_noise import (
     OCR_UNREADABLE_REPEAT_MARKER,
@@ -872,6 +873,7 @@ def _ensure_condition_fidelity(
         source_condition,
         task_num=task.task_num,
     )
+    comparable_source_condition = normalize_math_text(source_condition)
     task = _clean_extracted_task(task)
     if OCR_UNREADABLE_REPEAT_MARKER in source_condition:
         print(
@@ -885,7 +887,10 @@ def _ensure_condition_fidelity(
             condition=source_condition,
             image_id=task.image_id,
         )
-    issues = _condition_fidelity_issues(source_condition, task.condition)
+    issues = _condition_fidelity_issues(
+        comparable_source_condition,
+        task.condition,
+    )
     if not issues:
         return _check_ambiguous_angle_notations(
             client,
@@ -922,7 +927,7 @@ def _ensure_condition_fidelity(
         retry = _clean_extracted_task(retry)
         retry.image_id = retry.image_id or task.image_id
         retry_issues = _condition_fidelity_issues(
-            source_condition,
+            comparable_source_condition,
             retry.condition,
         )
         if not retry_issues:
@@ -1714,10 +1719,39 @@ def _repair_geometry_math_relations(value: str) -> str:
         r"(?:_?(?:\{\d+\}|\d+)|[₀-₉]+)?"
     )
     assignment_atom = rf"(?:\$\s*{assignment_label}\s*\$|{assignment_label})"
+
+    scaled_relation_pattern = re.compile(
+        rf"(?<![A-Za-zА-Яа-яЁё0-9_$=:])"
+        rf"(?P<left>{assignment_atom})\s*=\s*"
+        rf"(?P<factor>{number})\s*(?P<right>{assignment_atom})"
+        rf"(?![A-Za-zА-Яа-яЁё0-9_])"
+    )
+    cleaned = scaled_relation_pattern.sub(
+        lambda match: (
+            f"${normalized(match.group('left'))}={match.group('factor')}"
+            f"{normalized(match.group('right'))}$"
+        ),
+        cleaned,
+    )
+
+    split_scaled_relation_pattern = re.compile(
+        rf"\$\s*(?P<left>{assignment_label})\s*=\s*"
+        rf"(?P<factor>{number})\s*\$\s*\$\s*"
+        rf"(?P<right>{assignment_label})\s*\$"
+    )
+    cleaned = split_scaled_relation_pattern.sub(
+        lambda match: (
+            f"${normalized(match.group('left'))}={match.group('factor')}"
+            f"{normalized(match.group('right'))}$"
+        ),
+        cleaned,
+    )
+
     assignment_pattern = re.compile(
         rf"(?<![A-Za-zА-Яа-яЁё0-9_$=:])"
         rf"(?P<label>{assignment_atom})\s*=\s*"
         rf"(?P<number>{number})\s*\$?"
+        rf"(?![A-Za-zА-Яа-яЁё0-9_$])"
     )
     cleaned = assignment_pattern.sub(
         lambda match: (
@@ -2045,7 +2079,7 @@ def _repair_geometry_labels_outside_latex(value: str) -> str:
         rf"(?P<prefix>\b(?i:точк[а-яё]*)\s+)"
         rf"(?P<first>{point_atom_source})(?P<and>\s+и\s+)"
         rf"(?P<second>{point_atom_source})"
-        rf"(?=\s+(?:леж|наход|соедин|явля|—|–|-))",
+        rf"(?=\s+(?:леж|наход|соедин|явля|на\b|—|–|-))",
     )
 
     def replace_point_pair(match: re.Match[str]) -> str:
@@ -2064,7 +2098,7 @@ def _repair_geometry_labels_outside_latex(value: str) -> str:
         rf"отрезк[а-яё]*|прям[а-яё]*)\s+)"
         rf"(?P<first>{point_atom_source})(?P<and>\s+и\s+)"
         rf"(?P<second>{point_atom_source})"
-        rf"(?=\s*(?:соответственно\b|[.,;]))",
+        rf"(?=\s*(?:соответственно\b|располож[а-яё]*\b|[.,;]))",
     )
 
     def replace_geometry_pair(match: re.Match[str]) -> str:

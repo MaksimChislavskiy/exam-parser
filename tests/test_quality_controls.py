@@ -347,6 +347,29 @@ class ConditionFidelityTests(unittest.TestCase):
             [],
         )
 
+    def test_does_not_retry_equivalent_display_formula(self) -> None:
+        source = (
+            "а) Решите уравнение\n\n"
+            r"$$2\cos^{2}x-\sin\left(x-\pi\right)-1=0$$"
+            "\n\nб) Найдите корни на отрезке $[-1;1]$."
+        )
+        extracted = ExtractedTask(
+            task_num="13.6",
+            condition=(
+                "<p>а) Решите уравнение "
+                r"$2\cos^{2}x-\sin\left(x-\pi\right)-1=0$</p>"
+                "\n<p>б) Найдите корни на отрезке $[-1;1]$.</p>"
+            ),
+        )
+        client = SimpleNamespace(
+            provider_name="Test",
+            extract_markdown=lambda *_: self.fail("unexpected retry"),
+        )
+
+        result = _ensure_condition_fidelity(client, extracted, source)
+
+        self.assertEqual(result, extracted)
+
     def test_accepts_ocr_spaces_around_geometry_indices(self) -> None:
         self.assertEqual(
             _condition_fidelity_issues(
@@ -1536,6 +1559,28 @@ class ConditionArtifactRepairTests(unittest.TestCase):
                 "Найдите площадь сечения, если $AT:TB=1:2$, "
                 "высота пирамиды равна 3."
             ),
+        )
+
+    def test_repairs_scaled_geometry_segment_relation(self) -> None:
+        condition = (
+            "Точки N и L на сторонах BC и SA расположены так, "
+            "что LA = 4SL."
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="14.2"),
+            (
+                "Точки $N$ и $L$ на сторонах $BC$ и $SA$ расположены так, "
+                "что $LA=4SL$."
+            ),
+        )
+
+    def test_repairs_already_split_scaled_geometry_relation(self) -> None:
+        condition = "Известно, что $LA=4$$SL$."
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="14.2"),
+            "Известно, что $LA=4SL$.",
         )
 
     def test_repairs_two_point_list(self) -> None:
