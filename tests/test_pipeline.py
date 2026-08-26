@@ -133,6 +133,20 @@ class ModelsTests(unittest.TestCase):
             "Прямые $A_2BB_2$ и $CC_1$ пересекаются.",
         )
 
+    def test_geometry_point_pair_is_wrapped(self) -> None:
+        self.assertEqual(
+            normalize_geometry_notation(
+                "Рёбра пересекаются в точках $M$ и N соответственно."
+            ),
+            "Рёбра пересекаются в точках $M$ и $N$ соответственно.",
+        )
+
+    def test_geometry_point_pair_on_sides_is_wrapped(self) -> None:
+        self.assertEqual(
+            normalize_geometry_notation("Точки N и L на сторонах BC и SA."),
+            "Точки $N$ и $L$ на сторонах BC и SA.",
+        )
+
     def test_existing_latex_is_not_wrapped_twice(self) -> None:
         self.assertEqual(
             normalize_geometry_notation("Ребро $A_1B_1$ равно 2."),

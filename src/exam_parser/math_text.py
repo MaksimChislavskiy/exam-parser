@@ -50,6 +50,16 @@ _SINGLE_GEOMETRY_POINT_PATTERN = re.compile(
     r"(?:(?:_?\d+|_\{\d+\}|[₀-₉]+))?)"
     r"(?![A-Za-zА-Яа-яЁё0-9_₀-₉])"
 )
+_GEOMETRY_POINT_PAIR_PATTERN = re.compile(
+    r"(?P<prefix>(?i:\b(?:"
+    r"точк(?:а|и|е|у|ой|ою|ами|ах)|"
+    r"вершин(?:а|ы|е|у|ой|ою|ами|ах)"
+    r")\s+))"
+    rf"(?P<first>\$?\s*{_GEOMETRY_ATOM}\s*\$?)"
+    r"(?P<and>\s+и\s+)"
+    rf"(?P<second>\$?\s*{_GEOMETRY_ATOM}\s*\$?)"
+    r"(?=\s+(?i:соответственно\b|на\b|леж|наход|соедин|явля|—|–|-))"
+)
 _GEOMETRY_CONTEXT_PATTERN = re.compile(
     r"(?i)\b(?:"
     r"треугольник|призм|пирамид|куб|параллелепипед|"
@@ -142,6 +152,7 @@ def normalize_geometry_notation(value: str) -> str:
     """
 
     joined = _merge_split_geometry_subscripts(value)
+    joined = _normalize_geometry_point_pairs(joined)
     parts = _LATEX_SPAN_PATTERN.split(joined)
     for index in range(0, len(parts), 2):
         part = parts[index]
@@ -152,6 +163,18 @@ def normalize_geometry_notation(value: str) -> str:
         part = _normalize_geometry_tokens_in_text(part)
         parts[index] = part
     return "".join(parts)
+
+
+def _normalize_geometry_point_pairs(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        first = _canonical_geometry_token(match.group("first"))
+        second = _canonical_geometry_token(match.group("second"))
+        return (
+            f"{match.group('prefix')}${first}$"
+            f"{match.group('and')}${second}$"
+        )
+
+    return _GEOMETRY_POINT_PAIR_PATTERN.sub(replace, value)
 
 
 def normalize_ege_short_answer(task_num: str, answer: str) -> str:
