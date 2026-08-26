@@ -18,6 +18,7 @@ from exam_parser.markdown_pipeline import (
     _extract_page_tasks,
     _generate_solutions_and_answers,
     _normalize_condition_artifacts,
+    _is_evaluation_example_page,
     _recover_missing_expected_tasks,
     _reconcile_lettered_source_tasks,
     _remove_embedded_task_conditions,
@@ -222,6 +223,41 @@ class LengthLimitedPageRecoveryTests(unittest.TestCase):
             )
 
         self.assertEqual(len(client.calls), 1)
+
+
+class EvaluationExamplePageTests(unittest.TestCase):
+    def test_detects_36169_style_expert_evaluation_page(self) -> None:
+        markdown = (
+            "Пример 13.1.1\n\n"
+            '<img src="imgs/solution.jpg" />\n\n'
+            "Доказательство утверждения в пункте а не обосновано.\n\n"
+            "С использованием утверждения пункта а верно получен ответ.\n\n"
+            "Оценка эксперта: 1 балл."
+        )
+
+        self.assertTrue(_is_evaluation_example_page(markdown, {}))
+
+    def test_does_not_skip_unnumbered_task_containing_example(self) -> None:
+        markdown = (
+            "Пример использования функции приведён на рисунке.\n"
+            "Найдите значение параметра."
+        )
+
+        self.assertFalse(_is_evaluation_example_page(markdown, {}))
+
+    def test_strict_task_heading_prevents_skip(self) -> None:
+        markdown = (
+            "13. Докажите утверждение.\n\n"
+            "Пример 13.1.1\n\n"
+            "Комментарий.\nОценка эксперта: 1 балл."
+        )
+
+        self.assertFalse(
+            _is_evaluation_example_page(
+                markdown,
+                {"13": "Докажите утверждение."},
+            )
+        )
 
 
 class ConditionFidelityTests(unittest.TestCase):

@@ -130,6 +130,52 @@ class PageExtractionCacheTests(unittest.TestCase):
 
 
 class ExtractionCheckpointPipelineTests(unittest.TestCase):
+    def test_evaluation_example_page_skips_llm_and_is_cached(self) -> None:
+        class _Client:
+            provider_name = "Test"
+            model = "test-model"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def extract_markdown(
+                self,
+                markdown: str,
+                image_ids: list[str],
+            ) -> list[ExtractedTask]:
+                self.calls += 1
+                raise AssertionError("evaluation page must not reach LLM")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            page = root / "markdown" / "page_28" / "page_28.md"
+            page.parent.mkdir(parents=True)
+            page.write_text(
+                "Пример 13.1.1\n\n"
+                "Доказательство утверждения в пункте а не обосновано.\n\n"
+                "Комментарий к работе.\n\n"
+                "Оценка эксперта: 1 балл.\n",
+                encoding="utf-8",
+            )
+            client = _Client()
+
+            with patch(
+                "exam_parser.markdown_pipeline.create_task_client",
+                return_value=client,
+            ):
+                for output in ("result-first", "result-second"):
+                    records = process_markdown(
+                        root / "markdown",
+                        root / output,
+                        include_solutions=False,
+                        answer_source="none",
+                        expected_tasks=0,
+                        extraction_cache_dir=root / "extraction-cache",
+                    )
+                    self.assertEqual(records, [])
+
+            self.assertEqual(client.calls, 0)
+
     def test_length_fallback_is_cached_as_successful_page(self) -> None:
         class _Client:
             provider_name = "Test"

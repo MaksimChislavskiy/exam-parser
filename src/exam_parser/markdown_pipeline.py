@@ -111,6 +111,20 @@ SERVICE_LINE_PATTERN = re.compile(
     r"Математика,\s*11 класс"
     r")[^\n]*$"
 )
+EVALUATION_EXAMPLE_HEADING_PATTERN = re.compile(
+    r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?"
+    r"Пример[ \t]+\d{1,2}(?:\.\d+){2,}[ \t]*$"
+)
+EXPERT_SCORE_PATTERN = re.compile(
+    r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?"
+    r"Оценка[ \t]+эксперта[ \t]*:[^\n]*\bбалл(?:а|ов)?\b"
+)
+EVALUATION_COMMENT_PATTERN = re.compile(
+    r"(?i)\b(?:Комментарий|"
+    r"(?:доказательство|обоснование)[^\n.]{0,160}"
+    r"(?:не[ \t]+обосновано|неверно|неполно)|"
+    r"с[ \t]+использованием[ \t]+утверждения[ \t]+пункта)\b"
+)
 TRAILING_SERVICE_INSTRUCTION_PATTERN = re.compile(
     r"(?i)[ \t]*(?:"
     r"Не\s+забудьте\s+перенести\b|"
@@ -405,6 +419,21 @@ def process_markdown(
                     "из extraction-checkpoint",
                     flush=True,
                 )
+            elif _is_evaluation_example_page(markdown, source_by_task):
+                print(
+                    f"Страница {page_num}: пример экспертного оценивания без "
+                    "экзаменационных задач; извлечение пропущено",
+                    flush=True,
+                )
+                page_tasks = []
+                if extraction_cache is not None:
+                    extraction_cache.save(
+                        page_num,
+                        extraction_markdown,
+                        image_ids,
+                        page_tasks,
+                        image_dir=image_dir,
+                    )
             else:
                 print(
                     f"{client.provider_name}: извлечение задач со страницы "
@@ -1479,6 +1508,26 @@ def _task_extraction_markdown(markdown: str) -> str:
         return f"{_canonical_task_num(match.group(1))}."
 
     return TASK_HEADING_PATTERN.sub(replace_heading, markdown)
+
+
+def _is_evaluation_example_page(
+    markdown: str,
+    source_by_task: dict[str, str] | None = None,
+) -> bool:
+    """Распознаёт страницу примера проверки, а не страницу с задачей.
+
+    Одного слова ``Пример`` недостаточно: нужны составной номер примера,
+    экспертная оценка и комментарий к проверяемой работе. Любой строгий
+    заголовок задачи запрещает автоматический пропуск страницы.
+    """
+
+    if source_by_task or _source_task_headings(markdown):
+        return False
+    return bool(
+        EVALUATION_EXAMPLE_HEADING_PATTERN.search(markdown)
+        and EXPERT_SCORE_PATTERN.search(markdown)
+        and EVALUATION_COMMENT_PATTERN.search(markdown)
+    )
 
 
 def _extract_page_tasks(
