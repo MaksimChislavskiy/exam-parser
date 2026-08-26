@@ -1380,6 +1380,27 @@ class EmbeddedTaskConditionTests(unittest.TestCase):
 
 
 class ConditionArtifactRepairTests(unittest.TestCase):
+    def test_removes_image_tags_and_their_layout_numbers(self) -> None:
+        condition = (
+            "Укажите рисунок. 1) "
+            '<div><img src="imgs/one.jpg" width="24%" /></div> '
+            "2) "
+            '<div><img src="imgs/two.jpg" width="24%" /></div>'
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="A5"),
+            "Укажите рисунок. 1)   2)",
+        )
+
+    def test_repairs_plain_geometry_line_label(self) -> None:
+        condition = "Плоскость параллельна прямой АС."
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="B8"),
+            "Плоскость параллельна прямой $AC$.",
+        )
+
     def test_repairs_cyrillic_single_geometry_letter_in_math_context(self) -> None:
         condition = (
             "В треугольнике $ABC$ угол С тупой. "
@@ -1452,6 +1473,38 @@ class ConditionArtifactRepairTests(unittest.TestCase):
             (
                 "Точки $K$, $M$ и $P$ — середины сторон $AB$, $BC$ и $AC$ "
                 "соответственно."
+            ),
+        )
+
+    def test_repairs_geometry_relations_and_indexed_point_list(self) -> None:
+        condition = (
+            "Основание прямой призмы $ABCA_1B_1C_1$ — треугольник "
+            "$ABC$, в котором АВ = $BC$ = 8, $AC$ = 2. "
+            "Вершины $A$₁, А, С₁ и точка Д ребра АВ лежат на сфере. "
+            "Найдите радиус, если $AD$: $DB$ = 1:3."
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="C3"),
+            (
+                "Основание прямой призмы $ABCA_1B_1C_1$ — треугольник "
+                "$ABC$, в котором $AB=BC=8$, $AC$ = 2. "
+                "Вершины $A_1$, $A$, $C_1$ и точка $D$ ребра $AB$ "
+                "лежат на сфере. Найдите радиус, если $AD:DB=1:3$."
+            ),
+        )
+
+    def test_repairs_split_geometry_ratio(self) -> None:
+        condition = (
+            "Найдите площадь сечения, если $AT$$:TB$ =1:2, "
+            "высота пирамиды равна 3."
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="B8"),
+            (
+                "Найдите площадь сечения, если $AT:TB=1:2$, "
+                "высота пирамиды равна 3."
             ),
         )
 

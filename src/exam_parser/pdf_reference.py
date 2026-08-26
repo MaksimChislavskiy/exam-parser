@@ -269,6 +269,16 @@ def _repair_page(
                 intro_pdf_block.text,
             )
             changes.extend(word_changes)
+        if task_num in restored_task_numbers:
+            conservative_reference = intro_pdf_block or pdf_block
+            if conservative_reference is not None:
+                repaired, word_changes = _reconcile_block_words(
+                    repaired,
+                    conservative_reference.text,
+                    allow_length_change=False,
+                    allow_first_contextual_word=False,
+                )
+                changes.extend(word_changes)
         if repaired != markdown_block.text:
             page_changes.append(
                 (
@@ -465,13 +475,18 @@ def _reconcile_reference_symbols(
 def _reconcile_block_words(
     markdown_block: str,
     pdf_block: str,
+    *,
+    allow_length_change: bool = True,
+    allow_first_contextual_word: bool = True,
 ) -> tuple[str, list[tuple[str, str]]]:
     """Исправляет по PDF только близкие однобуквенные OCR-опечатки."""
 
-    markdown_block, first_word_change = _reconcile_first_contextual_word(
-        markdown_block,
-        pdf_block,
-    )
+    first_word_change = None
+    if allow_first_contextual_word:
+        markdown_block, first_word_change = _reconcile_first_contextual_word(
+            markdown_block,
+            pdf_block,
+        )
     initial_changes = [first_word_change] if first_word_change is not None else []
 
     markdown_tokens = _russian_word_tokens(markdown_block)
@@ -495,6 +510,11 @@ def _reconcile_block_words(
             if not _safe_word_replacement(
                 markdown_token.canonical,
                 pdf_token.canonical,
+            ):
+                continue
+            if (
+                not allow_length_change
+                and len(markdown_token.canonical) != len(pdf_token.canonical)
             ):
                 continue
             replacements.append(

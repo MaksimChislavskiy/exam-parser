@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from PIL import Image
+
 from exam_parser.boundary_repairs import ANSWER_LINE_PATTERN
 from exam_parser.boundary_rules import repair_page_group
 from exam_parser.condition_repairs import repair_condition_ocr
@@ -201,6 +205,55 @@ def test_image_stays_with_current_task_when_current_condition_is_visual() -> Non
         "На рисунке изображён график функции. Найдите значение производной."
     )
     assert associate_condition_images(markdown) == {"2": "graph.png"}
+
+
+def test_multiple_condition_images_are_composed_for_cyrillic_heading(
+    tmp_path: Path,
+) -> None:
+    image_dir = tmp_path / "imgs"
+    image_dir.mkdir()
+    colors = ["red", "green", "blue", "yellow"]
+    for index, color in enumerate(colors, start=1):
+        Image.new("RGB", (40 + index, 30 + index), color).save(
+            image_dir / f"choice_{index}.png"
+        )
+    markdown = "А5 Укажите рисунок.\n\n" + "\n\n".join(
+        f'{index}) <img src="imgs/choice_{index}.png" width="24%" />'
+        for index in range(1, 5)
+    )
+
+    associations = associate_condition_images(markdown, image_dir=image_dir)
+
+    assert associations == {"A5": "condition_group_A5.png"}
+    composite_path = image_dir / associations["A5"]
+    assert composite_path.is_file()
+    with Image.open(composite_path) as composite:
+        assert composite.width > 2 * 40
+        assert composite.height > 2 * 30
+        assert composite.getpixel((38, 63)) == (255, 0, 0)
+        assert composite.getpixel((98, 63)) == (0, 128, 0)
+        assert composite.getpixel((38, 143)) == (0, 0, 255)
+        assert composite.getpixel((98, 143)) == (255, 255, 0)
+
+
+def test_unlabelled_condition_images_keep_vertical_order(tmp_path: Path) -> None:
+    image_dir = tmp_path / "imgs"
+    image_dir.mkdir()
+    Image.new("RGB", (40, 30), "red").save(image_dir / "top.png")
+    Image.new("RGB", (40, 30), "blue").save(image_dir / "bottom.png")
+    markdown = (
+        "7. Сравните два чертежа.\n\n"
+        '<img src="imgs/top.png" />\n\n'
+        '<img src="imgs/bottom.png" />'
+    )
+
+    associations = associate_condition_images(markdown, image_dir=image_dir)
+
+    composite_path = image_dir / associations["7"]
+    with Image.open(composite_path) as composite:
+        assert composite.width < composite.height
+        assert composite.getpixel((36, 31)) == (255, 0, 0)
+        assert composite.getpixel((36, 77)) == (0, 0, 255)
 
 
 def test_transliterated_extremum_is_restored() -> None:

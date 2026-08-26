@@ -157,6 +157,32 @@ class PdfReferenceTests(unittest.TestCase):
         self.assertNotIn("соотвественно", repaired)
         self.assertEqual(changes, [("14.1", "пропущенный номер", "14.1")])
 
+    def test_restored_block_accepts_equal_length_pdf_word_correction(self) -> None:
+        markdown = (
+            "Найдите значения параметра, при которых множество решении "
+            "неравенства содержит указанные числа.\n"
+        )
+        pdf_text = (
+            "C4 Найдите значения параметра, при которых множество решений "
+            "неравенства содержит указанные числа.\n"
+        )
+
+        repaired, changes = _repair_page(
+            markdown,
+            pdf_text,
+            heading_pdf_text=pdf_text,
+            known_task_numbers={"C3"},
+        )
+
+        self.assertIn("множество решений неравенства", repaired)
+        self.assertEqual(
+            changes,
+            [
+                ("C4", "пропущенный номер", "C4"),
+                ("C4", "решении", "решений"),
+            ],
+        )
+
     def test_restores_missing_short_condition_intro_from_sorted_pdf(self) -> None:
         markdown = (
             "C1\n"

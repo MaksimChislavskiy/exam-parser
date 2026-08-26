@@ -118,6 +118,10 @@ TRAILING_SERVICE_INSTRUCTION_PATTERN = re.compile(
     r")[^<]*(?=</p>|\Z)"
 )
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+EMPTY_HTML_CONTAINER_PATTERN = re.compile(
+    r"<(?P<tag>div|p)\b[^>]*>\s*</(?P=tag)>",
+    re.IGNORECASE,
+)
 LATEX_SPAN_PATTERN = re.compile(r"\$(?P<body>.*?)\$", re.DOTALL)
 LATEX_COMMAND_PATTERN = re.compile(r"\\(?P<name>[A-Za-z]+)")
 LATEX_TEXT_PATTERN = re.compile(r"\\text\s*\{[^{}]*\}")
@@ -358,6 +362,9 @@ def process_markdown(
                 markdown,
                 image_dir=image_dir,
             )
+            for associated_image in image_by_task.values():
+                if associated_image not in image_ids:
+                    image_ids.append(associated_image)
             source_by_task = _task_condition_blocks(markdown)
             for task_num, condition in source_by_task.items():
                 source_blocks.setdefault(task_num, []).append(
@@ -1484,6 +1491,8 @@ def _restore_terminal_punctuation(value: str) -> str:
 
 def _normalize_condition_artifacts(value: str, *, task_num: str | None) -> str:
     cleaned, _ = sanitize_pathological_ocr_repetitions(value)
+    cleaned = IMAGE_PATTERN.sub(" ", cleaned)
+    cleaned = EMPTY_HTML_CONTAINER_PATTERN.sub(" ", cleaned)
     cleaned = ANSWER_LINE_PATTERN.sub(" ", cleaned)
     cleaned = SERVICE_LINE_PATTERN.sub(" ", cleaned)
     cleaned = TRAILING_SERVICE_INSTRUCTION_PATTERN.sub("", cleaned)
@@ -1505,6 +1514,7 @@ def _normalize_condition_artifacts(value: str, *, task_num: str | None) -> str:
         previous = cleaned
         cleaned = DUPLICATED_PHRASE_PATTERN.sub(r"\g<phrase>", cleaned)
     cleaned = re.sub(r"(?<!\.)\.\.(?!\.)", ".", cleaned)
+    cleaned = re.sub(r"(?m)^[ \t]+$", "", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
@@ -1553,6 +1563,7 @@ def _repair_known_ocr_defects(value: str) -> str:
     cleaned = _repair_derivative_graph_question(cleaned)
     cleaned = _repair_spherical_buoyancy_formula(cleaned)
     cleaned = _repair_triangular_prism_name(cleaned)
+    cleaned = _repair_geometry_math_relations(cleaned)
     cleaned = _repair_single_geometry_letter(cleaned)
     cleaned = _repair_geometry_labels_outside_latex(cleaned)
     cleaned = _repair_plane_symbol(cleaned)
@@ -1566,6 +1577,80 @@ def _repair_known_ocr_defects(value: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     )
+    return cleaned
+
+
+_SUBSCRIPT_DIGITS = str.maketrans(
+    {
+        "₀": "0",
+        "₁": "1",
+        "₂": "2",
+        "₃": "3",
+        "₄": "4",
+        "₅": "5",
+        "₆": "6",
+        "₇": "7",
+        "₈": "8",
+        "₉": "9",
+    }
+)
+
+
+def _normalize_geometry_label_body(value: str) -> str:
+    body = re.sub(r"[\s$]", "", value).translate(CONFUSABLE_LETTERS)
+    unicode_subscript = re.search(r"[₀-₉]+$", body)
+    if unicode_subscript is not None:
+        digits = unicode_subscript.group(0).translate(_SUBSCRIPT_DIGITS)
+        body = body[: unicode_subscript.start()] + "_" + digits
+    body = re.sub(
+        r"_(?:\{(\d+)\}|(\d+))$",
+        lambda match: "_" + (match.group(1) or match.group(2)),
+        body,
+    )
+    return body
+
+
+def _repair_geometry_math_relations(value: str) -> str:
+    """Объединяет разорванные отношения коротких геометрических меток."""
+
+    label = (
+        r"[A-ZАВСДЕНКМОРТХУ]{1,4}"
+        r"(?:_?(?:\{\d+\}|\d+)|[₀-₉]+)?"
+    )
+    atom = rf"\$?\s*{label}\s*\$?"
+    number = r"[+-]?\d+(?:[.,]\d+)?"
+
+    def normalized(group: str) -> str:
+        return _normalize_geometry_label_body(group)
+
+    ratio_pattern = re.compile(
+        rf"(?<![A-Za-zА-Яа-яЁё0-9_$])"
+        rf"(?P<left>{atom})\s*(?:\$\s*)?:\s*"
+        rf"(?P<right>{atom})\s*=\s*"
+        rf"(?P<first>{number})\s*:\s*(?P<second>{number})\s*\$?"
+    )
+    cleaned = ratio_pattern.sub(
+        lambda match: (
+            f"${normalized(match.group('left'))}:"
+            f"{normalized(match.group('right'))}="
+            f"{match.group('first')}:{match.group('second')}$"
+        ),
+        value,
+    )
+
+    equality_chain_pattern = re.compile(
+        rf"(?<![A-Za-zА-Яа-яЁё0-9_$])"
+        rf"(?P<left>{atom})\s*=\s*(?P<right>{atom})\s*=\s*"
+        rf"(?P<number>{number})\s*\$?"
+    )
+    cleaned = equality_chain_pattern.sub(
+        lambda match: (
+            f"${normalized(match.group('left'))}="
+            f"{normalized(match.group('right'))}={match.group('number')}$"
+        ),
+        cleaned,
+    )
+
     return cleaned
 
 
@@ -1690,12 +1775,13 @@ def _repair_spherical_buoyancy_formula(value: str) -> str:
 def _repair_triangular_prism_name(value: str) -> str:
     prism_name_pattern = re.compile(
         r"(?P<prefix>\bпризм\w*\s+)\$\s*"
-        r"(?P<name>[A-ZА-ЯЁ0-9_{}\s]+?)\s*\$",
+        r"(?P<name>[A-ZА-ЯЁ0-9₀-₉_{}\s]+?)\s*\$",
         re.IGNORECASE,
     )
     atom_pattern = re.compile(
         r"(?P<letter>[A-ZА-ЯЁ])"
-        r"(?:_?(?:\{(?P<braced>\d+)\}|(?P<plain>\d+)))?",
+        r"(?:_?(?:\{(?P<braced>\d+)\}|(?P<plain>\d+))|"
+        r"(?P<unicode>[₀-₉]+))?",
         re.IGNORECASE,
     )
 
@@ -1708,13 +1794,27 @@ def _repair_triangular_prism_name(value: str) -> str:
         parsed = [
             (
                 atom.group("letter").upper().translate(CONFUSABLE_LETTERS),
-                atom.group("braced") or atom.group("plain"),
+                atom.group("braced")
+                or atom.group("plain")
+                or (
+                    atom.group("unicode").translate(_SUBSCRIPT_DIGITS)
+                    if atom.group("unicode")
+                    else None
+                ),
             )
             for atom in atoms
         ]
         repaired = _repeated_triangular_prism_name(parsed)
         if repaired is None:
-            return match.group(0)
+            if (
+                re.search(r"[₀-₉]", compact) is None
+                and compact.translate(CONFUSABLE_LETTERS) == compact
+            ):
+                return match.group(0)
+            repaired = "".join(
+                letter + (f"_{index}" if index is not None else "")
+                for letter, index in parsed
+            )
         return f"{match.group('prefix')}${repaired}$"
 
     return prism_name_pattern.sub(replace_name, value)
@@ -1819,10 +1919,14 @@ def _repair_geometry_labels_outside_latex(value: str) -> str:
     геометрическим контекстом и не заходит внутрь уже готовых LaTeX-фрагментов.
     """
 
-    label_source = r"[A-ZАВСДЕНКМОРТХУ]{1,16}"
+    indexed_letter_source = (
+        r"[A-ZАВСДЕНКМОРТХУ]"
+        r"(?:_?(?:\{\d+\}|\d+)|[₀-₉]+)?"
+    )
+    label_source = rf"(?:{indexed_letter_source}){{1,16}}"
 
     def format_label(label: str) -> str:
-        return f"${label.translate(CONFUSABLE_LETTERS)}$"
+        return f"${_normalize_geometry_label_body(label)}$"
 
     point_atom_source = (
         rf"(?:\$\s*{label_source}\s*\$|{label_source})"
@@ -1830,15 +1934,26 @@ def _repair_geometry_labels_outside_latex(value: str) -> str:
 
     def format_point_atom(atom: str) -> str:
         if atom.startswith("$") and atom.endswith("$"):
-            body = atom[1:-1].strip().translate(CONFUSABLE_LETTERS)
+            body = _normalize_geometry_label_body(atom)
             return f"${body}$"
         return format_label(atom)
 
+    cleaned = re.sub(
+        rf"\$\s*(?P<label>[A-ZАВСДЕНКМОРТХУ])\s*\$"
+        rf"(?P<subscript>[₀-₉]+)",
+        lambda match: format_label(
+            match.group("label") + match.group("subscript")
+        ),
+        value,
+    )
+
     point_triple_pattern = re.compile(
-        rf"(?P<prefix>\b(?i:точк[а-яё]*)\s+)"
+        rf"(?P<prefix>\b(?i:точк[а-яё]*|вершин[а-яё]*)\s+)"
         rf"(?P<first>{point_atom_source})(?P<comma>\s*,\s*)"
-        rf"(?P<second>{point_atom_source})(?P<and>\s+и\s+)"
-        rf"(?P<third>{point_atom_source})(?=\s+[—–-])"
+        rf"(?P<second>{point_atom_source})"
+        rf"(?P<and>\s*(?:,\s*|\s+и\s+))"
+        rf"(?P<third>{point_atom_source})"
+        rf"(?=\s+(?:[—–-]|и\s+точк[а-яё]*\b))"
     )
 
     def replace_point_triple(match: re.Match[str]) -> str:
@@ -1866,7 +1981,7 @@ def _repair_geometry_labels_outside_latex(value: str) -> str:
             + format_point_atom(match.group("second"))
         )
 
-    cleaned = point_triple_pattern.sub(replace_point_triple, value)
+    cleaned = point_triple_pattern.sub(replace_point_triple, cleaned)
     cleaned = point_pair_pattern.sub(replace_point_pair, cleaned)
 
     geometry_pair_pattern = re.compile(
@@ -1894,7 +2009,9 @@ def _repair_geometry_labels_outside_latex(value: str) -> str:
     )
     geometry_noun_pattern = re.compile(
         rf"(?P<prefix>\b(?i:угл[а-яё]*|сторон[а-яё]*|ребр[а-яё]*|"
-        rf"отрезк[а-яё]*|треугольник[а-яё]*|вершин[а-яё]*|"
+        rf"отрезк[а-яё]*|прям[а-яё]*|треугольник[а-яё]*|"
+        rf"пирамид[а-яё]*|"
+        rf"призм[а-яё]*|вершин[а-яё]*|"
         rf"точк[а-яё]*)\s+)"
         rf"(?P<label>{label_source})(?![A-Za-zА-Яа-яЁё0-9_])"
     )
