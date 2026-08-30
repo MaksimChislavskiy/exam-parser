@@ -1,10 +1,32 @@
 from __future__ import annotations
 
+import json
+import math
+import re
 import shutil
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from PIL import Image
+
+from .ocr_noise import (
+    OCR_UNREADABLE_REPEAT_MARKER,
+    sanitize_pathological_ocr_repetitions,
+)
+
+
+_TASK_HEADING_PATTERN = re.compile(
+    r"(?m)^[ \t]*(?:#{1,6}[ \t]*)?(?:№[ \t]*)?"
+    r"(?P<num>(?:[1-9]\d?)(?:\.\d+)?|[AАBВCС](?:1[0-9]|[1-9]))"
+    r"(?P<suffix>[.)]?[ \t]+|[.)]?[ \t]*$)"
+)
+_IMAGE_REFERENCE_PATTERN = re.compile(
+    r"(?:!\[[^]]*]\([^)]+\)|<img\b)",
+    re.IGNORECASE,
+)
 
 
 class PaddleDeviceError(RuntimeError):
@@ -66,15 +88,264 @@ def recognize_pages(
             shutil.rmtree(page_dir)
         page_dir.mkdir(parents=True)
 
-        results = pipeline.predict(str(page_path))
+        results = list(pipeline.predict(str(page_path)))
         for result in results:
             result.save_to_markdown(save_path=str(page_dir))
 
         markdown_path = page_dir / f"page_{page_num}.md"
         if not markdown_path.is_file():
             raise RuntimeError(f"PaddleOCR не создал {markdown_path}")
+        _recover_pathological_ocr_blocks(
+            pipeline,
+            page_path,
+            markdown_path,
+            results,
+            page_num=page_num,
+        )
         markdown_files.append(markdown_path)
     return markdown_files
+
+
+def _recover_pathological_ocr_blocks(
+    pipeline: Any,
+    page_path: Path,
+    markdown_path: Path,
+    results: list[Any],
+    *,
+    page_num: int,
+) -> int:
+    """Повторно распознаёт только layout-блок с патологическим OCR-повтором.
+
+    Полная страница уже прошла обычный PaddleOCR-VL. Для доказанно повреждённого
+    блока используются его штатные координаты ``block_bbox``: область берётся
+    из исходной PNG, мягко увеличивается и ещё раз проходит тот же загруженный
+    pipeline. Если повтор не исчез либо изменился номер задания, исходный
+    Markdown остаётся без изменений и позднее срабатывает ``OCRQualityError``.
+    """
+
+    if not page_path.is_file() or not markdown_path.is_file():
+        return 0
+
+    markdown = markdown_path.read_text(encoding="utf-8")
+    recovered_count = 0
+
+    with tempfile.TemporaryDirectory(prefix="exam_parser_ocr_recovery_") as raw:
+        temp_dir = Path(raw)
+        source_blocks = _prediction_blocks(results, temp_dir, prefix="source")
+        noisy_blocks = [
+            block
+            for block in source_blocks
+            if _has_pathological_repetition(block.get("block_content"))
+        ]
+        if not noisy_blocks:
+            return 0
+
+        with Image.open(page_path) as opened_page:
+            page = opened_page.convert("RGB")
+            for index, block in enumerate(noisy_blocks, start=1):
+                original = block.get("block_content")
+                bbox = _block_bbox(block.get("block_bbox"), page.size)
+                if not isinstance(original, str) or bbox is None:
+                    continue
+
+                crop = _recovery_crop(page, bbox)
+                crop_path = temp_dir / f"crop_{index}.png"
+                crop.save(crop_path, "PNG", optimize=True, dpi=(300, 300))
+                print(
+                    f"PaddleOCR: страница {page_num}, повторное распознавание "
+                    f"повреждённой области {index}/{len(noisy_blocks)}",
+                    flush=True,
+                )
+                try:
+                    retry_results = list(pipeline.predict(str(crop_path)))
+                except (OSError, RuntimeError, ValueError, TypeError):
+                    continue
+
+                retry_blocks = _prediction_blocks(
+                    retry_results,
+                    temp_dir,
+                    prefix=f"retry_{index}",
+                )
+                recovered = _blocks_markdown(retry_blocks)
+                recovered = _safe_recovered_block(original, recovered)
+                if recovered is None:
+                    continue
+
+                replaced = _replace_block_once(markdown, original, recovered)
+                if replaced is None:
+                    continue
+                markdown = replaced
+                recovered_count += 1
+                print(
+                    f"PaddleOCR: страница {page_num}, повреждённая область "
+                    "восстановлена повторным OCR",
+                    flush=True,
+                )
+
+    if recovered_count:
+        markdown_path.write_text(markdown, encoding="utf-8")
+    return recovered_count
+
+
+def _prediction_blocks(
+    results: list[Any],
+    temp_dir: Path,
+    *,
+    prefix: str,
+) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for index, result in enumerate(results, start=1):
+        save_to_json = getattr(result, "save_to_json", None)
+        if not callable(save_to_json):
+            continue
+        json_path = temp_dir / f"{prefix}_{index}.json"
+        try:
+            save_to_json(save_path=str(json_path))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, RuntimeError, ValueError, TypeError, json.JSONDecodeError):
+            continue
+        blocks.extend(_first_parsing_blocks(payload))
+    return blocks
+
+
+def _first_parsing_blocks(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        parsing = value.get("parsing_res_list")
+        if isinstance(parsing, list):
+            return [item for item in parsing if isinstance(item, dict)]
+        for nested in value.values():
+            found = _first_parsing_blocks(nested)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for nested in value:
+            found = _first_parsing_blocks(nested)
+            if found:
+                return found
+    return []
+
+
+def _has_pathological_repetition(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    _cleaned, replacements = sanitize_pathological_ocr_repetitions(value)
+    return bool(replacements)
+
+
+def _block_bbox(
+    value: Any,
+    page_size: tuple[int, int],
+) -> tuple[int, int, int, int] | None:
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    try:
+        if len(value) == 4 and all(
+            not isinstance(item, (list, tuple)) for item in value
+        ):
+            x1, y1, x2, y2 = (int(round(float(item))) for item in value)
+        else:
+            points = [
+                (float(point[0]), float(point[1]))
+                for point in value
+                if isinstance(point, (list, tuple)) and len(point) >= 2
+            ]
+            if len(points) < 2:
+                return None
+            x1 = int(round(min(point[0] for point in points)))
+            y1 = int(round(min(point[1] for point in points)))
+            x2 = int(round(max(point[0] for point in points)))
+            y2 = int(round(max(point[1] for point in points)))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    width, height = page_size
+    x1 = max(0, min(x1, width))
+    x2 = max(0, min(x2, width))
+    y1 = max(0, min(y1, height))
+    y2 = max(0, min(y2, height))
+    if x1 >= x2 or y1 >= y2:
+        return None
+    return x1, y1, x2, y2
+
+
+def _recovery_crop(
+    page: Image.Image,
+    bbox: tuple[int, int, int, int],
+) -> Image.Image:
+    x1, y1, x2, y2 = bbox
+    margin_x = max(12, round((x2 - x1) * 0.06))
+    margin_y = max(12, round((y2 - y1) * 0.10))
+    expanded = (
+        max(0, x1 - margin_x),
+        max(0, y1 - margin_y),
+        min(page.width, x2 + margin_x),
+        min(page.height, y2 + margin_y),
+    )
+    crop = page.crop(expanded)
+    longest_side = max(crop.size)
+    if longest_side and longest_side < 1800:
+        scale = min(3, max(2, math.ceil(1800 / longest_side)))
+        crop = crop.resize(
+            (crop.width * scale, crop.height * scale),
+            Image.Resampling.LANCZOS,
+        )
+    return crop
+
+
+def _blocks_markdown(blocks: list[dict[str, Any]]) -> str:
+    ordered = sorted(
+        enumerate(blocks),
+        key=lambda item: (
+            item[1].get("block_order") is None,
+            item[1].get("block_order")
+            if isinstance(item[1].get("block_order"), int)
+            else item[0],
+        ),
+    )
+    contents = [
+        str(block.get("block_content", "")).strip()
+        for _index, block in ordered
+        if str(block.get("block_content", "")).strip()
+    ]
+    return "\n\n".join(contents).strip()
+
+
+def _safe_recovered_block(original: str, recovered: str) -> str | None:
+    if not recovered or _IMAGE_REFERENCE_PATTERN.search(recovered):
+        return None
+    cleaned, replacements = sanitize_pathological_ocr_repetitions(recovered)
+    if replacements or OCR_UNREADABLE_REPEAT_MARKER in cleaned:
+        return None
+    if len(re.findall(r"[0-9A-Za-zА-Яа-яЁё]", recovered)) < 8:
+        return None
+
+    original_heading = _TASK_HEADING_PATTERN.search(original)
+    recovered_heading = _TASK_HEADING_PATTERN.search(recovered)
+    if original_heading is not None:
+        original_num = _canonical_task_num(original_heading.group("num"))
+        if recovered_heading is not None:
+            if _canonical_task_num(recovered_heading.group("num")) != original_num:
+                return None
+        else:
+            prefix = original[original_heading.start() : original_heading.end()]
+            recovered = prefix + recovered.lstrip()
+    return recovered.strip()
+
+
+def _canonical_task_num(value: str) -> str:
+    return value.translate(str.maketrans({"А": "A", "В": "B", "С": "C"}))
+
+
+def _replace_block_once(
+    markdown: str,
+    original: str,
+    recovered: str,
+) -> str | None:
+    if original in markdown:
+        return markdown.replace(original, recovered, 1)
+    stripped = original.strip()
+    if stripped and stripped in markdown:
+        return markdown.replace(stripped, recovered, 1)
+    return None
 
 
 def configure_paddle_device(
