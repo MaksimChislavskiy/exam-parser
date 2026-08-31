@@ -30,6 +30,10 @@ class DataStore:
     def cache_dir(self) -> Path:
         return self.root / "cache"
 
+    @property
+    def ocr_review_dir(self) -> Path:
+        return self.dataset_dir / "ocr_review"
+
     def reference_path(self, filename: str) -> Path:
         if Path(filename).name != filename:
             raise ValueError(

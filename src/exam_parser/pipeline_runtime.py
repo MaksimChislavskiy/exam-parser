@@ -233,12 +233,14 @@ def install_runtime_repairs() -> None:
         *,
         device: str = "gpu:0",
         allow_cpu_fallback: bool = False,
+        data_store: Any | None = None,
     ) -> list[Path]:
         markdown_files = original_recognize_pages(
             pages,
             markdown_dir,
             device=device,
             allow_cpu_fallback=allow_cpu_fallback,
+            data_store=data_store,
         )
         refresh_markdown_images(pages, markdown_files)
         return markdown_files

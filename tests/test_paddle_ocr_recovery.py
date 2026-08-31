@@ -11,6 +11,7 @@ from PIL import Image
 from exam_parser.paddle import (
     _block_bbox,
     _looks_like_ocr_hallucination,
+    _ocr_review_item_dir,
     _recover_pathological_ocr_blocks,
     _safe_recovered_block,
 )
@@ -279,4 +280,86 @@ class PaddleOCRRecoveryTests(unittest.TestCase):
         self.assertTrue(_looks_like_ocr_hallucination(hallucination))
         self.assertIsNone(
             _safe_recovered_block("19. Условие " + "0" * 150, hallucination)
+        )
+
+    def test_failed_recovery_creates_review_item_and_uses_correction(self) -> None:
+        def check(tmp_path: Path) -> None:
+            noisy = "19. Дано число " + "0" * 150
+            page_path, markdown_path = _page_and_markdown(tmp_path, noisy)
+            review_root = tmp_path / "data-center" / "dataset" / "ocr_review"
+            failed_pipeline = _FakePipeline(
+                [
+                    {
+                        "block_content": "19. Число " + "0" * 150,
+                        "block_order": 0,
+                    }
+                ]
+            )
+
+            recovered = _recover_pathological_ocr_blocks(
+                failed_pipeline,
+                page_path,
+                markdown_path,
+                [_source_result(noisy)],
+                page_num=8,
+                review_root=review_root,
+            )
+
+            self.assertEqual(recovered, 0)
+            item_dirs = list(review_root.iterdir())
+            self.assertEqual(len(item_dirs), 1)
+            item_dir = item_dirs[0]
+            self.assertTrue((item_dir / "source.png").is_file())
+            self.assertTrue((item_dir / "original_ocr.md").is_file())
+            self.assertTrue((item_dir / "metadata.json").is_file())
+            self.assertTrue((item_dir / "README.txt").is_file())
+            self.assertFalse((item_dir / "correction.md").exists())
+            self.assertNotIn(
+                "0" * 128,
+                (item_dir / "original_ocr.md").read_text("utf-8"),
+            )
+
+            correction = (
+                "19. Дано трёхзначное число $A$ и сумма его цифр $S$.\n"
+                "а) Может ли $A\\cdot S=1105$?\n"
+                "б) Может ли $A\\cdot S=1106$?\n"
+            )
+            (item_dir / "correction.md").write_text(
+                correction,
+                encoding="utf-8",
+            )
+            markdown_path.write_text(noisy, encoding="utf-8")
+            cached_pipeline = _FakePipeline([])
+
+            recovered = _recover_pathological_ocr_blocks(
+                cached_pipeline,
+                page_path,
+                markdown_path,
+                [_source_result(noisy)],
+                page_num=8,
+                review_root=review_root,
+            )
+
+            self.assertEqual(recovered, 1)
+            self.assertEqual(cached_pipeline.calls, [])
+            self.assertEqual(
+                markdown_path.read_text("utf-8"),
+                correction.strip(),
+            )
+
+        self._run_in_temp(check)
+
+    def test_review_fingerprint_depends_on_crop_pixels(self) -> None:
+        root = Path("review")
+        first = Image.new("RGB", (20, 10), "white")
+        second = first.copy()
+        second.putpixel((0, 0), (0, 0, 0))
+
+        self.assertEqual(
+            _ocr_review_item_dir(root, first),
+            _ocr_review_item_dir(root, first.copy()),
+        )
+        self.assertNotEqual(
+            _ocr_review_item_dir(root, first),
+            _ocr_review_item_dir(root, second),
         )

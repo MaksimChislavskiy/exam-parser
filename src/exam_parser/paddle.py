@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -13,6 +14,7 @@ from typing import Any
 
 from PIL import Image, ImageFilter, ImageOps
 
+from .data_store import DataStore, resolve_data_store
 from .ocr_noise import (
     OCR_UNREADABLE_REPEAT_MARKER,
     sanitize_pathological_ocr_repetitions,
@@ -51,6 +53,7 @@ def recognize_pages(
     *,
     device: str = "gpu:0",
     allow_cpu_fallback: bool = False,
+    data_store: DataStore | None = None,
 ) -> list[Path]:
     import os
 
@@ -87,6 +90,7 @@ def recognize_pages(
     markdown_dir.mkdir(parents=True, exist_ok=True)
     print(f"Загрузка PaddleOCR-VL; устройство: {selected_device}", flush=True)
     pipeline = PaddleOCRVL(pipeline_version="v1", device=selected_device)
+    review_root = (data_store or resolve_data_store()).ocr_review_dir
     markdown_files: list[Path] = []
 
     for page_num, page_path in enumerate(pages, start=1):
@@ -109,6 +113,7 @@ def recognize_pages(
             markdown_path,
             results,
             page_num=page_num,
+            review_root=review_root,
         )
         markdown_files.append(markdown_path)
     return markdown_files
@@ -121,6 +126,7 @@ def _recover_pathological_ocr_blocks(
     results: list[Any],
     *,
     page_num: int,
+    review_root: Path | None = None,
 ) -> int:
     """Повторно распознаёт только layout-блок с патологическим OCR-повтором.
 
@@ -162,15 +168,57 @@ def _recover_pathological_ocr_blocks(
                     flush=True,
                 )
                 crop = _recovery_crop(page, bbox)
-                recovered = _retry_recovery_variants(
-                    pipeline,
-                    crop,
-                    original,
-                    temp_dir,
-                    block_index=index,
-                    page_num=page_num,
+                review_item_dir = (
+                    _ocr_review_item_dir(review_root, crop)
+                    if review_root is not None
+                    else None
                 )
+                recovered = None
+                if review_item_dir is not None:
+                    correction_path = review_item_dir / "correction.md"
+                    if correction_path.is_file():
+                        try:
+                            correction = correction_path.read_text(
+                                encoding="utf-8"
+                            )
+                        except (OSError, UnicodeError):
+                            correction = ""
+                        recovered = _safe_recovered_block(original, correction)
+                        if recovered is not None:
+                            print(
+                                f"PaddleOCR: страница {page_num}, загружена "
+                                "проверенная OCR-правка из Дата-центра",
+                                flush=True,
+                            )
+                        else:
+                            print(
+                                f"PaddleOCR: страница {page_num}, файл "
+                                f"{correction_path} отклонён проверкой качества",
+                                flush=True,
+                            )
                 if recovered is None:
+                    recovered = _retry_recovery_variants(
+                        pipeline,
+                        crop,
+                        original,
+                        temp_dir,
+                        block_index=index,
+                        page_num=page_num,
+                    )
+                if recovered is None:
+                    if review_item_dir is not None:
+                        correction_path = _write_ocr_review_item(
+                            review_item_dir,
+                            crop,
+                            original,
+                            bbox=bbox,
+                            page_size=page.size,
+                        )
+                        print(
+                            f"PaddleOCR: страница {page_num}, требуется ручная "
+                            f"сверка OCR: {correction_path}",
+                            flush=True,
+                        )
                     continue
 
                 replaced = _replace_block_once(markdown, original, recovered)
@@ -187,6 +235,63 @@ def _recover_pathological_ocr_blocks(
     if recovered_count:
         markdown_path.write_text(markdown, encoding="utf-8")
     return recovered_count
+
+
+def _ocr_review_item_dir(review_root: Path, crop: Image.Image) -> Path:
+    digest = hashlib.sha256()
+    digest.update(f"{crop.mode}:{crop.width}x{crop.height}\0".encode("ascii"))
+    digest.update(crop.tobytes())
+    return review_root / digest.hexdigest()
+
+
+def _write_ocr_review_item(
+    item_dir: Path,
+    crop: Image.Image,
+    original: str,
+    *,
+    bbox: tuple[int, int, int, int],
+    page_size: tuple[int, int],
+) -> Path:
+    item_dir.mkdir(parents=True, exist_ok=True)
+    source_path = item_dir / "source.png"
+    if not source_path.is_file():
+        crop.save(source_path, "PNG", optimize=True, dpi=(300, 300))
+
+    cleaned_original, _replacements = sanitize_pathological_ocr_repetitions(
+        original
+    )
+    (item_dir / "original_ocr.md").write_text(
+        cleaned_original.strip() + "\n",
+        encoding="utf-8",
+    )
+
+    heading = _TASK_HEADING_PATTERN.search(original)
+    metadata = {
+        "schema_version": 1,
+        "fingerprint": item_dir.name,
+        "task_num": (
+            _canonical_task_num(heading.group("num"))
+            if heading is not None
+            else None
+        ),
+        "bbox": list(bbox),
+        "page_size": list(page_size),
+        "crop_size": [crop.width, crop.height],
+    }
+    (item_dir / "metadata.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    readme_path = item_dir / "README.txt"
+    if not readme_path.is_file():
+        readme_path.write_text(
+            "Проверьте source.png по исходному документу.\n"
+            "Создайте correction.md только после ручной сверки.\n"
+            "В correction.md запишите номер и полное условие задачи без решения.\n"
+            "Следующий OCR-запуск проверит номер и качество текста автоматически.\n",
+            encoding="utf-8",
+        )
+    return item_dir / "correction.md"
 
 
 def _retry_recovery_variants(

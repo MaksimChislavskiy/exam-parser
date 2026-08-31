@@ -60,6 +60,14 @@ def test_loads_catalog_from_external_data_store(tmp_path: Path) -> None:
     assert catalog.prompt_text().splitlines()[0] == "id\tname\tparent\textra"
 
 
+def test_data_store_keeps_ocr_review_inside_dataset(tmp_path: Path) -> None:
+    store = DataStore(tmp_path / "data-center")
+
+    assert store.ocr_review_dir == (
+        tmp_path / "data-center" / "dataset" / "ocr_review"
+    )
+
+
 def test_catalog_subtree_keeps_only_selected_branch(tmp_path: Path) -> None:
     source = tmp_path / "topics.csv"
     source.write_text(
