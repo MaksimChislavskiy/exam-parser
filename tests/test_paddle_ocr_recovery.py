@@ -10,7 +10,9 @@ from PIL import Image
 
 from exam_parser.paddle import (
     _block_bbox,
+    _looks_like_ocr_hallucination,
     _recover_pathological_ocr_blocks,
+    _safe_recovered_block,
 )
 
 
@@ -26,13 +28,20 @@ class _FakeResult:
 
 
 class _FakePipeline:
-    def __init__(self, retry_blocks: list[dict[str, object]]) -> None:
-        self.retry_blocks = retry_blocks
+    def __init__(
+        self,
+        retry_blocks: list[dict[str, object]] | list[list[dict[str, object]]],
+    ) -> None:
+        if retry_blocks and isinstance(retry_blocks[0], list):
+            self.retry_blocks = list(retry_blocks)
+        else:
+            self.retry_blocks = [retry_blocks]
         self.calls: list[Path] = []
 
     def predict(self, value: str) -> list[_FakeResult]:
         self.calls.append(Path(value))
-        return [_FakeResult(self.retry_blocks)]
+        index = min(len(self.calls) - 1, len(self.retry_blocks) - 1)
+        return [_FakeResult(self.retry_blocks[index])]
 
 
 def _source_result(content: str) -> _FakeResult:
@@ -120,6 +129,44 @@ class PaddleOCRRecoveryTests(unittest.TestCase):
             (10, 15, 90, 65),
         )
 
+    def test_uses_refined_upper_crop_after_full_retry_still_repeats(self) -> None:
+        def check(tmp_path: Path) -> None:
+            noisy = "19. Дано число " + "0" * 150
+            page_path, markdown_path = _page_and_markdown(tmp_path, noisy)
+            pipeline = _FakePipeline(
+                [
+                    [
+                        {
+                            "block_content": "19. Число " + "0" * 150,
+                            "block_order": 0,
+                        }
+                    ],
+                    [
+                        {
+                            "block_content": (
+                                "19. Дано трёхзначное число $A$ и сумма "
+                                "его цифр $S$. Может ли $A\\cdot S=1105$?"
+                            ),
+                            "block_order": 0,
+                        }
+                    ],
+                ]
+            )
+
+            recovered = _recover_pathological_ocr_blocks(
+                pipeline,
+                page_path,
+                markdown_path,
+                [_source_result(noisy)],
+                page_num=1,
+            )
+
+            self.assertEqual(recovered, 1)
+            self.assertEqual(len(pipeline.calls), 2)
+            self.assertIn("трёхзначное число", markdown_path.read_text("utf-8"))
+
+        self._run_in_temp(check)
+
     def test_preserves_heading_when_crop_omits_it(self) -> None:
         def check(tmp_path: Path) -> None:
             noisy = "17. Условие " + "3" * 150
@@ -201,5 +248,35 @@ class PaddleOCRRecoveryTests(unittest.TestCase):
 
             self.assertEqual(recovered, 0)
             self.assertEqual(markdown_path.read_text(encoding="utf-8"), noisy)
+            self.assertEqual(len(pipeline.calls), 3)
 
         self._run_in_temp(check)
+
+    def test_trims_solution_and_next_task_from_recovered_block(self) -> None:
+        original = "19. Условие " + "0" * 150
+        recovered = (
+            "19. Дано трёхзначное число $A$ и сумма его цифр $S$.\n"
+            "а) Может ли $A\\cdot S=1105$?\n"
+            "Решение:\nВычисления.\n"
+            "20. Следующая задача."
+        )
+
+        self.assertEqual(
+            _safe_recovered_block(original, recovered),
+            (
+                "19. Дано трёхзначное число $A$ и сумма его цифр $S$.\n"
+                "а) Может ли $A\\cdot S=1105$?"
+            ),
+        )
+
+    def test_rejects_short_repeating_word_hallucination(self) -> None:
+        hallucination = (
+            "19. Централическая источная "
+            + "внуклетого умомента " * 8
+            + "обеих умоментов."
+        )
+
+        self.assertTrue(_looks_like_ocr_hallucination(hallucination))
+        self.assertIsNone(
+            _safe_recovered_block("19. Условие " + "0" * 150, hallucination)
+        )

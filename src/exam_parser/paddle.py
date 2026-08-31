@@ -6,11 +6,12 @@ import re
 import shutil
 import sys
 import tempfile
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageFilter, ImageOps
 
 from .ocr_noise import (
     OCR_UNREADABLE_REPEAT_MARKER,
@@ -27,6 +28,13 @@ _IMAGE_REFERENCE_PATTERN = re.compile(
     r"(?:!\[[^]]*]\([^)]+\)|<img\b)",
     re.IGNORECASE,
 )
+_SOLUTION_HEADING_PATTERN = re.compile(
+    r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?(?:Решение|Ответ)[ \t]*:"
+)
+_WORD_PATTERN = re.compile(r"[A-Za-zА-Яа-яЁё]{3,}")
+_CYRILLIC_LETTER_PATTERN = re.compile(r"[А-Яа-яЁё]")
+_ALPHABETIC_LETTER_PATTERN = re.compile(r"[A-Za-zА-Яа-яЁё]")
+_CJK_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 
 
 class PaddleDeviceError(RuntimeError):
@@ -148,26 +156,20 @@ def _recover_pathological_ocr_blocks(
                 if not isinstance(original, str) or bbox is None:
                     continue
 
-                crop = _recovery_crop(page, bbox)
-                crop_path = temp_dir / f"crop_{index}.png"
-                crop.save(crop_path, "PNG", optimize=True, dpi=(300, 300))
                 print(
                     f"PaddleOCR: страница {page_num}, повторное распознавание "
                     f"повреждённой области {index}/{len(noisy_blocks)}",
                     flush=True,
                 )
-                try:
-                    retry_results = list(pipeline.predict(str(crop_path)))
-                except (OSError, RuntimeError, ValueError, TypeError):
-                    continue
-
-                retry_blocks = _prediction_blocks(
-                    retry_results,
+                crop = _recovery_crop(page, bbox)
+                recovered = _retry_recovery_variants(
+                    pipeline,
+                    crop,
+                    original,
                     temp_dir,
-                    prefix=f"retry_{index}",
+                    block_index=index,
+                    page_num=page_num,
                 )
-                recovered = _blocks_markdown(retry_blocks)
-                recovered = _safe_recovered_block(original, recovered)
                 if recovered is None:
                     continue
 
@@ -185,6 +187,45 @@ def _recover_pathological_ocr_blocks(
     if recovered_count:
         markdown_path.write_text(markdown, encoding="utf-8")
     return recovered_count
+
+
+def _retry_recovery_variants(
+    pipeline: Any,
+    crop: Image.Image,
+    original: str,
+    temp_dir: Path,
+    *,
+    block_index: int,
+    page_num: int,
+) -> str | None:
+    variants = _recovery_crop_variants(crop)
+    for variant_index, (variant_name, variant) in enumerate(variants, start=1):
+        if variant_index > 1:
+            print(
+                f"PaddleOCR: страница {page_num}, уточнённый crop "
+                f"{variant_index - 1}/{len(variants) - 1} "
+                f"({variant_name})",
+                flush=True,
+            )
+        crop_path = temp_dir / f"crop_{block_index}_{variant_index}.png"
+        variant.save(crop_path, "PNG", optimize=True, dpi=(300, 300))
+        try:
+            retry_results = list(pipeline.predict(str(crop_path)))
+        except (OSError, RuntimeError, ValueError, TypeError):
+            continue
+
+        retry_blocks = _prediction_blocks(
+            retry_results,
+            temp_dir,
+            prefix=f"retry_{block_index}_{variant_index}",
+        )
+        recovered = _safe_recovered_block(
+            original,
+            _blocks_markdown(retry_blocks),
+        )
+        if recovered is not None:
+            return recovered
+    return None
 
 
 def _prediction_blocks(
@@ -291,6 +332,21 @@ def _recovery_crop(
     return crop
 
 
+def _recovery_crop_variants(
+    crop: Image.Image,
+) -> list[tuple[str, Image.Image]]:
+    variants = [("полный", crop)]
+    for name, height_ratio in (("верхние 60%", 0.60), ("верхние 42%", 0.42)):
+        height = max(1, round(crop.height * height_ratio))
+        upper = crop.crop((0, 0, crop.width, height))
+        gray = ImageOps.grayscale(upper)
+        enhanced = ImageOps.autocontrast(gray, cutoff=1).filter(
+            ImageFilter.UnsharpMask(radius=2, percent=170, threshold=3)
+        )
+        variants.append((name, enhanced.convert("RGB")))
+    return variants
+
+
 def _blocks_markdown(blocks: list[dict[str, Any]]) -> str:
     ordered = sorted(
         enumerate(blocks),
@@ -312,23 +368,67 @@ def _blocks_markdown(blocks: list[dict[str, Any]]) -> str:
 def _safe_recovered_block(original: str, recovered: str) -> str | None:
     if not recovered or _IMAGE_REFERENCE_PATTERN.search(recovered):
         return None
+
+    original_heading = _TASK_HEADING_PATTERN.search(original)
+    recovered_headings = list(_TASK_HEADING_PATTERN.finditer(recovered))
+    if original_heading is not None:
+        original_num = _canonical_task_num(original_heading.group("num"))
+        matching_heading = next(
+            (
+                heading
+                for heading in recovered_headings
+                if _canonical_task_num(heading.group("num")) == original_num
+            ),
+            None,
+        )
+        if matching_heading is not None:
+            recovered = recovered[matching_heading.start() :]
+            for heading in _TASK_HEADING_PATTERN.finditer(
+                recovered,
+                matching_heading.end() - matching_heading.start(),
+            ):
+                if _canonical_task_num(heading.group("num")) != original_num:
+                    recovered = recovered[: heading.start()]
+                    break
+        elif recovered_headings:
+            return None
+        else:
+            prefix = original[original_heading.start() : original_heading.end()]
+            recovered = prefix + recovered.lstrip()
+
+    solution_heading = _SOLUTION_HEADING_PATTERN.search(recovered)
+    if solution_heading is not None:
+        recovered = recovered[: solution_heading.start()]
+    recovered = recovered.strip()
+
     cleaned, replacements = sanitize_pathological_ocr_repetitions(recovered)
     if replacements or OCR_UNREADABLE_REPEAT_MARKER in cleaned:
         return None
     if len(re.findall(r"[0-9A-Za-zА-Яа-яЁё]", recovered)) < 8:
         return None
+    if _looks_like_ocr_hallucination(recovered):
+        return None
+    return recovered
 
-    original_heading = _TASK_HEADING_PATTERN.search(original)
-    recovered_heading = _TASK_HEADING_PATTERN.search(recovered)
-    if original_heading is not None:
-        original_num = _canonical_task_num(original_heading.group("num"))
-        if recovered_heading is not None:
-            if _canonical_task_num(recovered_heading.group("num")) != original_num:
-                return None
-        else:
-            prefix = original[original_heading.start() : original_heading.end()]
-            recovered = prefix + recovered.lstrip()
-    return recovered.strip()
+
+def _looks_like_ocr_hallucination(value: str) -> bool:
+    if _CJK_PATTERN.search(value):
+        return True
+
+    letters = _ALPHABETIC_LETTER_PATTERN.findall(value)
+    if len(letters) >= 20:
+        cyrillic = len(_CYRILLIC_LETTER_PATTERN.findall(value))
+        if cyrillic / len(letters) < 0.35:
+            return True
+
+    words = [word.casefold() for word in _WORD_PATTERN.findall(value)]
+    if len(words) < 12:
+        return False
+    counts = Counter(words)
+    most_common = counts.most_common(1)[0][1]
+    if most_common >= 6 and most_common / len(words) >= 0.20:
+        return True
+    return False
 
 
 def _canonical_task_num(value: str) -> str:
