@@ -27,6 +27,8 @@ from .models import (
 )
 from .ocr_noise import (
     OCR_UNREADABLE_REPEAT_MARKER,
+    OCR_VERIFIED_CONDITION_END,
+    OCR_VERIFIED_CONDITION_START,
     sanitize_pathological_ocr_repetitions,
 )
 
@@ -134,6 +136,21 @@ TRAILING_SERVICE_INSTRUCTION_PATTERN = re.compile(
     r")"
     r")[^<]*(?=</p>|\Z)"
 )
+VERIFIED_CONDITION_PATTERN = re.compile(
+    re.escape(OCR_VERIFIED_CONDITION_START)
+    + r"\s*(?P<block>.*?)\s*"
+    + re.escape(OCR_VERIFIED_CONDITION_END),
+    re.DOTALL,
+)
+TASK_REQUEST_PATTERN = re.compile(
+    r"(?i)\b(?:Найдите|Решите|Докажите|Определите|Вычислите|Укажите|"
+    r"Постройте|Исследуйте|Сколько|Чему\s+равн\w*|Может\s+ли|"
+    r"Возможно\s+ли|Существует\s+ли|При\s+каком|"
+    r"Как(?:ой|ая|ое|ие|ую|ого|ому|им|ими|их|ов|ова)|"
+    r"Верно\s+ли)\b"
+)
+CJK_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+CYRILLIC_WORD_PATTERN = re.compile(r"[А-Яа-яЁё]{2,}")
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
 EMPTY_HTML_CONTAINER_PATTERN = re.compile(
     r"<(?P<tag>div|p)\b[^>]*>\s*</(?P=tag)>",
@@ -394,6 +411,7 @@ def process_markdown(
                 if associated_image not in image_ids:
                     image_ids.append(associated_image)
             source_by_task = _task_condition_blocks(markdown)
+            verified_by_task = _verified_condition_blocks(markdown)
             extraction_markdown = _task_extraction_markdown(markdown)
             for task_num, condition in source_by_task.items():
                 source_blocks.setdefault(task_num, []).append(
@@ -418,6 +436,13 @@ def process_markdown(
                     f"{client.provider_name}: страница {page_num} загружена "
                     "из extraction-checkpoint",
                     flush=True,
+                )
+                page_tasks = _reconcile_verified_page_tasks(
+                    page_tasks,
+                    source_by_task,
+                    verified_by_task,
+                    provider_name=client.provider_name,
+                    page_num=page_num,
                 )
             elif _is_evaluation_example_page(markdown, source_by_task):
                 print(
@@ -446,6 +471,13 @@ def process_markdown(
                     image_ids,
                     source_by_task=source_by_task,
                     image_by_task=image_by_task,
+                    page_num=page_num,
+                )
+                tasks = _reconcile_verified_page_tasks(
+                    tasks,
+                    source_by_task,
+                    verified_by_task,
+                    provider_name=client.provider_name,
                     page_num=page_num,
                 )
                 page_tasks = []
@@ -1490,7 +1522,96 @@ def _task_condition_blocks(markdown: str) -> dict[str, str]:
         condition = _clean_source_condition(body, task_num=task_num)
         if condition:
             result[task_num] = condition
+    result.update(_verified_condition_blocks(markdown))
     return result
+
+
+def _verified_condition_blocks(markdown: str) -> dict[str, str]:
+    candidates: dict[str, list[str]] = {}
+    for match in VERIFIED_CONDITION_PATTERN.finditer(markdown):
+        block = match.group("block").strip()
+        headings = _source_task_headings(block)
+        if len(headings) != 1:
+            continue
+        heading = headings[0]
+        condition = _clean_source_condition(
+            block[heading.end :],
+            task_num=heading.task_num,
+        )
+        if condition:
+            candidates.setdefault(heading.task_num, []).append(condition)
+    return {
+        task_num: values[0]
+        for task_num, values in candidates.items()
+        if len(values) == 1
+    }
+
+
+def _reconcile_verified_page_tasks(
+    tasks: list[ExtractedTask],
+    source_by_task: dict[str, str],
+    verified_by_task: dict[str, str],
+    *,
+    provider_name: str,
+    page_num: int,
+) -> list[ExtractedTask]:
+    if not verified_by_task:
+        return tasks
+
+    result: list[ExtractedTask] = []
+    seen: set[str] = set()
+    rejected: list[str] = []
+    for task in tasks:
+        task_num = _canonical_task_num(task.task_num)
+        if task_num in verified_by_task:
+            if task_num not in seen:
+                result.append(
+                    ExtractedTask(
+                        task_num=task_num,
+                        condition=verified_by_task[task_num],
+                        image_id=task.image_id,
+                    )
+                )
+                seen.add(task_num)
+            continue
+
+        source_condition = source_by_task.get(task_num)
+        if (
+            source_condition is not None
+            and not _looks_like_complete_task(source_condition)
+        ):
+            rejected.append(task_num)
+            continue
+        result.append(task)
+        seen.add(task_num)
+
+    if rejected:
+        print(
+            f"{provider_name}: на странице {page_num} пропущены ложные "
+            f"OCR-заголовки задач {', '.join(rejected)}",
+            flush=True,
+        )
+
+    for task_num, condition in verified_by_task.items():
+        if task_num in seen:
+            continue
+        result.append(ExtractedTask(task_num=task_num, condition=condition))
+        print(
+            f"{provider_name}: проверенная OCR-задача {task_num} на странице "
+            f"{page_num} восстановлена из Дата-центра без повтора",
+            flush=True,
+        )
+    return result
+
+
+def _looks_like_complete_task(value: str) -> bool:
+    if CJK_PATTERN.search(value):
+        return False
+    plain = LATEX_SPAN_PATTERN.sub(" ", value)
+    plain = HTML_TAG_PATTERN.sub(" ", plain)
+    if TASK_REQUEST_PATTERN.search(plain) or "?" in plain:
+        return True
+    return len(CYRILLIC_WORD_PATTERN.findall(plain)) >= 4
 
 
 def _task_extraction_markdown(markdown: str) -> str:
@@ -1507,6 +1628,10 @@ def _task_extraction_markdown(markdown: str) -> str:
             return heading
         return f"{_canonical_task_num(match.group(1))}."
 
+    markdown = VERIFIED_CONDITION_PATTERN.sub(
+        lambda match: match.group("block").strip(),
+        markdown,
+    )
     return TASK_HEADING_PATTERN.sub(replace_heading, markdown)
 
 
@@ -2676,6 +2801,8 @@ def _recover_missing_expected_tasks(
             return extracted
         number = int(task.task_num)
         if task.task_num != str(number):
+            return extracted
+        if number > expected_tasks:
             return extracted
         actual_numbers.add(task.task_num)
 

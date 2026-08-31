@@ -21,12 +21,14 @@ from exam_parser.markdown_pipeline import (
     _is_evaluation_example_page,
     _recover_missing_expected_tasks,
     _reconcile_lettered_source_tasks,
+    _reconcile_verified_page_tasks,
     _remove_embedded_task_conditions,
     _restore_empty_model_condition,
     _restore_empty_model_task_number,
     _raise_unreadable_ocr_conditions,
     _task_condition_blocks,
     _task_extraction_markdown,
+    _verified_condition_blocks,
 )
 from exam_parser.math_text import normalize_ege_short_answer
 from exam_parser.models import (
@@ -37,7 +39,11 @@ from exam_parser.models import (
     TaskRecord,
     TaskSolution,
 )
-from exam_parser.ocr_noise import OCR_UNREADABLE_REPEAT_MARKER
+from exam_parser.ocr_noise import (
+    OCR_UNREADABLE_REPEAT_MARKER,
+    OCR_VERIFIED_CONDITION_END,
+    OCR_VERIFIED_CONDITION_START,
+)
 
 
 class _FakeCompletions:
@@ -257,6 +263,79 @@ class EvaluationExamplePageTests(unittest.TestCase):
                 markdown,
                 {"13": "Докажите утверждение."},
             )
+        )
+
+
+class VerifiedOCRConditionTests(unittest.TestCase):
+    def test_verified_condition_rejects_only_low_quality_neighbour_headings(
+        self,
+    ) -> None:
+        verified_condition = (
+            "15 декабря планируется взять кредит на 17 месяцев. "
+            "Какую сумму планируется взять в кредит?"
+        )
+        markdown = (
+            f"{OCR_VERIFIED_CONDITION_START}\n"
+            f"17. {verified_condition}\n"
+            f"{OCR_VERIFIED_CONDITION_END}\n\n"
+            "12. $x^2-y^2=10a-24$\n\n"
+            "Bce a, uode uocuouuuu4peneue\n\n"
+            "19. Централическая источная, внуклетого умомента 吋"
+        )
+        source_by_task = _task_condition_blocks(markdown)
+        verified_by_task = _verified_condition_blocks(markdown)
+        tasks = [
+            ExtractedTask(task_num="12", condition="Ложный фрагмент 12"),
+            ExtractedTask(task_num="17", condition="Изменённое условие"),
+            ExtractedTask(task_num="19", condition="Ложный фрагмент 19"),
+        ]
+
+        result = _reconcile_verified_page_tasks(
+            tasks,
+            source_by_task,
+            verified_by_task,
+            provider_name="Test",
+            page_num=2,
+        )
+
+        self.assertEqual([task.task_num for task in result], ["17"])
+        self.assertEqual(result[0].condition, verified_condition)
+
+    def test_verified_condition_ends_before_following_solution(self) -> None:
+        verified_condition = (
+            "Дано трёхзначное число $A$ и сумма его цифр $S$.\n\n"
+            "а) Может ли $A\\cdot S=1105$?\n"
+            "б) Может ли $A\\cdot S=1106$?"
+        )
+        markdown = (
+            "## Задание 19\n\n19 номер\n\n"
+            f"{OCR_VERIFIED_CONDITION_START}\n"
+            f"19. {verified_condition}\n"
+            f"{OCR_VERIFIED_CONDITION_END}\n\n"
+            "а) $A\\cdot S=1105=5\\cdot221$\n"
+            "б) Вычисления решения"
+        )
+
+        source_by_task = _task_condition_blocks(markdown)
+
+        self.assertEqual(source_by_task["19"], verified_condition)
+        self.assertNotIn("221", source_by_task["19"])
+        extraction_markdown = _task_extraction_markdown(markdown)
+        self.assertNotIn(OCR_VERIFIED_CONDITION_START, extraction_markdown)
+        self.assertNotIn(OCR_VERIFIED_CONDITION_END, extraction_markdown)
+
+    def test_missing_verified_task_is_restored_without_model_retry(self) -> None:
+        result = _reconcile_verified_page_tasks(
+            [],
+            {"19": "Проверенное условие"},
+            {"19": "Проверенное условие"},
+            provider_name="Test",
+            page_num=8,
+        )
+
+        self.assertEqual(
+            [(task.task_num, task.condition) for task in result],
+            [("19", "Проверенное условие")],
         )
 
 
@@ -1256,6 +1335,38 @@ class EmptyModelConditionTests(unittest.TestCase):
 
 
 class MissingTaskRecoveryTests(unittest.TestCase):
+    def test_isolated_late_task_does_not_imply_one_to_n_numbering(self) -> None:
+        client = _MissingTaskClient(
+            [ExtractedTask(task_num="1", condition="Ложная первая задача")]
+        )
+        page_path = Path("page_2.md")
+        extracted = [
+            (
+                ExtractedTask(task_num="17", condition="Условие задачи 17."),
+                page_path,
+            )
+        ]
+        source_blocks = {
+            "1": [
+                _SourceTaskBlock(
+                    condition="Служебный фрагмент с номером 1.",
+                    page_path=page_path,
+                    image_id=None,
+                    available_image_ids=(),
+                )
+            ]
+        }
+
+        result = _recover_missing_expected_tasks(
+            client,
+            extracted,
+            source_blocks,
+            expected_tasks=1,
+        )
+
+        self.assertEqual(result, extracted)
+        self.assertEqual(client.calls, [])
+
     def test_lettered_scheme_drops_numeric_solution_fragments_and_recovers_source(self) -> None:
         client = _MissingTaskClient([])
         page_path = Path("page_8.md")

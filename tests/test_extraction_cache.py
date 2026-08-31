@@ -12,6 +12,10 @@ from exam_parser.models import (
     MODEL_EMPTY_CONDITION_MARKER,
     ExtractedTask,
 )
+from exam_parser.ocr_noise import (
+    OCR_VERIFIED_CONDITION_END,
+    OCR_VERIFIED_CONDITION_START,
+)
 
 
 class PageExtractionCacheTests(unittest.TestCase):
@@ -130,6 +134,87 @@ class PageExtractionCacheTests(unittest.TestCase):
 
 
 class ExtractionCheckpointPipelineTests(unittest.TestCase):
+    def test_cached_page_is_reconciled_after_verified_ocr_review(self) -> None:
+        class _Client:
+            provider_name = "Test"
+            model = "test-model"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def extract_markdown(
+                self,
+                markdown: str,
+                image_ids: list[str],
+            ) -> list[ExtractedTask]:
+                self.calls += 1
+                return [
+                    ExtractedTask(
+                        task_num="17",
+                        condition="Найдите сумму кредита.",
+                    ),
+                    ExtractedTask(
+                        task_num="12",
+                        condition="$x^2=1$\n\nBce a, uode uocuouuuu4peneue",
+                    ),
+                    ExtractedTask(
+                        task_num="19",
+                        condition="Централическая источная умомента 吋",
+                    ),
+                ]
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            page = root / "markdown" / "page_2" / "page_2.md"
+            page.parent.mkdir(parents=True)
+            plain = (
+                "17. Найдите сумму кредита.\n\n"
+                "12. $x^2=1$\n\nBce a, uode uocuouuuu4peneue\n\n"
+                "19. Централическая источная умомента 吋"
+            )
+            page.write_text(plain, encoding="utf-8")
+            client = _Client()
+
+            with patch(
+                "exam_parser.markdown_pipeline.create_task_client",
+                return_value=client,
+            ):
+                process_markdown(
+                    root / "markdown",
+                    root / "result-before-review",
+                    include_solutions=False,
+                    answer_source="none",
+                    expected_tasks=3,
+                    extraction_cache_dir=root / "extraction-cache",
+                )
+
+                page.write_text(
+                    plain.replace(
+                        "17. Найдите сумму кредита.",
+                        (
+                            f"{OCR_VERIFIED_CONDITION_START}\n"
+                            "17. Найдите сумму кредита.\n"
+                            f"{OCR_VERIFIED_CONDITION_END}"
+                        ),
+                        1,
+                    ),
+                    encoding="utf-8",
+                )
+                records = process_markdown(
+                    root / "markdown",
+                    root / "result-after-review",
+                    include_solutions=False,
+                    answer_source="none",
+                    expected_tasks=1,
+                    extraction_cache_dir=root / "extraction-cache",
+                )
+
+            self.assertEqual(client.calls, 1)
+            self.assertEqual(
+                [(record.task_num, record.condition) for record in records],
+                [("17", "Найдите сумму кредита.")],
+            )
+
     def test_evaluation_example_page_skips_llm_and_is_cached(self) -> None:
         class _Client:
             provider_name = "Test"

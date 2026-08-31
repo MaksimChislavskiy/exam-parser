@@ -8,6 +8,10 @@ from pathlib import Path
 
 from PIL import Image
 
+from exam_parser.ocr_noise import (
+    OCR_VERIFIED_CONDITION_END,
+    OCR_VERIFIED_CONDITION_START,
+)
 from exam_parser.paddle import (
     _block_bbox,
     _looks_like_ocr_hallucination,
@@ -345,7 +349,11 @@ class PaddleOCRRecoveryTests(unittest.TestCase):
             self.assertEqual(cached_pipeline.calls, [])
             self.assertEqual(
                 markdown_path.read_text("utf-8"),
-                correction.strip(),
+                (
+                    f"{OCR_VERIFIED_CONDITION_START}\n"
+                    f"{correction.strip()}\n"
+                    f"{OCR_VERIFIED_CONDITION_END}"
+                ),
             )
 
         self._run_in_temp(check)

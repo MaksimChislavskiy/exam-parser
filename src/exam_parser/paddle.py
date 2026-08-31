@@ -17,6 +17,8 @@ from PIL import Image, ImageFilter, ImageOps
 from .data_store import DataStore, resolve_data_store
 from .ocr_noise import (
     OCR_UNREADABLE_REPEAT_MARKER,
+    OCR_VERIFIED_CONDITION_END,
+    OCR_VERIFIED_CONDITION_START,
     sanitize_pathological_ocr_repetitions,
 )
 
@@ -174,6 +176,7 @@ def _recover_pathological_ocr_blocks(
                     else None
                 )
                 recovered = None
+                verified_correction = False
                 if review_item_dir is not None:
                     correction_path = review_item_dir / "correction.md"
                     if correction_path.is_file():
@@ -185,6 +188,7 @@ def _recover_pathological_ocr_blocks(
                             correction = ""
                         recovered = _safe_recovered_block(original, correction)
                         if recovered is not None:
+                            verified_correction = True
                             print(
                                 f"PaddleOCR: страница {page_num}, загружена "
                                 "проверенная OCR-правка из Дата-центра",
@@ -221,7 +225,12 @@ def _recover_pathological_ocr_blocks(
                         )
                     continue
 
-                replaced = _replace_block_once(markdown, original, recovered)
+                replacement = (
+                    _wrap_verified_condition(recovered)
+                    if verified_correction
+                    else recovered
+                )
+                replaced = _replace_block_once(markdown, original, replacement)
                 if replaced is None:
                     continue
                 markdown = replaced
@@ -235,6 +244,14 @@ def _recover_pathological_ocr_blocks(
     if recovered_count:
         markdown_path.write_text(markdown, encoding="utf-8")
     return recovered_count
+
+
+def _wrap_verified_condition(condition: str) -> str:
+    return (
+        f"{OCR_VERIFIED_CONDITION_START}\n"
+        f"{condition.strip()}\n"
+        f"{OCR_VERIFIED_CONDITION_END}"
+    )
 
 
 def _ocr_review_item_dir(review_root: Path, crop: Image.Image) -> Path:
