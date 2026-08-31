@@ -550,6 +550,22 @@ def _replace_block_once(
     stripped = original.strip()
     if stripped and stripped in markdown:
         return markdown.replace(stripped, recovered, 1)
+
+    # ``save_to_markdown`` may add blank lines between layout-block lines even
+    # though every non-whitespace character remains unchanged.  Match that
+    # representation only when it is unique: this keeps the fallback exact
+    # while allowing Paddle's formatting step to differ from its JSON output.
+    if stripped:
+        parts = re.split(r"(\s+)", stripped)
+        pattern = "".join(
+            r"\s+" if part.isspace() else re.escape(part)
+            for part in parts
+            if part
+        )
+        matches = list(re.finditer(pattern, markdown))
+        if len(matches) == 1:
+            match = matches[0]
+            return markdown[: match.start()] + recovered + markdown[match.end() :]
     return None
 
 

@@ -13,6 +13,7 @@ from exam_parser.paddle import (
     _looks_like_ocr_hallucination,
     _ocr_review_item_dir,
     _recover_pathological_ocr_blocks,
+    _replace_block_once,
     _safe_recovered_block,
 )
 
@@ -362,4 +363,42 @@ class PaddleOCRRecoveryTests(unittest.TestCase):
         self.assertNotEqual(
             _ocr_review_item_dir(root, first),
             _ocr_review_item_dir(root, second),
+        )
+
+    def test_replaces_unique_block_with_paddle_blank_lines(self) -> None:
+        repeated = "3" * 150
+        original = (
+            "17. Кредит взят на 17 месяцев\n"
+            "1) Каждый месяц сумма возрастает\n"
+            f"На {repeated}"
+        )
+        markdown = (
+            "Предыдущий блок.\n\n"
+            "17. Кредит взят на 17 месяцев\n\n"
+            "1) Каждый месяц сумма возрастает\n\n"
+            f"На {repeated}\n\n"
+            "18. Следующее задание."
+        )
+        recovered = "17. Проверенное условие задачи."
+
+        replaced = _replace_block_once(markdown, original, recovered)
+
+        self.assertEqual(
+            replaced,
+            (
+                "Предыдущий блок.\n\n"
+                "17. Проверенное условие задачи.\n\n"
+                "18. Следующее задание."
+            ),
+        )
+
+    def test_rejects_ambiguous_whitespace_normalized_block(self) -> None:
+        original = "19. Дано число\nУсловие задачи"
+        markdown = (
+            "19. Дано число\n\nУсловие задачи\n\n"
+            "19. Дано число\n\nУсловие задачи"
+        )
+
+        self.assertIsNone(
+            _replace_block_once(markdown, original, "19. Проверенное условие.")
         )
