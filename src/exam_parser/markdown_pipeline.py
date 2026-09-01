@@ -151,6 +151,12 @@ TASK_REQUEST_PATTERN = re.compile(
 )
 CJK_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 CYRILLIC_WORD_PATTERN = re.compile(r"[А-Яа-яЁё]{2,}")
+LEGACY_TASK_RANGE_PATTERN = re.compile(
+    r"(?i)\bзадани(?:я|й|е|ям|ями|ях)\s+"
+    r"(?P<start_part>[ABCАВС])\s*(?P<start>[1-9]|1[0-9])\s*"
+    r"[-–—]\s*(?P<end_part>[ABCАВС])?\s*"
+    r"(?P<end>[1-9]|1[0-9])\b"
+)
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
 EMPTY_HTML_CONTAINER_PATTERN = re.compile(
     r"<(?P<tag>div|p)\b[^>]*>\s*</(?P=tag)>",
@@ -529,6 +535,7 @@ def process_markdown(
             client,
             extracted,
             source_blocks,
+            document_markdown="".join(all_markdown),
         )
         extracted = _recover_missing_expected_tasks(
             client,
@@ -2894,6 +2901,8 @@ def _reconcile_lettered_source_tasks(
     client: TaskClient,
     extracted: list[tuple[ExtractedTask, Path]],
     source_blocks: dict[str, list[_SourceTaskBlock]],
+    *,
+    document_markdown: str = "",
 ) -> list[tuple[ExtractedTask, Path]]:
     """Сверяет устойчивую схему A/B/C с явными OCR-заголовками.
 
@@ -2903,6 +2912,12 @@ def _reconcile_lettered_source_tasks(
     однозначно пропущенные буквенные блоки восстанавливаются без платного
     повтора модели.
     """
+
+    extracted = _restore_declared_lettered_sequence(
+        client,
+        extracted,
+        document_markdown,
+    )
 
     by_prefix: dict[str, set[int]] = {}
     for task_num in source_blocks:
@@ -2962,6 +2977,121 @@ def _reconcile_lettered_source_tasks(
         )
 
     return filtered
+
+
+def _restore_declared_lettered_sequence(
+    client: TaskClient,
+    extracted: list[tuple[ExtractedTask, Path]],
+    document_markdown: str,
+) -> list[tuple[ExtractedTask, Path]]:
+    """Возвращает локально перенумерованным задачам продолжение A/B/C.
+
+    В старых экзаменах номера внутри рамок иногда полностью исчезают из OCR.
+    Модель тогда нумерует подряд идущие безымянные условия локально как
+    ``1..k``. Восстановление разрешено только при объявленном в документе
+    диапазоне (например, ``B1-B11``), непрерывном известном префиксе,
+    единственном хвостовом пропуске ровно той же длины и следующем буквенном
+    разделе на той же либо более поздней странице.
+    """
+
+    numeric = [
+        item
+        for item in extracted
+        if item[0].task_num.isdigit()
+    ]
+    if len(numeric) < 2 or not document_markdown:
+        return extracted
+
+    numeric.sort(key=lambda item: int(item[0].task_num))
+    if [int(task.task_num) for task, _page_path in numeric] != list(
+        range(1, len(numeric) + 1)
+    ):
+        return extracted
+    numeric_pages = {_page_number(page_path) for _task, page_path in numeric}
+    if len(numeric_pages) != 1:
+        return extracted
+    numeric_page = next(iter(numeric_pages))
+
+    declared: dict[str, set[int]] = {}
+    for match in LEGACY_TASK_RANGE_PATTERN.finditer(document_markdown):
+        start_part = _canonical_task_num(match.group("start_part") + "1")[0]
+        end_part = _canonical_task_num(
+            (match.group("end_part") or match.group("start_part")) + "1"
+        )[0]
+        start = int(match.group("start"))
+        end = int(match.group("end"))
+        if start_part != end_part or end < start:
+            continue
+        declared.setdefault(start_part, set()).update(range(start, end + 1))
+
+    lettered: dict[str, dict[int, int]] = {}
+    for task, page_path in extracted:
+        match = re.fullmatch(r"([ABC])([1-9]|1[0-9])", task.task_num)
+        if match is None:
+            continue
+        lettered.setdefault(match.group(1), {})[int(match.group(2))] = (
+            _page_number(page_path)
+        )
+
+    prefix_order = {"A": 0, "B": 1, "C": 2}
+    candidates: list[tuple[str, list[int]]] = []
+    for prefix, expected_numbers in declared.items():
+        present = set(lettered.get(prefix, {}))
+        missing = sorted(expected_numbers - present)
+        if len(missing) != len(numeric) or not missing:
+            continue
+        if missing != list(range(missing[0], max(expected_numbers) + 1)):
+            continue
+        if any(
+            number not in present
+            for number in range(min(expected_numbers), missing[0])
+        ):
+            continue
+        known_pages = lettered.get(prefix, {})
+        if not known_pages or max(known_pages.values()) > numeric_page:
+            continue
+        has_following_section = any(
+            prefix_order.get(other_prefix, -1) > prefix_order.get(prefix, -1)
+            and any(page >= numeric_page for page in pages.values())
+            for other_prefix, pages in lettered.items()
+        )
+        if not has_following_section:
+            continue
+        candidates.append((prefix, missing))
+
+    if len(candidates) != 1:
+        return extracted
+
+    prefix, missing = candidates[0]
+    replacement_by_num = {
+        task.task_num: f"{prefix}{target}"
+        for (task, _page_path), target in zip(numeric, missing)
+    }
+    restored: list[tuple[ExtractedTask, Path]] = []
+    for task, page_path in extracted:
+        replacement = replacement_by_num.get(task.task_num)
+        if replacement is None:
+            restored.append((task, page_path))
+            continue
+        restored.append(
+            (
+                ExtractedTask(
+                    task_num=replacement,
+                    condition=task.condition,
+                    image_id=task.image_id,
+                ),
+                page_path,
+            )
+        )
+
+    print(
+        f"{client.provider_name}: локальные задачи 1-{len(numeric)} "
+        f"восстановлены как {prefix}{missing[0]}-{prefix}{missing[-1]} "
+        f"по объявленному диапазону {prefix}{min(declared[prefix])}-"
+        f"{prefix}{max(declared[prefix])}",
+        flush=True,
+    )
+    return restored
 
 
 def _select_source_task_block(

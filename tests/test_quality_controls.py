@@ -1335,6 +1335,108 @@ class EmptyModelConditionTests(unittest.TestCase):
 
 
 class MissingTaskRecoveryTests(unittest.TestCase):
+    def test_restores_locally_numbered_tail_of_declared_lettered_range(
+        self,
+    ) -> None:
+        client = _MissingTaskClient([])
+        page_2 = Path("page_2.md")
+        page_3 = Path("page_3.md")
+        extracted = [
+            *[
+                (
+                    ExtractedTask(
+                        task_num=f"B{number}",
+                        condition=f"Условие B{number}.",
+                    ),
+                    page_2,
+                )
+                for number in range(1, 6)
+            ],
+            *[
+                (
+                    ExtractedTask(
+                        task_num=str(number),
+                        condition=f"Безымянное условие {number}.",
+                    ),
+                    page_3,
+                )
+                for number in range(1, 7)
+            ],
+            (
+                ExtractedTask(task_num="C1", condition="Условие C1."),
+                page_3,
+            ),
+        ]
+        source_blocks = {
+            **{
+                f"B{number}": [
+                    _SourceTaskBlock(
+                        condition=f"Условие B{number}.",
+                        page_path=page_2,
+                        image_id=None,
+                        available_image_ids=(),
+                    )
+                ]
+                for number in range(1, 5)
+            },
+            "15": [
+                _SourceTaskBlock(
+                    condition="OCR ошибочно прочитал B5 как 15.",
+                    page_path=page_2,
+                    image_id=None,
+                    available_image_ids=(),
+                )
+            ],
+            "C1": [
+                _SourceTaskBlock(
+                    condition="Условие C1.",
+                    page_path=page_3,
+                    image_id=None,
+                    available_image_ids=(),
+                )
+            ],
+        }
+
+        result = _reconcile_lettered_source_tasks(
+            client,
+            extracted,
+            source_blocks,
+            document_markdown=(
+                "Ответом на задания B1-B11 должно быть некоторое число.\n"
+                "Для записи решений заданий C1-C5 используйте бланк №2."
+            ),
+        )
+
+        by_number = {task.task_num: task for task, _page_path in result}
+        self.assertTrue(
+            {f"B{number}" for number in range(1, 12)}.issubset(by_number)
+        )
+        self.assertNotIn("1", by_number)
+        self.assertEqual(by_number["B6"].condition, "Безымянное условие 1.")
+        self.assertEqual(by_number["B11"].condition, "Безымянное условие 6.")
+        self.assertEqual(client.calls, [])
+
+    def test_does_not_restore_single_numeric_task_from_declared_range(self) -> None:
+        client = _MissingTaskClient([])
+        page_path = Path("page_3.md")
+        extracted = [
+            (ExtractedTask(task_num="B5", condition="Условие B5."), page_path),
+            (ExtractedTask(task_num="1", condition="Числовая задача."), page_path),
+            (ExtractedTask(task_num="C1", condition="Условие C1."), page_path),
+        ]
+
+        result = _reconcile_lettered_source_tasks(
+            client,
+            extracted,
+            {},
+            document_markdown=(
+                "Ответом на задания B1-B6 должно быть некоторое число."
+            ),
+        )
+
+        self.assertEqual(result, extracted)
+        self.assertEqual(client.calls, [])
+
     def test_isolated_late_task_does_not_imply_one_to_n_numbering(self) -> None:
         client = _MissingTaskClient(
             [ExtractedTask(task_num="1", condition="Ложная первая задача")]
