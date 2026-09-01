@@ -11,22 +11,23 @@ from exam_parser.deepseek_client import (
 )
 from exam_parser.markdown_pipeline import (
     OCRQualityError,
-    _SourceTaskBlock,
     _clean_extracted_task,
     _condition_fidelity_issues,
     _deduplicate_tasks,
     _ensure_condition_fidelity,
     _extract_page_tasks,
     _generate_solutions_and_answers,
-    _normalize_condition_artifacts,
     _is_evaluation_example_page,
-    _recover_missing_expected_tasks,
+    _normalize_condition_artifacts,
+    _raise_unreadable_ocr_conditions,
+    _reconcile_duplicate_task_images,
     _reconcile_lettered_source_tasks,
     _reconcile_verified_page_tasks,
+    _recover_missing_expected_tasks,
     _remove_embedded_task_conditions,
     _restore_empty_model_condition,
     _restore_empty_model_task_number,
-    _raise_unreadable_ocr_conditions,
+    _SourceTaskBlock,
     _task_condition_blocks,
     _task_extraction_markdown,
     _verified_condition_blocks,
@@ -2399,6 +2400,207 @@ class ConditionArtifactRepairTests(unittest.TestCase):
         self.assertEqual(
             _normalize_condition_artifacts(condition, task_num="18"),
             condition,
+        )
+
+    def test_repairs_high_confidence_legacy_exam_ocr(self) -> None:
+        cases = {
+            "A1": ("Yпростите выражение $x^2$.", "Упростите выражение $x^2$."),
+            "A2": ("BЫЧИСЛИТЕ: $2+2$.", "Вычислите: $2+2$."),
+            "A9": (
+                r"Peunrte ypaennne cos x = $\frac{1}{2}$.",
+                r"Решите уравнение $\cos x=\frac{1}{2}$.",
+            ),
+            "B1": (
+                (
+                    "Haidntte zhaenie viyapxennia "
+                    "cos 2α + 4·sin 2α, esni sin 2α = 0,3."
+                ),
+                (
+                    "Найдите значение выражения "
+                    r"$\cos^2\alpha+4\cdot\sin^2\alpha$, если "
+                    r"$\sin^2\alpha=0,3$."
+                ),
+            ),
+            "B4": (
+                (
+                    "Peunte urpahenne 12-9-4=8.3-72.\n\n"
+                    "(Если уравнение имеет более одного корня, то в "
+                    "бланке ответо защищает сумму корней).\n\n15 ∂"
+                ),
+                (
+                    r"Решите уравнение $12^x-9\cdot4^x="
+                    r"8\cdot3^x-72$."
+                    "\n\n(Если уравнение имеет более одного корня, то в "
+                    "бланке ответов запишите сумму корней)."
+                ),
+            ),
+        }
+
+        for task_num, (source, expected) in cases.items():
+            with self.subTest(task_num=task_num):
+                self.assertEqual(
+                    _normalize_condition_artifacts(
+                        source,
+                        task_num=task_num,
+                    ),
+                    expected,
+                )
+
+    def test_repairs_legacy_visual_task_text_and_next_heading_debris(
+        self,
+    ) -> None:
+        condition = (
+            "Хозяйка установила на утоге режим «хлопоко». Утог остывает. "
+            "На рисунке представлен график зависимости температуры 7 "
+            "упога в промежутке времени 1 между размыканиями. Температура "
+            "утога достигает максимума.\n\nAS"
+        )
+
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="A7"),
+            (
+                "Хозяйка установила на утюге режим «хлопок». Утюг остывает. "
+                "На рисунке представлен график зависимости температуры "
+                "$T$ утюга в промежутке времени $t$ между размыканиями. "
+                "Температура утюга достигает максимума."
+            ),
+        )
+
+    def test_repairs_power_scope_only_with_matching_answer_boundaries(
+        self,
+    ) -> None:
+        source = (
+            r"Решите неравенство $7^{4}x>7^{3}x+21$. "
+            "1) (-∞, 21) 2) (3, +∞) 3) (-∞, 3) 4) (21, +∞)"
+        )
+        self.assertEqual(
+            _normalize_condition_artifacts(source, task_num="A10"),
+            (
+                r"Решите неравенство $7^{4x}>7^{3x+21}$. "
+                "1) (-∞; 21) 2) (3; +∞) 3) (-∞; 3) 4) (21; +∞)"
+            ),
+        )
+
+        ambiguous = r"Сравните $7^{4}x>7^{3}x+21$."
+        self.assertEqual(
+            _normalize_condition_artifacts(ambiguous, task_num="1"),
+            ambiguous,
+        )
+
+        decimal = "Вероятность равна (0,125)."
+        self.assertEqual(
+            _normalize_condition_artifacts(decimal, task_num="2"),
+            decimal,
+        )
+
+    def test_unwraps_only_fraction_with_empty_denominator(self) -> None:
+        source = (
+            r"Найдите $\frac{\sqrt{35}-\frac{1}{a-b}}{}$ и "
+            r"$\frac{1}{2}$."
+        )
+        self.assertEqual(
+            _normalize_condition_artifacts(source, task_num="B6"),
+            r"Найдите $\sqrt{35}-\frac{1}{a-b}$ и $\frac{1}{2}$.",
+        )
+
+    def test_repairs_missing_formula_choice_numbers(self) -> None:
+        source = (
+            "Укажите эту функцию.\n\n$y=2^x$\n\n$y=3^x$\n\n"
+            "$y=4^x$\n\n$y=5^x$"
+        )
+        self.assertEqual(
+            _normalize_condition_artifacts(source, task_num="A4"),
+            (
+                "Укажите эту функцию.\n\n1) $y=2^x$\n\n2) $y=3^x$\n\n"
+                "3) $y=4^x$\n\n4) $y=5^x$"
+            ),
+        )
+
+    def test_repairs_split_solid_notation_and_plain_line_equation(self) -> None:
+        source = (
+            r"Дан прямоугольный параллелепипед $ABCD_{1}B_{1}C_{1}D_{1}$, "
+            r"$ $$AA_1$=6$\sqrt{5} $. Касательные параллельны прямой y=26x. "
+            "Определите тангено угла."
+        )
+        self.assertEqual(
+            _normalize_condition_artifacts(source, task_num="C4"),
+            (
+                r"Дан прямоугольный параллелепипед $ABCDA_1B_1C_1D_1$, "
+                r"$AA_1=6\sqrt{5}$. Касательные параллельны прямой "
+                r"$y=26x$. Определите тангенс угла."
+            ),
+        )
+
+    def test_does_not_rewrite_complete_solid_name(self) -> None:
+        condition = (
+            r"Дан параллелепипед $ABCDA_1B_1C_1D_1$ и точка $M$."
+        )
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="14"),
+            condition,
+        )
+
+    def test_repairs_split_solid_name_with_arbitrary_vertices(self) -> None:
+        condition = r"Дан параллелепипед $WXYQ_2X_2Y_2Q_2$."
+        self.assertEqual(
+            _normalize_condition_artifacts(condition, task_num="14"),
+            r"Дан параллелепипед $WXYQW_2X_2Y_2Q_2$.",
+        )
+
+
+class DuplicateTaskImageTests(unittest.TestCase):
+    def test_keeps_shared_image_only_on_visual_task(self) -> None:
+        page = Path("page_2/page_2.md")
+        extracted = [
+            (
+                ExtractedTask(
+                    task_num="B4",
+                    condition="Решите уравнение $x=1$.",
+                    image_id="graph.png",
+                ),
+                page,
+            ),
+            (
+                ExtractedTask(
+                    task_num="B5",
+                    condition="На рисунке изображен график функции.",
+                    image_id="graph.png",
+                ),
+                page,
+            ),
+        ]
+
+        result = _reconcile_duplicate_task_images(extracted)
+
+        self.assertIsNone(result[0][0].image_id)
+        self.assertEqual(result[1][0].image_id, "graph.png")
+
+    def test_keeps_ambiguous_shared_image_assignments(self) -> None:
+        page = Path("page_2/page_2.md")
+        extracted = [
+            (
+                ExtractedTask(
+                    task_num="1",
+                    condition="На рисунке изображена схема.",
+                    image_id="diagram.png",
+                ),
+                page,
+            ),
+            (
+                ExtractedTask(
+                    task_num="2",
+                    condition="На рисунке изображен график.",
+                    image_id="diagram.png",
+                ),
+                page,
+            ),
+        ]
+
+        result = _reconcile_duplicate_task_images(extracted)
+
+        self.assertEqual(
+            [task.image_id for task, _page in result],
+            ["diagram.png", "diagram.png"],
         )
 
 

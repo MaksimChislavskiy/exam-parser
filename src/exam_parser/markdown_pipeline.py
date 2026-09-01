@@ -561,6 +561,7 @@ def process_markdown(
         )
         extracted = _deduplicate_tasks(extracted)
         extracted = _remove_embedded_task_conditions(extracted)
+        extracted = _reconcile_duplicate_task_images(extracted)
         _validate_task_count(extracted, expected_tasks)
         _remove_generated_task_images(images_dir)
 
@@ -1904,6 +1905,7 @@ def _normalize_condition_artifacts(value: str, *, task_num: str | None) -> str:
     cleaned = ANSWER_LINE_PATTERN.sub(" ", cleaned)
     cleaned = SERVICE_LINE_PATTERN.sub(" ", cleaned)
     cleaned = TRAILING_SERVICE_INSTRUCTION_PATTERN.sub("", cleaned)
+    cleaned = TRAILING_PART_HEADING_PATTERN.sub("", cleaned)
     cleaned = cleaned.translate(FULLWIDTH_PUNCTUATION)
     cleaned = re.sub(r",(?=[A-Za-zА-Яа-яЁё])", ", ", cleaned)
     cleaned = re.sub(r"(?im)(^|<p>)(\s*)a\)", r"\1\2а)", cleaned)
@@ -1916,6 +1918,7 @@ def _normalize_condition_artifacts(value: str, *, task_num: str | None) -> str:
             )
         )
         cleaned = repeated_prefix.sub("", cleaned, count=1)
+        cleaned = _remove_trailing_task_heading_debris(cleaned, task_num)
     cleaned = re.sub(r"(?<=\w)~(?=\s*\$)", " ", cleaned)
     previous = None
     while previous != cleaned:
@@ -1966,6 +1969,11 @@ def _repair_known_ocr_defects(value: str) -> str:
         flags=re.IGNORECASE,
     )
 
+    cleaned = _repair_legacy_exam_wording(cleaned)
+    cleaned = _repair_legacy_exam_formulas(cleaned)
+    cleaned = _unwrap_empty_denominator_fractions(cleaned)
+    cleaned = _repair_split_radical_assignment(cleaned)
+
     cleaned = _repair_coordinate_separators(cleaned)
     cleaned = _repair_latex_prose_dash(cleaned)
     cleaned = _repair_derivative_graph_question(cleaned)
@@ -1986,6 +1994,393 @@ def _repair_known_ocr_defects(value: str) -> str:
         flags=re.IGNORECASE,
     )
     return cleaned
+
+
+def _repair_legacy_exam_wording(value: str) -> str:
+    """Исправляет высокодоверительные OCR-опечатки в типовых командах.
+
+    Правила привязаны к общеупотребительным словам и устойчивым формулировкам
+    экзамена, а не к номеру документа или задачи. Неоднозначный свободный текст
+    они не переписывают.
+    """
+
+    replacements = (
+        (r"\bYпростите\b", "Упростите"),
+        (r"\bBЫЧИСЛИТЕ\b", "Вычислите"),
+        (r"\bPeunrte\s+ypaennne\b", "Решите уравнение"),
+        (r"\bPeunte\s+urpahenne\b", "Решите уравнение"),
+        (
+            r"\bHaidntte\s+zhaenie\s+viyapxennia\b",
+            "Найдите значение выражения",
+        ),
+        (r"\besni\b", "если"),
+        (r"\bхлопоко\b", "хлопок"),
+        (r"\bутоге\b", "утюге"),
+        (r"\bутог\b", "утюг"),
+        (r"\bутога\b", "утюга"),
+        (r"\bупога\b", "утюга"),
+        (r"\bкноска\b", "киоска"),
+        (r"\bonгрелена\b", "определена"),
+        (r"\bНаличие\s+число\b", "Найдите число"),
+        (r"\bпернодом\b", "периодом"),
+        (r"\bнанбольшее\b", "наибольшее"),
+        (r"\bединилы\b", "единицы"),
+        (r"\bабсшисы\b", "абсциссы"),
+        (r"\bтангено\b", "тангенс"),
+        (
+            r"\bпроизведение\s+значения\s+выражений\b",
+            "произведение значений выражений",
+        ),
+        (r"\bМагазин\s+выставили\s+на\s+продажу\b", "Магазин выставил на продажу"),
+        (
+            r"\bмагазин\s+снизила\s+назначенную\s+цену\b",
+            "магазин снизил назначенную цену",
+        ),
+        (
+            r"\bв\s+бланке\s+ответо\s+защищает\s+сумму\s+корней\b",
+            "в бланке ответов запишите сумму корней",
+        ),
+    )
+    cleaned = value
+    cleaned = re.sub(r"\bУтог\b", "Утюг", cleaned)
+    for pattern, replacement in replacements:
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+
+    cleaned = re.sub(r"\bт\.\s*д\.", "т. д.", cleaned, flags=re.IGNORECASE)
+
+    if re.search(
+        r"график\s+зависимости\s+температуры",
+        cleaned,
+        re.IGNORECASE,
+    ):
+        cleaned = re.sub(
+            r"\bтемпературы\s+(?:7|T)\s+утюга\b",
+            r"температуры $T$ утюга",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"\bпромежутке\s+времени\s+(?:1|l|t)\s+между\b",
+            r"промежутке времени $t$ между",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+
+    cleaned = re.sub(
+        r"(?im)^\s*∂?\s*y\s*=\s*f\s*\(\s*x\s*\)\s+"
+        r"определена\b",
+        r"Функция $y=f(x)$ определена",
+        cleaned,
+        count=1,
+    )
+    if re.search(
+        r"график\s+(?:ее|её)\s+производной",
+        cleaned,
+        re.IGNORECASE,
+    ):
+        cleaned = re.sub(
+            r"(?<![$A-Za-z])y\s*=\s*f\s*\(\s*x\s*\)(?![$A-Za-z])",
+            r"$y=f(x)$",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"(?<![$A-Za-z])\(\s*a\s*;\s*b\s*\)(?![$A-Za-z])",
+            r"$(a;b)$",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+    return cleaned
+
+
+def _repair_legacy_exam_formulas(value: str) -> str:
+    cleaned = _repair_trigonometric_square_ocr(value)
+    cleaned = re.sub(
+        r"(?i)(Решите\s+уравнение)\s+cos\s+([a-z])\s*=\s*"
+        r"\$\s*(?P<right>[^$]+?)\s*\$",
+        lambda match: (
+            f"{match.group(1)} $\\cos {match.group(2)}="
+            f"{match.group('right').strip()}$"
+        ),
+        cleaned,
+        count=1,
+    )
+    cleaned = re.sub(
+        r"(?i)(Решите\s+уравнение)\s+"
+        r"(?P<a>\d{1,3})\s*-\s*(?P<b>\d{1,3})\s*[-·]\s*"
+        r"(?P<c>\d{1,3})\s*=\s*(?P<d>\d{1,3})\s*[.·]\s*"
+        r"(?P<e>\d{1,3})\s*-\s*(?P<f>\d{1,3})(?=\s*[.?!])",
+        lambda match: (
+            f"{match.group(1)} $"
+            f"{match.group('a')}^x-{match.group('b')}\\cdot"
+            f"{match.group('c')}^x={match.group('d')}\\cdot"
+            f"{match.group('e')}^x-{match.group('f')}$"
+        ),
+        cleaned,
+        count=1,
+    )
+    cleaned = _repair_power_exponent_scope_from_choices(cleaned)
+    cleaned = _repair_missing_formula_choice_numbers(cleaned)
+    cleaned = _repair_plain_interval_separators(cleaned)
+    cleaned = _repair_plain_line_equation(cleaned)
+    return _repair_parallelepiped_name(cleaned)
+
+
+def _repair_trigonometric_square_ocr(value: str) -> str:
+    pattern = re.compile(
+        r"(?i)cos\s*2\s*(?P<symbol>[αβγ])\s*\+\s*"
+        r"(?P<factor>\d+(?:[.,]\d+)?)\s*[·*]\s*"
+        r"sin\s*2\s*(?P=symbol)\s*,\s*если\s*"
+        r"sin\s*2\s*(?P=symbol)\s*=\s*"
+        r"(?P<value>\d+(?:[.,]\d+)?)"
+    )
+    match = pattern.search(value)
+    if match is None:
+        return value
+    symbol = GREEK_MATH_SYMBOLS[match.group("symbol").lower()]
+    replacement = (
+        f"$\\cos^2\\{symbol}+{match.group('factor')}\\cdot"
+        f"\\sin^2\\{symbol}$, если "
+        f"$\\sin^2\\{symbol}={match.group('value')}$"
+    )
+    return value[: match.start()] + replacement + value[match.end() :]
+
+
+def _repair_power_exponent_scope_from_choices(value: str) -> str:
+    """Возвращает в показатели степени символы, потерянные OCR.
+
+    Изменение разрешено лишь тогда, когда оба возможных порога из формулы
+    повторены как границы вариантов ответа. Это отличает показательную задачу
+    от обычного произведения степени на переменную.
+    """
+
+    pattern = re.compile(
+        r"^\s*(?P<base>\d+)\s*\^\s*\{(?P<left>\d+)\}\s*"
+        r"(?P<variable>[a-z])\s*(?P<relation>[<>])\s*"
+        r"(?P=base)\s*\^\s*\{(?P<right>\d+)\}\s*"
+        r"(?P=variable)\s*\+\s*(?P<shift>\d+)\s*$",
+        re.IGNORECASE,
+    )
+
+    def replace_span(match: re.Match[str]) -> str:
+        formula = pattern.fullmatch(match.group("body"))
+        if formula is None:
+            return match.group(0)
+        endpoints = {formula.group("right"), formula.group("shift")}
+        for endpoint in endpoints:
+            if re.search(
+                rf"\(\s*(?:-∞\s*[,;]\s*)?{re.escape(endpoint)}\s*"
+                rf"(?:[,;]\s*\+∞)?\s*\)",
+                value,
+            ) is None:
+                return match.group(0)
+        return (
+            f"${formula.group('base')}^{{{formula.group('left')}"
+            f"{formula.group('variable')}}}{formula.group('relation')}"
+            f"{formula.group('base')}^{{{formula.group('right')}"
+            f"{formula.group('variable')}+{formula.group('shift')}}}$"
+        )
+
+    return LATEX_SPAN_PATTERN.sub(replace_span, value, count=1)
+
+
+def _unwrap_empty_denominator_fractions(value: str) -> str:
+    """Удаляет внешний ``\\frac{...}{}``, созданный пустым OCR-боксом."""
+
+    def matching_brace(text: str, opening: int) -> int | None:
+        depth = 0
+        for index in range(opening, len(text)):
+            if text[index] == "{":
+                depth += 1
+            elif text[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    return index
+        return None
+
+    cleaned = value
+    start = 0
+    while True:
+        fraction = cleaned.find(r"\frac{", start)
+        if fraction < 0:
+            return cleaned
+        numerator_open = fraction + len(r"\frac")
+        numerator_close = matching_brace(cleaned, numerator_open)
+        if numerator_close is None:
+            return cleaned
+        denominator_open = numerator_close + 1
+        while (
+            denominator_open < len(cleaned)
+            and cleaned[denominator_open].isspace()
+        ):
+            denominator_open += 1
+        if denominator_open >= len(cleaned) or cleaned[denominator_open] != "{":
+            start = numerator_close + 1
+            continue
+        denominator_close = matching_brace(cleaned, denominator_open)
+        if denominator_close is None:
+            return cleaned
+        if cleaned[denominator_open + 1 : denominator_close].strip():
+            start = denominator_close + 1
+            continue
+        numerator = cleaned[numerator_open + 1 : numerator_close]
+        cleaned = cleaned[:fraction] + numerator + cleaned[denominator_close + 1 :]
+        start = max(0, fraction - 1)
+
+
+def _repair_split_radical_assignment(value: str) -> str:
+    label = r"[A-ZА-ЯЁ]{1,4}(?:_?\{?\d+\}?)?"
+    return re.sub(
+        rf"\$\s*\$\$\s*(?P<label>{label})\s*\$\s*=\s*"
+        rf"(?P<factor>\d+(?:[.,]\d+)?)\s*\$\s*"
+        rf"(?P<radical>\\sqrt\s*\{{[^{{}}]+\}})\s*\$",
+        lambda match: (
+            f"${_normalize_geometry_label_body(match.group('label'))}="
+            f"{match.group('factor')}{match.group('radical')}$"
+        ),
+        value,
+    )
+
+
+def _repair_missing_formula_choice_numbers(value: str) -> str:
+    if re.search(r"(?m)^\s*[1-4]\)\s+", value) is not None:
+        return value
+    if re.search(
+        r"(?:перечисленн\w+\s+ниже\s+функц|Укажите\s+эту\s+функц)",
+        value,
+        re.IGNORECASE,
+    ) is None:
+        return value
+
+    paragraphs = re.split(r"(\n\s*\n)", value)
+    formula_indexes = [
+        index
+        for index, paragraph in enumerate(paragraphs)
+        if re.fullmatch(r"\s*\$[^$]+\$\s*", paragraph, re.DOTALL)
+    ]
+    if len(formula_indexes) != 4:
+        return value
+    for choice, index in enumerate(formula_indexes, start=1):
+        paragraphs[index] = f"{choice}) {paragraphs[index].strip()}"
+    return "".join(paragraphs)
+
+
+def _repair_plain_interval_separators(value: str) -> str:
+    if len(re.findall(r"[([]\s*[^)\]]*∞[^)\]]*[)\]]", value)) < 2:
+        return value
+    endpoint = r"(?:[+-]?∞|[+-]?\d+(?:[.,]\d+)?)"
+    pattern = re.compile(
+        rf"(?P<open>[([])\s*(?P<left>{endpoint})\s*,\s*"
+        rf"(?P<right>{endpoint})\s*(?P<close>[)\]])"
+    )
+
+    def replace_text(text: str) -> str:
+        return pattern.sub(
+            lambda match: (
+                f"{match.group('open')}{match.group('left')}; "
+                f"{match.group('right')}{match.group('close')}"
+            ),
+            text,
+        )
+
+    parts: list[str] = []
+    previous_end = 0
+    for latex_match in LATEX_SPAN_PATTERN.finditer(value):
+        parts.append(replace_text(value[previous_end : latex_match.start()]))
+        parts.append(latex_match.group(0))
+        previous_end = latex_match.end()
+    parts.append(replace_text(value[previous_end:]))
+    return "".join(parts)
+
+
+def _repair_plain_line_equation(value: str) -> str:
+    def replace_equation(match: re.Match[str]) -> str:
+        formula = re.sub(r"\s+", "", match.group("formula"))
+        return f"{match.group(1)}${formula}$"
+
+    return re.sub(
+        r"(?i)(\bпрям(?:ой|ая|ую|ого|ому|ым)\s+)"
+        r"(?P<formula>[xy]\s*=\s*[+-]?\d+(?:[.,]\d+)?[xy])"
+        r"(?![A-Za-z0-9_$])",
+        replace_equation,
+        value,
+    )
+
+
+def _repair_parallelepiped_name(value: str) -> str:
+    pattern = re.compile(
+        r"(?P<prefix>\bпараллелепипед\w*\s+)\$\s*"
+        r"(?P<name>[A-ZА-ЯЁ0-9_{}\s]+?)\s*\$",
+        re.IGNORECASE,
+    )
+    atom_pattern = re.compile(
+        r"(?P<letter>[A-ZА-ЯЁ])"
+        r"(?:_?(?:\{(?P<braced>\d+)\}|(?P<plain>\d+)))?",
+        re.IGNORECASE,
+    )
+
+    def replace_name(match: re.Match[str]) -> str:
+        compact = re.sub(r"\s+", "", match.group("name"))
+        atoms = list(atom_pattern.finditer(compact))
+        if not atoms or "".join(atom.group(0) for atom in atoms) != compact:
+            return match.group(0)
+        parsed = [
+            (
+                atom.group("letter").upper().translate(CONFUSABLE_LETTERS),
+                atom.group("braced") or atom.group("plain"),
+            )
+            for atom in atoms
+        ]
+        if len(parsed) != 7:
+            return match.group(0)
+        base = [letter for letter, index in parsed[:3] if index is None]
+        indexed = parsed[3:]
+        indices = [index for _letter, index in indexed]
+        indexed_letters = [letter for letter, _index in indexed]
+        if (
+            len(base) != 3
+            or any(index is None for index in indices)
+            or len(set(indices)) != 1
+            or indexed_letters[1:3] != base[1:]
+            or indexed_letters[0] != indexed_letters[3]
+            or indexed_letters[0] in base
+        ):
+            return match.group(0)
+        index = indices[0]
+        if index is None:
+            return match.group(0)
+        suffix = index if len(index) == 1 else "{" + index + "}"
+        base.append(indexed_letters[0])
+        name = "".join(base) + "".join(
+            f"{letter}_{suffix}" for letter in base
+        )
+        return f"{match.group('prefix')}${name}$"
+
+    return pattern.sub(replace_name, value)
+
+
+def _remove_trailing_task_heading_debris(value: str, task_num: str) -> str:
+    match = re.search(
+        r"(?:\r?\n)[ \t]*(?P<marker>"
+        r"[AАBВCС](?:1[0-9]|[1-9S])|[1-9]\d?)"
+        r"(?:[ \t]*[∂□▢◻◼▪■*]+)?[ \t]*$",
+        value,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return value
+    marker = _canonical_task_num(match.group("marker"))
+    current = re.fullmatch(r"([ABC])([1-9]|1[0-9])", task_num)
+    following = re.fullmatch(r"([ABC])([1-9]|1[0-9])", marker)
+    if following is not None and current is not None:
+        if (
+            following.group(1) != current.group(1)
+            or int(following.group(2)) != int(current.group(2)) + 1
+        ):
+            return value
+    elif not re.search(r"[∂□▢◻◼▪■*]", match.group(0)):
+        return value
+    return value[: match.start()].rstrip()
 
 
 _SUBSCRIPT_DIGITS = str.maketrans(
@@ -2754,6 +3149,61 @@ def _remove_embedded_task_conditions(
                 task_num=task.task_num,
                 condition=replacement,
                 image_id=task.image_id,
+            )
+        result.append((task, page_path))
+    return result
+
+
+def _reconcile_duplicate_task_images(
+    extracted: list[tuple[ExtractedTask, Path]],
+) -> list[tuple[ExtractedTask, Path]]:
+    """Оставляет общее изображение у единственной визуальной задачи.
+
+    При потере следующего OCR-заголовка один и тот же рисунок может оказаться
+    назначен и предыдущей задаче, и восстановленной следующей. Автоисправление
+    безопасно только если ровно одно из условий явно ссылается на рисунок или
+    график. В остальных случаях назначения сохраняются без догадки.
+    """
+
+    grouped: dict[tuple[Path, str], list[int]] = {}
+    for index, (task, page_path) in enumerate(extracted):
+        if task.image_id:
+            grouped.setdefault(
+                (page_path, Path(task.image_id).name),
+                [],
+            ).append(index)
+
+    remove_from: set[int] = set()
+    for indexes in grouped.values():
+        if len(indexes) < 2:
+            continue
+        visual = [
+            index
+            for index in indexes
+            if VISUAL_REFERENCE_PATTERN.search(extracted[index][0].condition)
+        ]
+        if len(visual) != 1:
+            continue
+        keep = visual[0]
+        for index in indexes:
+            if index != keep:
+                remove_from.add(index)
+
+    if not remove_from:
+        return extracted
+
+    result: list[tuple[ExtractedTask, Path]] = []
+    for index, (task, page_path) in enumerate(extracted):
+        if index in remove_from:
+            task = ExtractedTask(
+                task_num=task.task_num,
+                condition=task.condition,
+                image_id=None,
+            )
+            print(
+                f"Из задачи {task.task_num} удалено изображение соседней "
+                "визуальной задачи",
+                flush=True,
             )
         result.append((task, page_path))
     return result
