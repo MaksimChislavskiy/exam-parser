@@ -146,6 +146,14 @@ def _embedded_condition_anywhere_start(
 ) -> int | None:
     """Ищет начало полного условия внутри значения, не требуя совпадения хвоста."""
 
+    # Основной pipeline умеет безопасно сопоставлять длинный хвост после
+    # границы абзаца, даже если OCR исказил первое слово следующего условия.
+    # Runtime-слой не должен обходить это более точное правило своей старой
+    # проверкой, которая требовала полного совпадения первого токена.
+    suffix_cut = pipeline._embedded_condition_start(value, embedded)
+    if suffix_cut is not None:
+        return suffix_cut
+
     value_tokens = pipeline._comparison_tokens(value)
     embedded_tokens = pipeline._comparison_tokens(embedded)
     if len(embedded_tokens) < 8 or len(value_tokens) <= len(embedded_tokens):

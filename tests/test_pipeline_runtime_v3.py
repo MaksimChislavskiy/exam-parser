@@ -58,6 +58,36 @@ def test_removes_task_14_and_15_from_task_13_actual_shape() -> None:
     assert "Найдите все корни" in condition
 
 
+def test_removes_visual_task_with_corrupted_first_word_after_paragraph() -> None:
+    task_b5 = (
+        "Функция $y=f(x)$ определена на промежутке $(a;b)$. "
+        "На рисунке изображен график ее производной. Найдите число "
+        "точек максимума функции $y=f(x)$ на промежутке $(a;b)$."
+    )
+    task_b4 = (
+        "Решите уравнение $12^x-9\\cdot4^x=8\\cdot3^x-72$.\n\n"
+        "(Если уравнение имеет более одного корня, то в бланке ответов "
+        "запишите сумму корней).\n\n"
+        "15 ∂$y=f(x)$ определена на промежутке $(a;b)$. На рисунке "
+        "изображен график ее производной. Найдите число точек максимума "
+        "функции $y=f(x)$ на промежутке $(a;b)$."
+    )
+    page = Path("page_2/page_2.md")
+    extracted = [
+        (ExtractedTask(task_num="B4", condition=task_b4), page),
+        (ExtractedTask(task_num="B5", condition=task_b5), page),
+    ]
+
+    repaired = remove_embedded_task_conditions(extracted)
+
+    assert repaired[0][0].condition == (
+        "Решите уравнение $12^x-9\\cdot4^x=8\\cdot3^x-72$.\n\n"
+        "(Если уравнение имеет более одного корня, то в бланке ответов "
+        "запишите сумму корней)."
+    )
+    assert repaired[1][0].condition == task_b5
+
+
 def test_removes_dangling_geometry_labels_from_credit_task() -> None:
     condition = (
         "В июле 2026 года планируется взять кредит в банке. "
