@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -1966,6 +1967,39 @@ class EmbeddedTaskConditionTests(unittest.TestCase):
         )
         self.assertEqual(by_number["14"].condition, task_14)
 
+    def test_removes_condition_with_corrupted_heading_from_new_paragraph(
+        self,
+    ) -> None:
+        page_path = Path("page_2/page_2.md")
+        task_b5 = (
+            "Функция $y=f(x)$ определена на промежутке $(a;b)$. "
+            "На рисунке изображен график ее производной. Найдите число "
+            "точек максимума функции $y=f(x)$ на промежутке $(a;b)$."
+        )
+        task_b4 = (
+            "Решите уравнение $12^x-9\\cdot4^x=8\\cdot3^x-72$.\n\n"
+            "(Если уравнение имеет более одного корня, запишите сумму "
+            "корней).\n\n"
+            "15 ∂$y=f(x)$ определена на промежутке $(a;b)$. На рисунке "
+            "изображен график ее производной. Найдите число точек максимума "
+            "функции $y=f(x)$ на промежутке $(a;b)$."
+        )
+        extracted = [
+            (ExtractedTask(task_num="B4", condition=task_b4), page_path),
+            (ExtractedTask(task_num="B5", condition=task_b5), page_path),
+        ]
+
+        cleaned = _remove_embedded_task_conditions(extracted)
+        by_number = {task.task_num: task for task, _ in cleaned}
+
+        self.assertEqual(
+            by_number["B4"].condition,
+            "Решите уравнение $12^x-9\\cdot4^x=8\\cdot3^x-72$.\n\n"
+            "(Если уравнение имеет более одного корня, запишите сумму "
+            "корней).",
+        )
+        self.assertEqual(by_number["B5"].condition, task_b5)
+
 
 class ConditionArtifactRepairTests(unittest.TestCase):
     def test_removes_image_tags_and_their_layout_numbers(self) -> None:
@@ -2602,6 +2636,37 @@ class DuplicateTaskImageTests(unittest.TestCase):
             [task.image_id for task, _page in result],
             ["diagram.png", "diagram.png"],
         )
+
+    def test_matches_same_image_content_saved_under_different_names(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            page = Path(temp_dir) / "page_2" / "page_2.md"
+            image_dir = page.parent / "imgs"
+            image_dir.mkdir(parents=True)
+            (image_dir / "equation_crop.png").write_bytes(b"same image")
+            (image_dir / "graph_crop.png").write_bytes(b"same image")
+            extracted = [
+                (
+                    ExtractedTask(
+                        task_num="B4",
+                        condition="Решите уравнение $x=1$.",
+                        image_id="equation_crop.png",
+                    ),
+                    page,
+                ),
+                (
+                    ExtractedTask(
+                        task_num="B5",
+                        condition="На рисунке изображен график функции.",
+                        image_id="graph_crop.png",
+                    ),
+                    page,
+                ),
+            ]
+
+            result = _reconcile_duplicate_task_images(extracted)
+
+        self.assertIsNone(result[0][0].image_id)
+        self.assertEqual(result[1][0].image_id, "graph_crop.png")
 
 
 class DeepSeekQualityTests(unittest.TestCase):

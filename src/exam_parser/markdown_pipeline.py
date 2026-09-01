@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
 from collections import Counter
@@ -3169,7 +3170,7 @@ def _reconcile_duplicate_task_images(
     for index, (task, page_path) in enumerate(extracted):
         if task.image_id:
             grouped.setdefault(
-                (page_path, Path(task.image_id).name),
+                _task_image_group_key(page_path, task.image_id),
                 [],
             ).append(index)
 
@@ -3209,6 +3210,29 @@ def _reconcile_duplicate_task_images(
     return result
 
 
+def _task_image_group_key(page_path: Path, image_id: str) -> tuple[Path, str]:
+    """Возвращает идентичность изображения на странице.
+
+    OCR может сохранить один и тот же crop под разными именами, поэтому одного
+    имени файла недостаточно для поиска ошибочного назначения соседней задаче.
+    Если исходный файл доступен, группируем по его содержимому; при отсутствии
+    файла сохраняем прежнее безопасное сравнение по имени.
+    """
+
+    image_name = Path(image_id).name
+    source = page_path.parent / "imgs" / image_name
+    try:
+        if source.is_file():
+            digest = hashlib.sha256()
+            with source.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return page_path, f"sha256:{digest.hexdigest()}"
+    except OSError:
+        pass
+    return page_path, f"name:{image_name}"
+
+
 def _embedded_condition_start(value: str, embedded: str) -> int | None:
     """Находит длинное условие-дубликат при различиях только в разметке.
 
@@ -3227,34 +3251,66 @@ def _embedded_condition_start(value: str, embedded: str) -> int | None:
 
     embedded_values = [token.canonical for token in embedded_tokens]
     best: tuple[float, int] | None = None
+
+    # Повреждённый OCR-заголовок может исказить первые одно-два слова
+    # склеенной задачи, сохранив весь остальной абзац. Сначала проверяем только
+    # явные границы абзацев: это позволяет удалить такой длинный хвост, не
+    # вырезая похожую фразу из середины корректного условия.
+    for boundary in re.finditer(r"\n[ \t]*\n[ \t]*", value):
+        cut = boundary.end()
+        if cut < 40:
+            continue
+        suffix_tokens = _comparison_tokens(value[cut:])
+        score = _condition_token_similarity(suffix_tokens, embedded_tokens)
+        if score is None:
+            continue
+        if (
+            best is None
+            or score > best[0]
+            or (score == best[0] and cut > best[1])
+        ):
+            best = (score, cut)
+
     for index, token in enumerate(value_tokens):
         if token.canonical != embedded_values[0]:
             continue
         suffix = value_tokens[index:]
-        suffix_values = [item.canonical for item in suffix]
-        matcher = SequenceMatcher(
-            a=suffix_values,
-            b=embedded_values,
-            autojunk=False,
-        )
-        matching = sum(block.size for block in matcher.get_matching_blocks())
-        embedded_coverage = matching / len(embedded_values)
-        suffix_coverage = matching / len(suffix_values)
-        if embedded_coverage < 0.9 or suffix_coverage < 0.85:
-            continue
-        if abs(len(suffix_values) - len(embedded_values)) > max(
-            4,
-            round(len(embedded_values) * 0.12),
-        ):
+        score = _condition_token_similarity(suffix, embedded_tokens)
+        if score is None:
             continue
 
-        score = min(embedded_coverage, suffix_coverage)
         cut = token.start
         if cut < 40:
             continue
         if best is None or score > best[0] or (score == best[0] and cut > best[1]):
             best = (score, cut)
     return None if best is None else best[1]
+
+
+def _condition_token_similarity(
+    value_tokens: list[_ComparableToken],
+    embedded_tokens: list[_ComparableToken],
+) -> float | None:
+    if not value_tokens or not embedded_tokens:
+        return None
+    value_items = [token.canonical for token in value_tokens]
+    embedded_items = [token.canonical for token in embedded_tokens]
+    matcher = SequenceMatcher(
+        a=value_items,
+        b=embedded_items,
+        autojunk=False,
+    )
+    matching = sum(block.size for block in matcher.get_matching_blocks())
+    embedded_coverage = matching / len(embedded_items)
+    value_coverage = matching / len(value_items)
+    if embedded_coverage < 0.9 or value_coverage < 0.85:
+        return None
+    if abs(len(value_items) - len(embedded_items)) > max(
+        4,
+        round(len(embedded_items) * 0.12),
+    ):
+        return None
+    return min(embedded_coverage, value_coverage)
 
 
 def _comparison_tokens(value: str) -> list[_ComparableToken]:
