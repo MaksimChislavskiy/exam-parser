@@ -134,6 +134,54 @@ class PageExtractionCacheTests(unittest.TestCase):
 
 
 class ExtractionCheckpointPipelineTests(unittest.TestCase):
+    def test_cached_task_numbers_receive_current_normalization(self) -> None:
+        class _Client:
+            provider_name = "Test"
+            model = "test-model"
+
+            def extract_markdown(
+                self,
+                markdown: str,
+                image_ids: list[str],
+            ) -> list[ExtractedTask]:
+                raise AssertionError("cached page must not reach LLM")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            page = root / "markdown" / "page_2" / "page_2.md"
+            page.parent.mkdir(parents=True)
+            page.write_text("AS Решите неравенство.", encoding="utf-8")
+            cache = PageExtractionCache(
+                root / "extraction-cache",
+                provider="deepseek",
+                model="test-model",
+            )
+            cache.save(
+                2,
+                "AS Решите неравенство.",
+                [],
+                [ExtractedTask(task_num="AS", condition="Решите неравенство.")],
+                image_dir=page.parent / "imgs",
+            )
+
+            with patch(
+                "exam_parser.markdown_pipeline.create_task_client",
+                return_value=_Client(),
+            ):
+                records = process_markdown(
+                    root / "markdown",
+                    root / "result",
+                    include_solutions=False,
+                    answer_source="none",
+                    expected_tasks=1,
+                    extraction_cache_dir=root / "extraction-cache",
+                )
+
+            self.assertEqual(
+                [(record.task_num, record.condition) for record in records],
+                [("A8", "Решите неравенство.")],
+            )
+
     def test_cached_page_is_reconciled_after_verified_ocr_review(self) -> None:
         class _Client:
             provider_name = "Test"

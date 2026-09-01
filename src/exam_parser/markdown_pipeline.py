@@ -78,7 +78,7 @@ HTML_WIDTH_PERCENT_PATTERN = re.compile(
 TASK_HEADING_PATTERN = re.compile(
     r"(?m)^[ \t]*(?:#{1,6}[ \t]*)?"
     r"(?:№[ \t]*)?"
-    r"((?:[1-9]\d?)(?:\.\d+)?|[AАBВCС](?:1[0-9]|[1-9]))"
+    r"((?:[1-9]\d?)(?:\.\d+)?|[AАBВCС](?:1[0-9]|[1-9S]))"
     r"(?:[ \t]*\*|[ \t]*\$\s*\^\s*\{\s*\*\s*\}\s*\$)?"
     r"(?:\.[ \t]+|[ \t]+(?=[(A-Za-zА-Яа-яЁё0-9])|[ \t]*$)"
     r"(?:\([^\n)]{1,80}\)[ \t]*(?=\n|$))?"
@@ -156,6 +156,15 @@ LEGACY_TASK_RANGE_PATTERN = re.compile(
     r"(?P<start_part>[ABCАВС])\s*(?P<start>[1-9]|1[0-9])\s*"
     r"[-–—]\s*(?P<end_part>[ABCАВС])?\s*"
     r"(?P<end>[1-9]|1[0-9])\b"
+)
+LEGACY_SECTION_INSTRUCTION_PATTERN = re.compile(
+    r"(?im)^[^\n]{0,240}\bзадани(?:я|й|е|ям|ями|ях)\s+"
+    r"(?P<start_part>[ABCАВС])\s*(?P<start>[1-9]|1[0-9])"
+    r"(?:\s*(?:[-–—]|и)\s*(?P<end_part>[ABCАВС])?\s*"
+    r"(?P<end>[1-9]|1[0-9]))?[^\n]*$"
+)
+TRAILING_PART_HEADING_PATTERN = re.compile(
+    r"(?im)\n[ \t]*(?:#{1,6}[ \t]*)?ЧАСТЬ[ \t]*\d+[ \t]*$"
 )
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
 EMPTY_HTML_CONTAINER_PATTERN = re.compile(
@@ -386,6 +395,7 @@ def process_markdown(
         extracted: list[tuple[ExtractedTask, Path]] = []
         all_markdown: list[str] = []
         source_blocks: dict[str, list[_SourceTaskBlock]] = {}
+        source_pages: list[tuple[Path, str]] = []
 
         for page_path in pages:
             page_num = _page_number(page_path)
@@ -407,6 +417,7 @@ def process_markdown(
                     flush=True,
                 )
             all_markdown.append(f"\n\n<!-- PAGE {page_num} -->\n{markdown}")
+            source_pages.append((page_path, markdown))
             image_dir = page_path.parent / "imgs"
             image_ids = _image_ids(markdown, image_dir=image_dir)
             image_by_task = _associate_images_with_tasks(
@@ -443,6 +454,10 @@ def process_markdown(
                     "из extraction-checkpoint",
                     flush=True,
                 )
+                page_tasks = [
+                    _clean_extracted_task(task)
+                    for task in page_tasks
+                ]
                 page_tasks = _reconcile_verified_page_tasks(
                     page_tasks,
                     source_by_task,
@@ -536,6 +551,7 @@ def process_markdown(
             extracted,
             source_blocks,
             document_markdown="".join(all_markdown),
+            source_pages=source_pages,
         )
         extracted = _recover_missing_expected_tasks(
             client,
@@ -1792,12 +1808,19 @@ def _canonical_task_num(value: str) -> str:
     if len(compact) >= 2:
         part = compact[0].translate(CONFUSABLE_LETTERS)
         suffix = compact[1:].replace("З", "3")
+        if suffix == "S":
+            suffix = "8"
         if part in {"A", "B", "C"} and suffix.isdigit():
             return part + suffix
     return compact
 
 
 def _clean_source_condition(value: str, *, task_num: str | None = None) -> str:
+    section_start = _following_section_instruction_start(value, task_num)
+    if section_start is not None:
+        value = value[:section_start]
+        value = TRAILING_PART_HEADING_PATTERN.sub("", value)
+
     has_answer_field = ANSWER_LINE_PATTERN.search(value) is not None
     solution_heading = SOLUTION_HEADING_PATTERN.search(value)
     if solution_heading is not None:
@@ -1819,6 +1842,31 @@ def _clean_source_condition(value: str, *, task_num: str | None = None) -> str:
     if has_answer_field:
         cleaned = _restore_terminal_punctuation(cleaned)
     return cleaned
+
+
+def _following_section_instruction_start(
+    value: str,
+    task_num: str | None,
+) -> int | None:
+    if task_num is None:
+        return None
+    task_match = re.fullmatch(r"([ABC])([1-9]|1[0-9])", task_num)
+    if task_match is None:
+        return None
+
+    task_prefix = task_match.group(1)
+    task_number = int(task_match.group(2))
+    prefix_order = {"A": 0, "B": 1, "C": 2}
+    for match in LEGACY_SECTION_INSTRUCTION_PATTERN.finditer(value):
+        start_prefix = _canonical_task_num(
+            match.group("start_part") + match.group("start")
+        )[0]
+        start_number = int(match.group("start"))
+        if prefix_order[start_prefix] > prefix_order[task_prefix] or (
+            start_prefix == task_prefix and start_number > task_number
+        ):
+            return match.start()
+    return None
 
 
 def _restore_terminal_punctuation(value: str) -> str:
@@ -1847,6 +1895,10 @@ def _restore_terminal_punctuation(value: str) -> str:
 
 def _normalize_condition_artifacts(value: str, *, task_num: str | None) -> str:
     cleaned, _ = sanitize_pathological_ocr_repetitions(value)
+    section_start = _following_section_instruction_start(cleaned, task_num)
+    if section_start is not None:
+        cleaned = cleaned[:section_start]
+        cleaned = TRAILING_PART_HEADING_PATTERN.sub("", cleaned)
     cleaned = IMAGE_PATTERN.sub(" ", cleaned)
     cleaned = EMPTY_HTML_CONTAINER_PATTERN.sub(" ", cleaned)
     cleaned = ANSWER_LINE_PATTERN.sub(" ", cleaned)
@@ -2903,6 +2955,7 @@ def _reconcile_lettered_source_tasks(
     source_blocks: dict[str, list[_SourceTaskBlock]],
     *,
     document_markdown: str = "",
+    source_pages: Iterable[tuple[Path, str]] = (),
 ) -> list[tuple[ExtractedTask, Path]]:
     """Сверяет устойчивую схему A/B/C с явными OCR-заголовками.
 
@@ -2916,6 +2969,13 @@ def _reconcile_lettered_source_tasks(
     extracted = _restore_declared_lettered_sequence(
         client,
         extracted,
+        document_markdown,
+    )
+    extracted = _restore_declared_unlabeled_tail(
+        client,
+        extracted,
+        source_blocks,
+        list(source_pages),
         document_markdown,
     )
 
@@ -3012,17 +3072,7 @@ def _restore_declared_lettered_sequence(
         return extracted
     numeric_page = next(iter(numeric_pages))
 
-    declared: dict[str, set[int]] = {}
-    for match in LEGACY_TASK_RANGE_PATTERN.finditer(document_markdown):
-        start_part = _canonical_task_num(match.group("start_part") + "1")[0]
-        end_part = _canonical_task_num(
-            (match.group("end_part") or match.group("start_part")) + "1"
-        )[0]
-        start = int(match.group("start"))
-        end = int(match.group("end"))
-        if start_part != end_part or end < start:
-            continue
-        declared.setdefault(start_part, set()).update(range(start, end + 1))
+    declared = _declared_lettered_ranges(document_markdown)
 
     lettered: dict[str, dict[int, int]] = {}
     for task, page_path in extracted:
@@ -3092,6 +3142,249 @@ def _restore_declared_lettered_sequence(
         flush=True,
     )
     return restored
+
+
+def _restore_declared_unlabeled_tail(
+    client: TaskClient,
+    extracted: list[tuple[ExtractedTask, Path]],
+    source_blocks: dict[str, list[_SourceTaskBlock]],
+    source_pages: list[tuple[Path, str]],
+    document_markdown: str,
+) -> list[tuple[ExtractedTask, Path]]:
+    """Восстанавливает потерянный хвост объявленного диапазона A/B/C.
+
+    Иногда OCR теряет все рамки с номерами на границе страниц. Правило
+    использует только непрерывный уже найденный префикс, следующий буквенный
+    раздел и полные безномерные условия между ними. Если число таких блоков не
+    равно числу пропущенных номеров, восстановление запрещено.
+    """
+
+    if not source_pages or not document_markdown:
+        return extracted
+
+    declared = _declared_lettered_ranges(document_markdown)
+    prefix_order = {"A": 0, "B": 1, "C": 2}
+    lettered: dict[str, dict[int, int]] = {}
+    for task, page_path in extracted:
+        match = re.fullmatch(r"([ABC])([1-9]|1[0-9])", task.task_num)
+        if match is None:
+            continue
+        lettered.setdefault(match.group(1), {})[int(match.group(2))] = (
+            _page_number(page_path)
+        )
+
+    pages = sorted(source_pages, key=lambda item: _page_number(item[0]))
+    page_by_number = {
+        _page_number(page_path): (page_path, markdown)
+        for page_path, markdown in pages
+    }
+    candidates: list[
+        tuple[str, list[int], list[_SourceTaskBlock], set[tuple[str, Path]]]
+    ] = []
+
+    for prefix, expected_numbers in declared.items():
+        present_pages = lettered.get(prefix, {})
+        present = set(present_pages)
+        missing = sorted(expected_numbers - present)
+        if len(missing) < 2:
+            continue
+        if missing != list(range(missing[0], max(expected_numbers) + 1)):
+            continue
+        if any(
+            number not in present
+            for number in range(min(expected_numbers), missing[0])
+        ):
+            continue
+
+        previous_number = missing[0] - 1
+        last_page_num = present_pages.get(previous_number)
+        if last_page_num is None or last_page_num not in page_by_number:
+            continue
+        following_pages = [
+            page
+            for other_prefix, numbered_pages in lettered.items()
+            if prefix_order.get(other_prefix, -1) > prefix_order[prefix]
+            for page in numbered_pages.values()
+            if page >= last_page_num
+        ]
+        if not following_pages:
+            continue
+        following_page_num = min(following_pages)
+
+        last_page_path, last_page_markdown = page_by_number[last_page_num]
+        headings = _source_task_headings(last_page_markdown)
+        previous_heading = next(
+            (
+                heading
+                for heading in reversed(headings)
+                if heading.task_num == f"{prefix}{previous_number}"
+            ),
+            None,
+        )
+        if previous_heading is None:
+            continue
+
+        blocks: list[_SourceTaskBlock] = []
+        consumed: set[tuple[str, Path]] = set()
+        anomalous_numeric = [
+            item
+            for item in extracted
+            if item[1] == last_page_path
+            and item[0].task_num.isdigit()
+            and int(item[0].task_num) > max(expected_numbers)
+        ]
+        if len(anomalous_numeric) > 1:
+            continue
+        if anomalous_numeric:
+            task, page_path = anomalous_numeric[0]
+            if not _looks_like_complete_task(task.condition):
+                continue
+            exact_source = [
+                block
+                for block in source_blocks.get(task.task_num, [])
+                if block.page_path == page_path
+            ]
+            if len(exact_source) > 1:
+                continue
+            blocks.append(
+                exact_source[0]
+                if exact_source
+                else _SourceTaskBlock(
+                    condition=task.condition,
+                    page_path=page_path,
+                    image_id=task.image_id,
+                    available_image_ids=(),
+                )
+            )
+            consumed.add((task.task_num, page_path))
+
+        unlabeled_count = 0
+        later_pages = [
+            item
+            for item in pages
+            if last_page_num < _page_number(item[0]) <= following_page_num
+        ]
+        if not later_pages or _page_number(later_pages[-1][0]) != following_page_num:
+            continue
+        for page_path, markdown in later_pages:
+            end = len(markdown)
+            for heading in _source_task_headings(markdown):
+                match = re.fullmatch(
+                    r"([ABC])([1-9]|1[0-9])",
+                    heading.task_num,
+                )
+                if (
+                    match is not None
+                    and prefix_order[match.group(1)] > prefix_order[prefix]
+                ):
+                    end = heading.start
+                    break
+            fragment = markdown[:end]
+            instruction_start = _following_section_instruction_start(
+                fragment,
+                f"{prefix}{previous_number}",
+            )
+            if instruction_start is not None:
+                fragment = fragment[:instruction_start]
+
+            for raw_condition in _split_unlabeled_task_blocks(fragment):
+                condition = _clean_source_condition(raw_condition)
+                if not condition:
+                    continue
+                block_image_ids = _image_ids(
+                    raw_condition,
+                    image_dir=page_path.parent / "imgs",
+                )
+                page_image_ids = _image_ids(
+                    markdown,
+                    image_dir=page_path.parent / "imgs",
+                )
+                blocks.append(
+                    _SourceTaskBlock(
+                        condition=condition,
+                        page_path=page_path,
+                        image_id=(
+                            block_image_ids[0]
+                            if len(block_image_ids) == 1
+                            else None
+                        ),
+                        available_image_ids=tuple(page_image_ids),
+                    )
+                )
+                unlabeled_count += 1
+
+        if len(blocks) != len(missing) or unlabeled_count < 2:
+            continue
+        candidates.append((prefix, missing, blocks, consumed))
+
+    if len(candidates) != 1:
+        return extracted
+
+    prefix, missing, blocks, consumed = candidates[0]
+    restored = [
+        item
+        for item in extracted
+        if (item[0].task_num, item[1]) not in consumed
+    ]
+    for number, block in zip(missing, blocks):
+        restored.append(
+            (
+                ExtractedTask(
+                    task_num=f"{prefix}{number}",
+                    condition=block.condition,
+                    image_id=block.image_id,
+                ),
+                block.page_path,
+            )
+        )
+
+    print(
+        f"{client.provider_name}: задачи {prefix}{missing[0]}-"
+        f"{prefix}{missing[-1]} восстановлены из объявленного диапазона "
+        "и безномерных OCR-блоков без повтора модели",
+        flush=True,
+    )
+    return restored
+
+
+def _split_unlabeled_task_blocks(value: str) -> list[str]:
+    chunks = [
+        chunk.strip()
+        for chunk in re.split(r"(?:\r?\n)[ \t]*(?:\r?\n)+", value)
+        if chunk.strip()
+    ]
+    starts = [
+        index
+        for index, chunk in enumerate(chunks)
+        if _unlabeled_task_start(chunk)
+    ]
+    result: list[str] = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else len(chunks)
+        result.append("\n\n".join(chunks[start:end]))
+    return result
+
+
+def _unlabeled_task_start(value: str) -> bool:
+    visible = LATEX_SPAN_PATTERN.sub(" ", value)
+    visible = HTML_TAG_PATTERN.sub(" ", visible)
+    visible = re.sub(r"\s+", " ", visible).strip()
+    return TASK_REQUEST_PATTERN.search(visible) is not None
+
+
+def _declared_lettered_ranges(document_markdown: str) -> dict[str, set[int]]:
+    declared: dict[str, set[int]] = {}
+    for match in LEGACY_TASK_RANGE_PATTERN.finditer(document_markdown):
+        start_part = _canonical_task_num(match.group("start_part") + "1")[0]
+        end_part = _canonical_task_num(
+            (match.group("end_part") or match.group("start_part")) + "1"
+        )[0]
+        start = int(match.group("start"))
+        end = int(match.group("end"))
+        if start_part != end_part or end < start:
+            continue
+        declared.setdefault(start_part, set()).update(range(start, end + 1))
+    return declared
 
 
 def _select_source_task_block(
@@ -3166,10 +3459,17 @@ def _page_number(path: Path) -> int:
 
 
 def _task_sort_key(task_num: str) -> tuple[int, ...]:
+    lettered = re.fullmatch(r"([ABC])([1-9]|1[0-9])", task_num)
+    if lettered is not None:
+        return (
+            10**9,
+            {"A": 0, "B": 1, "C": 2}[lettered.group(1)],
+            int(lettered.group(2)),
+        )
     try:
         return tuple(int(part) for part in task_num.split("."))
     except ValueError:
-        return (10**9,)
+        return (10**9 + 1,)
 
 
 def _image_ids(

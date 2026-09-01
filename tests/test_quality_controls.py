@@ -14,6 +14,7 @@ from exam_parser.markdown_pipeline import (
     _SourceTaskBlock,
     _clean_extracted_task,
     _condition_fidelity_issues,
+    _deduplicate_tasks,
     _ensure_condition_fidelity,
     _extract_page_tasks,
     _generate_solutions_and_answers,
@@ -1047,6 +1048,44 @@ class ConditionFidelityTests(unittest.TestCase):
         self.assertEqual(blocks["A1"], "Найдите значение выражения.")
         self.assertEqual(blocks["A2"], "Найдите число.")
 
+    def test_restores_legacy_a8_heading_misread_as_as(self) -> None:
+        blocks = _task_condition_blocks(
+            "A7 Найдите значение функции.\n\n"
+            "AS Решите неравенство.\n\n"
+            "A9 Решите уравнение."
+        )
+
+        self.assertEqual(blocks["A7"], "Найдите значение функции.")
+        self.assertEqual(blocks["A8"], "Решите неравенство.")
+        self.assertEqual(blocks["A9"], "Решите уравнение.")
+
+    def test_stops_condition_at_next_lettered_section_instruction(self) -> None:
+        blocks = _task_condition_blocks(
+            "A10 Решите неравенство.\n\n"
+            "Ответом на задания B1-B11 должно быть некоторое число.\n\n"
+            "B1 Найдите значение выражения.\n\n"
+            "C2 Решите систему.\n\n"
+            "## ЧАСТЬ 3\n\n"
+            "Для записи ответов на задания C3-C5 используйте бланк №2.\n\n"
+            "C3 Докажите утверждение."
+        )
+
+        self.assertEqual(blocks["A10"], "Решите неравенство.")
+        self.assertEqual(blocks["C2"], "Решите систему.")
+
+    def test_cached_condition_stops_at_next_lettered_section(self) -> None:
+        task = _clean_extracted_task(
+            ExtractedTask(
+                task_num="A10",
+                condition=(
+                    "Решите неравенство.\n\n"
+                    "Ответом на задания B1-B11 должно быть некоторое число."
+                ),
+            )
+        )
+
+        self.assertEqual(task.condition, "Решите неравенство.")
+
     def test_removes_explicit_solution_from_source_condition(self) -> None:
         blocks = _task_condition_blocks(
             "B1\nНайдите значение выражения.\n\n"
@@ -1335,6 +1374,109 @@ class EmptyModelConditionTests(unittest.TestCase):
 
 
 class MissingTaskRecoveryTests(unittest.TestCase):
+    def test_sorts_lettered_task_numbers_by_section_and_number(self) -> None:
+        page = Path("page_1.md")
+        extracted = [
+            (ExtractedTask(task_num="C1", condition="C1."), page),
+            (ExtractedTask(task_num="B11", condition="B11."), page),
+            (ExtractedTask(task_num="A10", condition="A10."), page),
+            (ExtractedTask(task_num="B5", condition="B5."), page),
+            (ExtractedTask(task_num="A2", condition="A2."), page),
+        ]
+
+        result = _deduplicate_tasks(extracted)
+
+        self.assertEqual(
+            [task.task_num for task, _page_path in result],
+            ["A2", "A10", "B5", "B11", "C1"],
+        )
+
+    def test_restores_declared_lettered_tail_from_unlabeled_page_blocks(
+        self,
+    ) -> None:
+        client = _MissingTaskClient([])
+        page_2 = Path("page_2.md")
+        page_3 = Path("page_3.md")
+        page_2_markdown = (
+            "B4. Решите уравнение.\n\n"
+            "15. Функция задана графиком. Найдите число точек максимума."
+        )
+        page_3_markdown = (
+            "Найдите значение выражения\n\n$$ x+1 $$\n\n"
+            "Функция периодическая. Найдите её значение.\n\n"
+            "Найдите все значения x.\n\n"
+            "(Если их несколько, запишите наибольшее.)\n\n"
+            "Магазин продал товар. Сколько процентов составила прибыль?\n\n"
+            "Угол конуса равен 60°. Найдите другой угол.\n\n"
+            "В параллелограмме проведена биссектриса. Найдите периметр.\n\n"
+            "Для записи ответов на задания C1 и C2 используйте бланк №2.\n\n"
+            "C1. Решите уравнение."
+        )
+        extracted = [
+            *[
+                (
+                    ExtractedTask(
+                        task_num=f"B{number}",
+                        condition=f"Условие B{number}.",
+                    ),
+                    page_2,
+                )
+                for number in range(1, 5)
+            ],
+            (
+                ExtractedTask(
+                    task_num="15",
+                    condition=(
+                        "Функция задана графиком. "
+                        "Найдите число точек максимума."
+                    ),
+                ),
+                page_2,
+            ),
+            (
+                ExtractedTask(task_num="C1", condition="Решите уравнение."),
+                page_3,
+            ),
+        ]
+        source_blocks = {
+            "15": [
+                _SourceTaskBlock(
+                    condition=(
+                        "Функция задана графиком. "
+                        "Найдите число точек максимума."
+                    ),
+                    page_path=page_2,
+                    image_id="b5.png",
+                    available_image_ids=("b5.png",),
+                )
+            ]
+        }
+
+        result = _reconcile_lettered_source_tasks(
+            client,
+            extracted,
+            source_blocks,
+            document_markdown=(
+                "Ответом на задания B1-B11 должно быть некоторое число.\n"
+                "Для записи решений заданий C1-C5 используйте бланк №2."
+            ),
+            source_pages=[
+                (page_2, page_2_markdown),
+                (page_3, page_3_markdown),
+            ],
+        )
+
+        by_number = {task.task_num: task for task, _page_path in result}
+        self.assertTrue(
+            {f"B{number}" for number in range(1, 12)}.issubset(by_number)
+        )
+        self.assertNotIn("15", by_number)
+        self.assertEqual(by_number["B5"].image_id, "b5.png")
+        self.assertIn("$ x+1 $", by_number["B6"].condition)
+        self.assertIn("Если их несколько", by_number["B8"].condition)
+        self.assertNotIn("Для записи ответов", by_number["B11"].condition)
+        self.assertEqual(client.calls, [])
+
     def test_restores_locally_numbered_tail_of_declared_lettered_range(
         self,
     ) -> None:
@@ -1432,6 +1574,52 @@ class MissingTaskRecoveryTests(unittest.TestCase):
             document_markdown=(
                 "Ответом на задания B1-B6 должно быть некоторое число."
             ),
+        )
+
+        self.assertEqual(result, extracted)
+        self.assertEqual(client.calls, [])
+
+    def test_does_not_restore_when_unlabeled_block_count_is_ambiguous(self) -> None:
+        client = _MissingTaskClient([])
+        page_2 = Path("page_2.md")
+        page_3 = Path("page_3.md")
+        extracted = [
+            *[
+                (
+                    ExtractedTask(task_num=f"B{i}", condition=f"B{i}."),
+                    page_2,
+                )
+                for i in range(1, 5)
+            ],
+            (
+                ExtractedTask(task_num="15", condition="Найдите значение."),
+                page_2,
+            ),
+            (
+                ExtractedTask(task_num="C1", condition="Решите уравнение."),
+                page_3,
+            ),
+        ]
+        source_blocks = {
+            "15": [
+                _SourceTaskBlock(
+                    condition="Найдите значение.",
+                    page_path=page_2,
+                    image_id=None,
+                    available_image_ids=(),
+                )
+            ]
+        }
+
+        result = _reconcile_lettered_source_tasks(
+            client,
+            extracted,
+            source_blocks,
+            document_markdown="Ответом на задания B1-B11 является число.",
+            source_pages=[
+                (page_2, "B4. Условие.\n\n15. Найдите значение."),
+                (page_3, "Найдите только одно значение.\n\nC1. Решите."),
+            ],
         )
 
         self.assertEqual(result, extracted)
