@@ -560,6 +560,12 @@ def process_markdown(
             source_blocks,
             expected_tasks,
         )
+        # Восстановленные из OCR-блоков задачи ещё не проходили тот же
+        # детерминированный cleanup, что результаты постраничного извлечения.
+        # Он должен выполняться до сравнения соседних условий и изображений:
+        # иначе нормализованная склейка не совпадёт с сырым восстановленным
+        # условием, а обе задачи могут ошибочно выглядеть визуальными.
+        extracted = _clean_extracted_tasks(extracted)
         extracted = _deduplicate_tasks(extracted)
         extracted = _remove_embedded_task_conditions(extracted)
         extracted = _reconcile_duplicate_task_images(extracted)
@@ -3091,6 +3097,15 @@ def _clean_extracted_task(task: ExtractedTask) -> ExtractedTask:
         condition=condition,
         image_id=task.image_id,
     )
+
+
+def _clean_extracted_tasks(
+    extracted: list[tuple[ExtractedTask, Path]],
+) -> list[tuple[ExtractedTask, Path]]:
+    return [
+        (_clean_extracted_task(task), page_path)
+        for task, page_path in extracted
+    ]
 
 
 def _deduplicate_tasks(

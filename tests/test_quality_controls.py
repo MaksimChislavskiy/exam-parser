@@ -13,6 +13,7 @@ from exam_parser.deepseek_client import (
 from exam_parser.markdown_pipeline import (
     OCRQualityError,
     _clean_extracted_task,
+    _clean_extracted_tasks,
     _condition_fidelity_issues,
     _deduplicate_tasks,
     _ensure_condition_fidelity,
@@ -2667,6 +2668,64 @@ class DuplicateTaskImageTests(unittest.TestCase):
 
         self.assertIsNone(result[0][0].image_id)
         self.assertEqual(result[1][0].image_id, "graph_crop.png")
+
+    def test_recovered_task_is_cleaned_before_text_and_image_deduplication(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as temp_dir:
+            page = Path(temp_dir) / "page_2" / "page_2.md"
+            image_dir = page.parent / "imgs"
+            image_dir.mkdir(parents=True)
+            (image_dir / "previous.png").write_bytes(b"shared crop")
+            (image_dir / "recovered.png").write_bytes(b"shared crop")
+            task_b5 = (
+                "Функция $y=f(x)$ определена на промежутке $(a;b)$. "
+                "На рисунке изображен график ее производной. Найдите число "
+                "точек максимума функции $y=f(x)$ на промежутке $(a;b)$."
+            )
+            extracted = [
+                (
+                    ExtractedTask(
+                        task_num="B4",
+                        condition=(
+                            "Решите уравнение $x=1$. Если корней несколько, "
+                            "запишите их сумму.\n\n"
+                            "15 ∂$y=f(x)$ определена на промежутке $(a;b)$. "
+                            "На рисунке изображен график ее производной. "
+                            "Найдите число точек максимума функции $y=f(x)$ "
+                            "на промежутке $(a;b)$."
+                        ),
+                        image_id="previous.png",
+                    ),
+                    page,
+                ),
+                (
+                    ExtractedTask(
+                        task_num="B5",
+                        condition=(
+                            "∂ y=f(x) определена на промежутке (a;b). "
+                            "На рисунке изображен график ее производной. "
+                            "Найдите число точек максимума функции y=f(x) "
+                            "на промежутке (a;b)."
+                        ),
+                        image_id="recovered.png",
+                    ),
+                    page,
+                ),
+            ]
+
+            cleaned = _clean_extracted_tasks(extracted)
+            cleaned = _remove_embedded_task_conditions(cleaned)
+            cleaned = _reconcile_duplicate_task_images(cleaned)
+
+        by_number = {task.task_num: task for task, _ in cleaned}
+        self.assertEqual(
+            by_number["B4"].condition,
+            "Решите уравнение $x=1$. Если корней несколько, запишите их сумму.",
+        )
+        self.assertIsNone(by_number["B4"].image_id)
+        self.assertEqual(by_number["B5"].condition, task_b5)
+        self.assertEqual(by_number["B5"].image_id, "recovered.png")
 
 
 class DeepSeekQualityTests(unittest.TestCase):
