@@ -240,3 +240,72 @@ def test_rebuild_quarantines_unverified_send_for_old_error(
         row = next(csv.DictReader(stream))
     assert row["destination"] == "review"
     assert "quarantined_send" in row["reason"]
+
+
+def test_rebuild_matches_colliding_variant_names_by_workbook_content(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "result" / "old_run"
+    export_dir = tmp_path / "export" / "old_run"
+    archive_dir = export_dir / "archive"
+    send_dir = export_dir / "send"
+    quarantine_dir = archive_dir / "quarantined_send"
+    run_dir.mkdir(parents=True)
+    send_dir.mkdir(parents=True)
+    quarantine_dir.mkdir(parents=True)
+
+    rows = []
+    for filename, workbook_content in (
+        ("first.pdf", b"first-workbook"),
+        ("second.pdf", b"second-workbook"),
+    ):
+        rows.append(
+            {
+                "filename": filename,
+                "status": "ok",
+                "attempts": "1",
+                "variants": "1",
+                "tasks": "19",
+                "error": "",
+                "export_error": "",
+            }
+        )
+        pdf_path = tmp_path / filename
+        pdf_path.write_bytes(b"pdf")
+        result_dir = tmp_path / "documents" / Path(filename).stem / "variant_1"
+        result_dir.mkdir(parents=True)
+        (result_dir / "tasks.xlsx").write_bytes(workbook_content)
+        create_private_archive(
+            pdf_path,
+            result_dir.parent,
+            archive_dir,
+            work_root=tmp_path / "work",
+        )
+
+    with (run_dir / "batch_report.csv").open(
+        "w",
+        encoding="utf-8-sig",
+        newline="",
+    ) as stream:
+        writer = csv.DictWriter(stream, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+
+    with ZipFile(quarantine_dir / "variant_1_2.zip", "w") as archive:
+        archive.writestr("tasks.xlsx", b"first-workbook")
+    with ZipFile(send_dir / "variant_1.zip", "w") as archive:
+        archive.writestr("tasks.xlsx", b"second-workbook")
+
+    assert rebuild_review_export(run_dir, export_dir) == 0
+
+    with (export_dir / "manifest.csv").open(
+        encoding="utf-8-sig",
+        newline="",
+    ) as stream:
+        manifest = list(csv.DictReader(stream))
+    assert [row["destination"] for row in manifest] == ["send", "send"]
+    assert sorted(path.name for path in send_dir.glob("*.zip")) == [
+        "variant_1.zip",
+        "variant_1_2.zip",
+    ]
+    assert list((export_dir / "review").glob("*.zip")) == []

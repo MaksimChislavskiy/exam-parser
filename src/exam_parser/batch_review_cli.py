@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import re
 import shutil
+from collections import defaultdict
 from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
@@ -90,6 +92,12 @@ def rebuild_review_export(
     review_dir.mkdir(parents=True, exist_ok=True)
     states: list[DocumentState] = []
     errors = 0
+    private_archives, workbook_counts, owned_archives = _index_export_archives(
+        rows,
+        archive_dir=archive_dir,
+        send_dir=send_dir,
+    )
+    claimed_archives: set[Path] = set()
 
     for row in rows:
         filename = row.get("filename", "").strip()
@@ -110,18 +118,47 @@ def rebuild_review_export(
         )
 
         document_stem = Path(filename).stem
-        private_archive = _find_private_archive(archive_dir, document_stem)
-        candidate_send_archives, send_archives = _find_send_archives(
-            send_dir,
-            private_archive,
-            document_stem,
-        )
+        private_archive = private_archives.get(filename)
+        candidate_send_archives = list(owned_archives.get(filename, ()))
         repaired_send_is_verified = (
             document_stem.casefold() in verified_stems
         )
         send_is_trusted = status == "ok" or repaired_send_is_verified
 
+        candidate_send_archives.extend(
+            path
+            for path in _source_named_archives(
+                document_stem,
+                send_dir,
+                archive_dir / "quarantined_send",
+            )
+            if path not in candidate_send_archives
+        )
+
+        expected_archives = workbook_counts.get(filename, 0)
+        if repaired_send_is_verified and expected_archives == 0:
+            expected_archives = 1
+        valid_candidates = [
+            path for path in candidate_send_archives if _valid_send_archive(path)
+        ]
+        send_archives = (
+            valid_candidates
+            if expected_archives > 0
+            and len(valid_candidates) >= expected_archives
+            else []
+        )
+
         if send_is_trusted and send_archives:
+            restored_archives: list[Path] = []
+            for archive in send_archives:
+                if archive.parent == send_dir:
+                    restored_archives.append(archive)
+                else:
+                    restored_archives.append(
+                        _move_recoverably(archive, send_dir)
+                    )
+            send_archives = restored_archives
+            claimed_archives.update(path.resolve() for path in send_archives)
             state.export_destination = "send"
             state.export_archives = tuple(path.name for path in send_archives)
             if repaired_send_is_verified and status != "ok":
@@ -157,10 +194,12 @@ def rebuild_review_export(
                 )
 
             for archive in candidate_send_archives:
-                _move_recoverably(
-                    archive,
-                    archive_dir / "quarantined_send",
-                )
+                if archive.parent == send_dir:
+                    archive = _move_recoverably(
+                        archive,
+                        archive_dir / "quarantined_send",
+                    )
+                claimed_archives.add(archive.resolve())
             try:
                 if private_archive is None:
                     raise FileNotFoundError(
@@ -191,6 +230,23 @@ def rebuild_review_export(
                 errors += 1
 
         states.append(state)
+
+    unmatched_send = [
+        path
+        for path in send_dir.glob("*.zip")
+        if path.resolve() not in claimed_archives
+    ]
+    for archive in unmatched_send:
+        _move_recoverably(
+            archive,
+            archive_dir / "quarantined_send" / "unmatched",
+        )
+    if unmatched_send:
+        errors += len(unmatched_send)
+        print(
+            "Не удалось однозначно связать с PDF архивы send: "
+            + ", ".join(path.name for path in unmatched_send)
+        )
 
     _write_export_manifest(export_dir / "manifest.csv", states)
     sent = sum(state.export_destination == "send" for state in states)
@@ -241,33 +297,93 @@ def _find_private_archive(archive_dir: Path, document_stem: str) -> Path | None:
     return candidates[0] if candidates else None
 
 
-def _find_send_archives(
+def _index_export_archives(
+    rows: list[dict[str, str]],
+    *,
+    archive_dir: Path,
     send_dir: Path,
-    private_archive: Path | None,
-    document_stem: str,
-) -> tuple[list[Path], list[Path]]:
-    expected_names = {f"{_safe_filename(document_stem)}.zip"}
-    if private_archive is not None:
-        with ZipFile(private_archive) as archive:
-            workbooks = [
-                name.replace("\\", "/")
+) -> tuple[dict[str, Path], dict[str, int], dict[str, list[Path]]]:
+    private_archives: dict[str, Path] = {}
+    workbook_counts: dict[str, int] = {}
+    hash_owners: dict[str, set[str]] = defaultdict(set)
+
+    for row in rows:
+        filename = row.get("filename", "").strip()
+        if not filename:
+            continue
+        private_archive = _find_private_archive(
+            archive_dir,
+            Path(filename).stem,
+        )
+        if private_archive is None:
+            continue
+        private_archives[filename] = private_archive
+        workbook_hashes = _private_workbook_hashes(private_archive)
+        workbook_counts[filename] = len(workbook_hashes)
+        for workbook_hash in workbook_hashes:
+            hash_owners[workbook_hash].add(filename)
+
+    owned_archives: dict[str, list[Path]] = defaultdict(list)
+    quarantine_dir = archive_dir / "quarantined_send"
+    candidates = list(send_dir.glob("*.zip"))
+    if quarantine_dir.is_dir():
+        candidates.extend(quarantine_dir.glob("*.zip"))
+
+    for path in candidates:
+        workbook_hash = _send_workbook_hash(path)
+        if workbook_hash is None:
+            continue
+        owners = hash_owners.get(workbook_hash, set())
+        if len(owners) == 1:
+            owner = next(iter(owners))
+            owned_archives[owner].append(path)
+
+    for paths in owned_archives.values():
+        paths.sort(key=lambda path: (path.parent != send_dir, path.name))
+    return private_archives, workbook_counts, owned_archives
+
+
+def _private_workbook_hashes(private_archive: Path) -> list[str]:
+    with ZipFile(private_archive) as archive:
+        members = [
+            name
+            for name in archive.namelist()
+            if name.replace("\\", "/").startswith("result/")
+            and name.replace("\\", "/").endswith("tasks.xlsx")
+        ]
+        return [_sha256(archive.read(member)) for member in members]
+
+
+def _send_workbook_hash(path: Path) -> str | None:
+    try:
+        with ZipFile(path) as archive:
+            members = [
+                name
                 for name in archive.namelist()
-                if name.replace("\\", "/").startswith("result/")
-                and name.replace("\\", "/").endswith("/tasks.xlsx")
+                if name.replace("\\", "/") == "tasks.xlsx"
             ]
-        if any(name == "result/tasks.xlsx" for name in workbooks):
-            expected_names = {f"{_safe_filename(document_stem)}.zip"}
-        elif workbooks:
-            expected_names = {
-                f"{_safe_filename(Path(name).parent.name)}.zip"
-                for name in workbooks
-            }
-    candidates = sorted(
-        path for name in expected_names if (path := send_dir / name).is_file()
-    )
-    valid = [path for path in candidates if _valid_send_archive(path)]
-    complete = len(valid) == len(expected_names)
-    return candidates, valid if complete else []
+            if len(members) != 1:
+                return None
+            return _sha256(archive.read(members[0]))
+    except (BadZipFile, KeyError, OSError, ValueError):
+        return None
+
+
+def _source_named_archives(
+    document_stem: str,
+    send_dir: Path,
+    quarantine_dir: Path,
+) -> list[Path]:
+    name = f"{_safe_filename(document_stem)}.zip"
+    return [
+        path
+        for path in (send_dir / name, quarantine_dir / name)
+        if path.is_file()
+    ]
+
+
+def _sha256(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
 
 
 def _valid_send_archive(path: Path) -> bool:
