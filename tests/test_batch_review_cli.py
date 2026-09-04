@@ -102,3 +102,65 @@ def test_extract_failure_reasons_uses_latest_attempt() -> None:
     )
 
     assert reasons == {"sample.pdf": "OCRQualityError: окончательная ошибка"}
+
+
+def test_rebuild_prefers_manually_repaired_send_over_old_error_status(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "result" / "old_run"
+    export_dir = tmp_path / "export" / "old_run"
+    archive_dir = export_dir / "archive"
+    send_dir = export_dir / "send"
+    run_dir.mkdir(parents=True)
+    send_dir.mkdir(parents=True)
+    with (run_dir / "batch_report.csv").open(
+        "w",
+        encoding="utf-8-sig",
+        newline="",
+    ) as stream:
+        writer = csv.DictWriter(
+            stream,
+            fieldnames=(
+                "filename",
+                "status",
+                "attempts",
+                "variants",
+                "tasks",
+                "error",
+                "export_error",
+            ),
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "filename": "fixed.pdf",
+                "status": "error",
+                "attempts": "1",
+                "variants": "0",
+                "tasks": "0",
+                "error": "parse exit code 1",
+                "export_error": "",
+            }
+        )
+
+    pdf_path = tmp_path / "fixed.pdf"
+    pdf_path.write_bytes(b"pdf")
+    create_private_archive(
+        pdf_path,
+        tmp_path / "empty-result",
+        archive_dir,
+        work_root=tmp_path / "work",
+    )
+    with ZipFile(send_dir / "fixed.zip", "w") as archive:
+        archive.writestr("tasks.xlsx", b"repaired")
+
+    assert rebuild_review_export(run_dir, export_dir) == 0
+
+    with (export_dir / "manifest.csv").open(
+        encoding="utf-8-sig",
+        newline="",
+    ) as stream:
+        row = next(csv.DictReader(stream))
+    assert row["destination"] == "send"
+    assert row["archives"] == "fixed.zip"
+    assert list((export_dir / "review").glob("*.zip")) == []

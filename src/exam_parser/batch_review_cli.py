@@ -4,7 +4,7 @@ import argparse
 import csv
 import re
 from pathlib import Path
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 from .batch_exports import _safe_filename, create_review_archive_from_private
 from .batch_parse_cli import DocumentState, _write_export_manifest
@@ -95,7 +95,7 @@ def rebuild_review_export(run_dir: Path, export_dir: Path) -> int:
             Path(filename).stem,
         )
 
-        if status == "ok" and send_archives:
+        if send_archives:
             state.export_destination = "send"
             state.export_archives = tuple(path.name for path in send_archives)
         else:
@@ -202,9 +202,23 @@ def _find_send_archives(
                 for name in workbooks
             }
     paths = sorted(
-        path for name in expected_names if (path := send_dir / name).is_file()
+        path
+        for name in expected_names
+        if _valid_send_archive(path := send_dir / name)
     )
     return paths if len(paths) == len(expected_names) else []
+
+
+def _valid_send_archive(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        with ZipFile(path) as archive:
+            return "tasks.xlsx" in {
+                name.replace("\\", "/") for name in archive.namelist()
+            }
+    except (BadZipFile, OSError, ValueError):
+        return False
 
 
 def _as_int(value: str | None) -> int:
