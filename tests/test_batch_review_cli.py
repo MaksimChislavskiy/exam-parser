@@ -92,6 +92,11 @@ def test_rebuild_review_export_accounts_for_every_legacy_pdf(
             "README.txt"
         ).decode("utf-8")
 
+    assert rebuild_review_export(run_dir, export_dir) == 0
+    assert [path.name for path in (export_dir / "review").glob("*.zip")] == [
+        "bad.zip"
+    ]
+
 
 def test_extract_failure_reasons_uses_latest_attempt() -> None:
     reasons = extract_failure_reasons(
@@ -154,7 +159,11 @@ def test_rebuild_prefers_manually_repaired_send_over_old_error_status(
     with ZipFile(send_dir / "fixed.zip", "w") as archive:
         archive.writestr("tasks.xlsx", b"repaired")
 
-    assert rebuild_review_export(run_dir, export_dir) == 0
+    assert rebuild_review_export(
+        run_dir,
+        export_dir,
+        verified_send=["fixed.pdf"],
+    ) == 0
 
     with (export_dir / "manifest.csv").open(
         encoding="utf-8-sig",
@@ -163,4 +172,71 @@ def test_rebuild_prefers_manually_repaired_send_over_old_error_status(
         row = next(csv.DictReader(stream))
     assert row["destination"] == "send"
     assert row["archives"] == "fixed.zip"
+    assert "--verified-send" in row["reason"]
     assert list((export_dir / "review").glob("*.zip")) == []
+
+
+def test_rebuild_quarantines_unverified_send_for_old_error(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "result" / "old_run"
+    export_dir = tmp_path / "export" / "old_run"
+    archive_dir = export_dir / "archive"
+    send_dir = export_dir / "send"
+    run_dir.mkdir(parents=True)
+    send_dir.mkdir(parents=True)
+    with (run_dir / "batch_report.csv").open(
+        "w",
+        encoding="utf-8-sig",
+        newline="",
+    ) as stream:
+        writer = csv.DictWriter(
+            stream,
+            fieldnames=(
+                "filename",
+                "status",
+                "attempts",
+                "variants",
+                "tasks",
+                "error",
+                "export_error",
+            ),
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "filename": "suspect.pdf",
+                "status": "error",
+                "attempts": "1",
+                "variants": "0",
+                "tasks": "0",
+                "error": "parse exit code 1",
+                "export_error": "",
+            }
+        )
+
+    pdf_path = tmp_path / "suspect.pdf"
+    pdf_path.write_bytes(b"pdf")
+    create_private_archive(
+        pdf_path,
+        tmp_path / "empty-result",
+        archive_dir,
+        work_root=tmp_path / "work",
+    )
+    with ZipFile(send_dir / "suspect.zip", "w") as archive:
+        archive.writestr("tasks.xlsx", b"unverified")
+
+    assert rebuild_review_export(run_dir, export_dir) == 0
+
+    assert not (send_dir / "suspect.zip").exists()
+    assert (
+        archive_dir / "quarantined_send" / "suspect.zip"
+    ).is_file()
+    assert (export_dir / "review" / "suspect.zip").is_file()
+    with (export_dir / "manifest.csv").open(
+        encoding="utf-8-sig",
+        newline="",
+    ) as stream:
+        row = next(csv.DictReader(stream))
+    assert row["destination"] == "review"
+    assert "quarantined_send" in row["reason"]

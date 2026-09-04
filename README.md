@@ -401,6 +401,20 @@ uv run python -m exam_parser.batch_review_cli `
   output/export/<run_name>
 ```
 
+Существующий ZIP документа со старым статусом `error` по умолчанию считается
+сомнительным и переносится из `send` в `archive/quarantined_send`. Если документ
+был отдельно исправлен и проверен после batch, его нужно подтвердить явно:
+
+```powershell
+uv run python -m exam_parser.batch_review_cli `
+  output/result/<run_name> `
+  output/export/<run_name> `
+  --verified-send 00801
+```
+
+Параметр `--verified-send` можно повторить для нескольких PDF. Утилиту можно
+запускать повторно: уже созданные review-архивы не дублируются.
+
 ## Тесты
 
 ```powershell

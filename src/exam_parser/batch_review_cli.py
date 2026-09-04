@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+import shutil
 from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
@@ -35,15 +36,36 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Папка экспорта с send и archive.",
     )
+    parser.add_argument(
+        "--verified-send",
+        action="append",
+        default=[],
+        metavar="PDF",
+        help=(
+            "Оставить в send исправленный после старого batch документ со "
+            "статусом error. Можно указать несколько раз."
+        ),
+    )
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    raise SystemExit(rebuild_review_export(args.run_dir, args.export_dir))
+    raise SystemExit(
+        rebuild_review_export(
+            args.run_dir,
+            args.export_dir,
+            verified_send=args.verified_send,
+        )
+    )
 
 
-def rebuild_review_export(run_dir: Path, export_dir: Path) -> int:
+def rebuild_review_export(
+    run_dir: Path,
+    export_dir: Path,
+    *,
+    verified_send: list[str] | tuple[str, ...] = (),
+) -> int:
     run_dir = run_dir.expanduser().resolve()
     export_dir = export_dir.expanduser().resolve()
     report_path = run_dir / "batch_report.csv"
@@ -51,6 +73,11 @@ def rebuild_review_export(run_dir: Path, export_dir: Path) -> int:
     send_dir = export_dir / "send"
     archive_dir = export_dir / "archive"
     review_dir = export_dir / "review"
+    verified_stems = {
+        Path(value.strip()).stem.casefold()
+        for value in verified_send
+        if value.strip()
+    }
 
     with report_path.open("r", encoding="utf-8-sig", newline="") as stream:
         rows = list(csv.DictReader(stream))
@@ -60,12 +87,6 @@ def rebuild_review_export(run_dir: Path, export_dir: Path) -> int:
         else {}
     )
 
-    if review_dir.exists() and any(review_dir.iterdir()):
-        print(
-            f"Каталог review уже содержит файлы: {review_dir}. "
-            "Существующие материалы не изменены."
-        )
-        return 2
     review_dir.mkdir(parents=True, exist_ok=True)
     states: list[DocumentState] = []
     errors = 0
@@ -88,16 +109,32 @@ def rebuild_review_export(run_dir: Path, export_dir: Path) -> int:
             export_error=row.get("export_error", "").strip(),
         )
 
-        private_archive = _find_private_archive(archive_dir, Path(filename).stem)
-        send_archives = _find_send_archives(
+        document_stem = Path(filename).stem
+        private_archive = _find_private_archive(archive_dir, document_stem)
+        candidate_send_archives, send_archives = _find_send_archives(
             send_dir,
             private_archive,
-            Path(filename).stem,
+            document_stem,
         )
+        repaired_send_is_verified = (
+            document_stem.casefold() in verified_stems
+        )
+        send_is_trusted = status == "ok" or repaired_send_is_verified
 
-        if send_archives:
+        if send_is_trusted and send_archives:
             state.export_destination = "send"
             state.export_archives = tuple(path.name for path in send_archives)
+            if repaired_send_is_verified and status != "ok":
+                state.export_reason = (
+                    "Результат исправлен после исходного batch и явно "
+                    "подтверждён параметром --verified-send."
+                )
+            existing_review = _find_review_archive(review_dir, document_stem)
+            if existing_review is not None:
+                _move_recoverably(
+                    existing_review,
+                    archive_dir / "obsolete_review",
+                )
         else:
             if status == "ok":
                 reason = (
@@ -105,20 +142,44 @@ def rebuild_review_export(run_dir: Path, export_dir: Path) -> int:
                     "в каталоге send не найден. Требуется ручная проверка экспорта."
                 )
                 state.error = reason
+            elif repaired_send_is_verified:
+                reason = (
+                    reason
+                    + "\n\nДокумент указан в --verified-send, но полный "
+                    "корректный ZIP с tasks.xlsx в send не найден."
+                )
+            elif candidate_send_archives:
+                reason = (
+                    reason
+                    + "\n\nВ send был найден результат документа со старым "
+                    "статусом error. Он не считается проверенным без явного "
+                    "--verified-send и перенесён в archive/quarantined_send."
+                )
+
+            for archive in candidate_send_archives:
+                _move_recoverably(
+                    archive,
+                    archive_dir / "quarantined_send",
+                )
             try:
                 if private_archive is None:
                     raise FileNotFoundError(
                         f"Не найден приватный архив для {filename}"
                     )
-                review_archive = create_review_archive_from_private(
-                    private_archive,
+                review_archive = _find_review_archive(
                     review_dir,
-                    batch_status=status,
-                    reason=reason,
-                    attempts=state.attempts,
-                    variants=state.variants,
-                    tasks=state.tasks,
+                    document_stem,
                 )
+                if review_archive is None:
+                    review_archive = create_review_archive_from_private(
+                        private_archive,
+                        review_dir,
+                        batch_status=status,
+                        reason=reason,
+                        attempts=state.attempts,
+                        variants=state.variants,
+                        tasks=state.tasks,
+                    )
                 state.export_destination = "review"
                 state.export_archives = (review_archive.name,)
                 state.export_reason = reason
@@ -184,7 +245,7 @@ def _find_send_archives(
     send_dir: Path,
     private_archive: Path | None,
     document_stem: str,
-) -> list[Path]:
+) -> tuple[list[Path], list[Path]]:
     expected_names = {f"{_safe_filename(document_stem)}.zip"}
     if private_archive is not None:
         with ZipFile(private_archive) as archive:
@@ -201,12 +262,12 @@ def _find_send_archives(
                 f"{_safe_filename(Path(name).parent.name)}.zip"
                 for name in workbooks
             }
-    paths = sorted(
-        path
-        for name in expected_names
-        if _valid_send_archive(path := send_dir / name)
+    candidates = sorted(
+        path for name in expected_names if (path := send_dir / name).is_file()
     )
-    return paths if len(paths) == len(expected_names) else []
+    valid = [path for path in candidates if _valid_send_archive(path)]
+    complete = len(valid) == len(expected_names)
+    return candidates, valid if complete else []
 
 
 def _valid_send_archive(path: Path) -> bool:
@@ -219,6 +280,29 @@ def _valid_send_archive(path: Path) -> bool:
             }
     except (BadZipFile, OSError, ValueError):
         return False
+
+
+def _find_review_archive(review_dir: Path, document_stem: str) -> Path | None:
+    candidate = review_dir / f"{_safe_filename(document_stem)}.zip"
+    return candidate if candidate.is_file() else None
+
+
+def _move_recoverably(source: Path, destination_dir: Path) -> Path:
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    destination = destination_dir / source.name
+    if destination.exists():
+        for index in range(2, 10000):
+            candidate = destination.with_name(
+                f"{destination.stem}_{index}{destination.suffix}"
+            )
+            if not candidate.exists():
+                destination = candidate
+                break
+        else:
+            raise RuntimeError(
+                f"Не удалось подобрать имя для перемещения {source}"
+            )
+    return Path(shutil.move(str(source), str(destination)))
 
 
 def _as_int(value: str | None) -> int:
