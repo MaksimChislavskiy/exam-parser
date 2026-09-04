@@ -15,6 +15,7 @@ from pathlib import Path
 from .batch_exports import (
     create_batch_metadata_archive,
     create_private_archive,
+    create_review_archive,
     create_send_archives,
 )
 from .excel import read_tasks_xlsx
@@ -37,6 +38,17 @@ REPORT_HEADERS = (
     "error",
     "export_error",
 )
+MANIFEST_HEADERS = (
+    "filename",
+    "destination",
+    "archives",
+    "batch_status",
+    "attempts",
+    "variants",
+    "tasks",
+    "reason",
+    "export_error",
+)
 
 
 @dataclass
@@ -52,6 +64,9 @@ class DocumentState:
     error: str = ""
     export_error: str = ""
     processed_pdf_path: Path | None = None
+    export_destination: str = ""
+    export_archives: tuple[str, ...] = ()
+    export_reason: str = ""
 
 
 class FatalBatchError(RuntimeError):
@@ -476,10 +491,6 @@ def run_batch(args: argparse.Namespace) -> int:
         emit(f"Отчёт: {report_path}")
         emit(f"Полный лог: {log_path}")
 
-    if abort_reason:
-        _write_report(report_path, states)
-        return 1
-
     packaging_failed = _create_exports(
         states,
         run_dir=run_dir,
@@ -497,6 +508,8 @@ def run_batch(args: argparse.Namespace) -> int:
         export_emit("")
         export_emit("=" * 88)
         export_emit(f"ZIP для отправки: {export_dir / 'send'}")
+        export_emit(f"PDF для ручной проверки: {export_dir / 'review'}")
+        export_emit(f"Общий список PDF: {export_dir / 'manifest.csv'}")
         export_emit(f"ZIP для себя: {export_dir / 'archive'}")
         if packaging_failed:
             export_emit(f"Ошибок упаковки: {packaging_failed}")
@@ -509,6 +522,7 @@ def run_batch(args: argparse.Namespace) -> int:
             log_path,
             export_dir / "archive",
             run_name=run_name,
+            manifest_path=export_dir / "manifest.csv",
         )
     except Exception as exc:
         packaging_failed += 1
@@ -528,44 +542,89 @@ def _create_exports(
     export_dir: Path,
 ) -> int:
     send_dir = export_dir / "send"
+    review_dir = export_dir / "review"
     archive_dir = export_dir / "archive"
     send_dir.mkdir(parents=True, exist_ok=False)
+    review_dir.mkdir(parents=True, exist_ok=False)
     archive_dir.mkdir(parents=True, exist_ok=False)
     errors = 0
 
     for state in states:
         document_output = run_dir / state.pdf_path.stem
         export_errors: list[str] = []
+        review_reason = ""
 
         if state.status == "ok":
+            previous_send_archives = set(send_dir.glob("*.zip"))
             try:
-                create_send_archives(
+                send_archives = create_send_archives(
                     document_output,
                     state.pdf_path.stem,
                     send_dir,
                 )
-            except Exception as exc:
-                export_errors.append(
-                    f"send: {type(exc).__name__}: {exc}"
+                if not send_archives:
+                    raise ValueError("tasks.xlsx для отправки не найден")
+                state.export_destination = "send"
+                state.export_archives = tuple(
+                    archive.name for archive in send_archives
                 )
+            except Exception as exc:
+                send_error = f"send: {type(exc).__name__}: {exc}"
+                export_errors.append(send_error)
+                review_reason = (
+                    "Результат обработан, но подготовить надёжный ZIP для "
+                    f"отправки не удалось. {send_error}"
+                )
+                for archive in set(send_dir.glob("*.zip")) - previous_send_archives:
+                    archive.unlink(missing_ok=True)
+        elif state.status == "pending":
+            review_reason = (
+                "Пакетный запуск был остановлен до обработки этого PDF. "
+                "Файл необходимо запустить повторно."
+            )
+        else:
+            review_reason = state.error or (
+                "Автоматическая обработка завершилась с ошибкой без описания."
+            )
 
         source_pdf_path = state.processed_pdf_path or state.pdf_path
-        try:
-            create_private_archive(
-                source_pdf_path,
-                document_output,
-                archive_dir,
-                work_root=DEFAULT_WORK_ROOT,
-            )
-        except Exception as exc:
-            export_errors.append(
-                f"archive: {type(exc).__name__}: {exc}"
-            )
+        if state.export_destination != "send":
+            try:
+                review_archive = create_review_archive(
+                    source_pdf_path,
+                    review_dir,
+                    batch_status=state.status,
+                    reason=review_reason,
+                    attempts=state.attempts,
+                    variants=state.variants,
+                    tasks=state.tasks,
+                )
+                state.export_destination = "review"
+                state.export_archives = (review_archive.name,)
+                state.export_reason = review_reason
+            except Exception as exc:
+                export_errors.append(
+                    f"review: {type(exc).__name__}: {exc}"
+                )
+
+        if state.status != "pending":
+            try:
+                create_private_archive(
+                    source_pdf_path,
+                    document_output,
+                    archive_dir,
+                    work_root=DEFAULT_WORK_ROOT,
+                )
+            except Exception as exc:
+                export_errors.append(
+                    f"archive: {type(exc).__name__}: {exc}"
+                )
 
         if export_errors:
             state.export_error = " | ".join(export_errors)
             errors += 1
 
+    _write_export_manifest(export_dir / "manifest.csv", states)
     return errors
 
 
@@ -816,6 +875,30 @@ def _write_report(
                     "variants": state.variants,
                     "tasks": state.tasks,
                     "error": state.error,
+                    "export_error": state.export_error,
+                }
+            )
+
+
+def _write_export_manifest(
+    manifest_path: Path,
+    states: list[DocumentState],
+) -> None:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with manifest_path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=MANIFEST_HEADERS)
+        writer.writeheader()
+        for state in states:
+            writer.writerow(
+                {
+                    "filename": state.pdf_path.name,
+                    "destination": state.export_destination or "unexported",
+                    "archives": ";".join(state.export_archives),
+                    "batch_status": state.status,
+                    "attempts": state.attempts,
+                    "variants": state.variants,
+                    "tasks": state.tasks,
+                    "reason": state.export_reason,
                     "export_error": state.export_error,
                 }
             )

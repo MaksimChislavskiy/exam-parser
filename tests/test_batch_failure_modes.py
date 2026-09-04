@@ -106,7 +106,9 @@ def test_batch_stops_before_next_pdf_after_fatal_api_error(
 
     assert exit_code == 1
     assert calls == ["a.pdf"]
-    assert not (tmp_path / "export" / "failure_modes").exists()
+    export_dir = tmp_path / "export" / "failure_modes"
+    assert (export_dir / "review" / "a.zip").is_file()
+    assert (export_dir / "review" / "b.zip").is_file()
 
     report_path = result_root / "failure_modes" / "batch_report.csv"
     with report_path.open(encoding="utf-8-sig", newline="") as report_file:
@@ -116,6 +118,14 @@ def test_batch_stops_before_next_pdf_after_fatal_api_error(
     assert "HTTP 402" in rows[0]["error"]
     assert rows[1]["status"] == "pending"
     assert rows[1]["attempts"] == "0"
+
+    with (export_dir / "manifest.csv").open(
+        encoding="utf-8-sig",
+        newline="",
+    ) as manifest_file:
+        manifest = list(csv.DictReader(manifest_file))
+    assert [row["destination"] for row in manifest] == ["review", "review"]
+    assert "остановлен до обработки" in manifest[1]["reason"]
 
 
 def test_reuse_existing_markdown_is_applied_per_pdf(

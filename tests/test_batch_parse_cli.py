@@ -90,6 +90,17 @@ def test_batch_continues_after_document_failure_and_writes_report(
     assert rows[1]["status"] == "error"
     assert "exit code 7" in rows[1]["error"]
 
+    export_dir = tmp_path / "export" / "night_test"
+    assert (export_dir / "send" / "a.zip").is_file()
+    assert (export_dir / "review" / "b.zip").is_file()
+    with (export_dir / "manifest.csv").open(
+        encoding="utf-8-sig",
+        newline="",
+    ) as manifest_file:
+        manifest = list(csv.DictReader(manifest_file))
+    assert [row["filename"] for row in manifest] == ["a.pdf", "b.pdf"]
+    assert [row["destination"] for row in manifest] == ["send", "review"]
+
     log_text = (run_dir / "batch.log").read_text(encoding="utf-8")
     assert "child output: a.pdf" in log_text
     assert "child output: b.pdf" in log_text

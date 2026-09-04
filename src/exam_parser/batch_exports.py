@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -9,6 +10,105 @@ from .excel import read_tasks_xlsx
 
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*]')
 DEFAULT_WORK_ROOT = Path(__file__).resolve().parents[2] / "output" / "work"
+
+
+def create_review_archive(
+    pdf_path: str | Path,
+    review_dir: str | Path,
+    *,
+    batch_status: str,
+    reason: str,
+    attempts: int,
+    variants: int,
+    tasks: int,
+) -> Path:
+    """Сохраняет сомнительный исходник и понятную причину ручной проверки."""
+
+    pdf_path = Path(pdf_path)
+    if not pdf_path.is_file():
+        raise FileNotFoundError(f"Не найден исходный PDF: {pdf_path}")
+
+    review_dir = Path(review_dir)
+    review_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = _unique_zip_path(
+        review_dir / f"{_safe_filename(pdf_path.stem)}.zip"
+    )
+    readme = _review_readme(
+        filename=pdf_path.name,
+        batch_status=batch_status,
+        reason=reason,
+        attempts=attempts,
+        variants=variants,
+        tasks=tasks,
+    )
+
+    with ZipFile(
+        archive_path,
+        "w",
+        compression=ZIP_DEFLATED,
+        allowZip64=True,
+    ) as archive:
+        archive.write(pdf_path, arcname=pdf_path.name)
+        archive.writestr("README.txt", readme)
+
+    return archive_path
+
+
+def create_review_archive_from_private(
+    private_archive: str | Path,
+    review_dir: str | Path,
+    *,
+    batch_status: str,
+    reason: str,
+    attempts: int,
+    variants: int,
+    tasks: int,
+) -> Path:
+    """Создаёт review ZIP из старого приватного batch-архива."""
+
+    private_archive = Path(private_archive)
+    review_dir = Path(review_dir)
+    review_dir.mkdir(parents=True, exist_ok=True)
+
+    with ZipFile(private_archive) as source:
+        source_members = [
+            name
+            for name in source.namelist()
+            if name.replace("\\", "/").startswith("source/")
+            and not name.endswith(("/", "\\"))
+        ]
+        if len(source_members) != 1:
+            raise ValueError(
+                f"В {private_archive} ожидался один исходный файл, "
+                f"найдено: {len(source_members)}"
+            )
+
+        member = source_members[0]
+        filename = Path(member.replace("\\", "/")).name
+        archive_path = _unique_zip_path(
+            review_dir / f"{_safe_filename(Path(filename).stem)}.zip"
+        )
+        readme = _review_readme(
+            filename=filename,
+            batch_status=batch_status,
+            reason=reason,
+            attempts=attempts,
+            variants=variants,
+            tasks=tasks,
+        )
+
+        with ZipFile(
+            archive_path,
+            "w",
+            compression=ZIP_DEFLATED,
+            allowZip64=True,
+        ) as destination:
+            with source.open(member) as source_file:
+                with destination.open(filename, "w", force_zip64=True) as target:
+                    shutil.copyfileobj(source_file, target)
+            destination.writestr("README.txt", readme)
+
+    return archive_path
 
 
 def create_send_archives(
@@ -99,6 +199,7 @@ def create_batch_metadata_archive(
     archive_dir: str | Path,
     *,
     run_name: str,
+    manifest_path: str | Path | None = None,
 ) -> Path:
     """Архивирует общий отчёт и полный лог пакетного запуска."""
 
@@ -116,6 +217,9 @@ def create_batch_metadata_archive(
     ) as archive:
         archive.write(report_path, arcname=report_path.name)
         archive.write(log_path, arcname=log_path.name)
+        if manifest_path is not None:
+            manifest_path = Path(manifest_path)
+            archive.write(manifest_path, arcname=manifest_path.name)
 
     return archive_path
 
@@ -142,6 +246,31 @@ def _write_tree(
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         relative = path.relative_to(root).as_posix()
         archive.write(path, arcname=f"{prefix}/{relative}")
+
+
+def _review_readme(
+    *,
+    filename: str,
+    batch_status: str,
+    reason: str,
+    attempts: int,
+    variants: int,
+    tasks: int,
+) -> str:
+    normalized_reason = reason.strip() or "Причина не указана."
+    return (
+        "Файл отложен для ручного просмотра.\n\n"
+        "Автоматический результат не следует использовать как готовый набор "
+        "задач. Проверьте качество и полноту исходного PDF; после исправления "
+        "его можно отправить на повторную обработку.\n\n"
+        f"Исходный PDF: {filename}\n"
+        f"Статус пакетной обработки: {batch_status}\n"
+        f"Попыток: {attempts}\n"
+        f"Найдено вариантов: {variants}\n"
+        f"Найдено задач: {tasks}\n\n"
+        "Причина:\n"
+        f"{normalized_reason}\n"
+    )
 
 
 def _safe_filename(value: str) -> str:
