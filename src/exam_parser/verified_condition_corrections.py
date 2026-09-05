@@ -19,6 +19,7 @@ from .models import ExtractedTask, normalize_math_text
 
 CORRECTIONS_FILENAME = "verified_condition_corrections.jsonl"
 _CACHE: dict[Path, tuple[int, int, dict[str, dict[str, Any]]]] = {}
+_INLINE_MATH_PATTERN = re.compile(r"\$(?P<body>[^$]*)\$", re.DOTALL)
 
 
 def install_verified_condition_corrections() -> None:
@@ -50,10 +51,26 @@ def corrections_path(data_store: DataStore | None = None) -> Path:
     return store.dataset_dir / CORRECTIONS_FILENAME
 
 
+def _normalize_math_spacing(value: str) -> str:
+    """Убирает только незначащие пробелы внутри ``$...$``.
+
+    Содержимое формулы не меняется: числа, команды, операторы и порядок символов
+    остаются прежними. Это позволяет считать ``$ x+1 $`` и ``$x+1$`` одной и
+    той же OCR-строкой, не ослабляя проверку самого условия.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        body = re.sub(r"\s+", " ", match.group("body")).strip()
+        return f"${body}$"
+
+    return _INLINE_MATH_PATTERN.sub(replace, value)
+
+
 def canonical_condition(value: str) -> str:
     """Стабильная форма только для точного сопоставления одной OCR-строки."""
 
     normalized = normalize_math_text(value).strip()
+    normalized = _normalize_math_spacing(normalized)
     return re.sub(r"\s+", " ", normalized)
 
 
