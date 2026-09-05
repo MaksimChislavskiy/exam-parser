@@ -61,6 +61,52 @@ def test_classifier_uses_one_direct_request(tmp_path: Path) -> None:
     assert batch.assignments[0].catalog_id == 2
 
 
+def test_classifier_ignores_unrequested_extra_task(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    records = [TaskRecord(task_num="B1", condition="Дан треугольник ABC.")]
+    classifier = _classifier_without_cache()
+
+    def fake_request(prompt, response_model, *, thinking):
+        return ClassificationBatch(
+            assignments=[
+                {"task_num": "B1", "catalog_id": 2, "catalog_name": "Triangle"},
+                {"task_num": "B4", "catalog_id": 1, "catalog_name": "Geometry"},
+            ]
+        )
+
+    classifier._request_structured = fake_request  # type: ignore[method-assign]
+    batch = classifier.classify_catalog(records, catalog)
+
+    assert [assignment.task_num for assignment in batch.assignments] == ["B1"]
+    assert batch.assignments[0].catalog_id == 2
+
+
+def test_classifier_still_rejects_missing_requested_task(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    records = [
+        TaskRecord(task_num="B1", condition="Первое условие."),
+        TaskRecord(task_num="B2", condition="Второе условие."),
+    ]
+    classifier = _classifier_without_cache()
+
+    def fake_request(prompt, response_model, *, thinking):
+        return ClassificationBatch(
+            assignments=[
+                {"task_num": "B1", "catalog_id": 2, "catalog_name": "Triangle"},
+                {"task_num": "B4", "catalog_id": 1, "catalog_name": "Geometry"},
+            ]
+        )
+
+    classifier._request_structured = fake_request  # type: ignore[method-assign]
+
+    try:
+        classifier.classify_catalog(records, catalog)
+    except ValueError as error:
+        assert "не вернул задачи: B2" in str(error)
+    else:
+        raise AssertionError("Ожидалась ошибка для пропущенной задачи B2")
+
+
 def test_classifier_uses_cache_without_llm(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path)
     records = [TaskRecord(task_num="1", condition="Дан треугольник ABC.")]
