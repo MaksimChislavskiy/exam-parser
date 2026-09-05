@@ -6,6 +6,7 @@ from .classification import (
     ClassificationAssignment,
     ClassificationBatch,
     build_classification_prompt,
+    task_num_match_key,
     validate_classification_batch,
 )
 from .classification_cache import ClassificationCache
@@ -137,6 +138,7 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
                 ClassificationBatch,
                 thinking=False,
             )
+            chunk_batch = _only_requested_assignments(chunk, chunk_batch)
             chunk_assignments = validate_classification_batch(
                 chunk,
                 chunk_batch,
@@ -149,6 +151,32 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
         )
         validate_classification_batch(records, result, catalog)
         return result
+
+
+def _only_requested_assignments(
+    records: list[TaskRecord],
+    batch: ClassificationBatch,
+) -> ClassificationBatch:
+    """Отбрасывает только лишние номера, которые модель не получала в запросе."""
+
+    requested = {task_num_match_key(record.task_num) for record in records}
+    kept: list[ClassificationAssignment] = []
+    ignored: list[str] = []
+
+    for assignment in batch.assignments:
+        if task_num_match_key(assignment.task_num) in requested:
+            kept.append(assignment)
+        else:
+            ignored.append(assignment.task_num)
+
+    if ignored:
+        print(
+            "DeepSeek: проигнорированы лишние номера классификации: "
+            + ", ".join(ignored),
+            flush=True,
+        )
+
+    return ClassificationBatch(assignments=kept)
 
 
 def _chunk_records(
