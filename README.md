@@ -1,5 +1,7 @@
 # Exam Parser
 
+> **Активная разработка:** основная работа сейчас идёт в ветке [`feature/classification-data-center`](https://github.com/MaksimChislavskiy/exam-parser/tree/feature/classification-data-center). В ней уже реализованы DeepSeek/GigaChat, обработка нескольких вариантов в одном PDF, extraction cache, resume после частичных ошибок, OCR review dataset и дополнительные проверки качества. После стабилизации изменения будут перенесены в `main`. Ниже описана стабильная версия ветки `main`.
+
 Пайплайн извлекает математические задачи из PDF или изображения страницы.
 
 ```text
