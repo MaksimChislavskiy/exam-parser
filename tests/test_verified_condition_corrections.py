@@ -11,9 +11,18 @@ from exam_parser.verified_condition_corrections import (
 
 def test_canonical_condition_ignores_only_formatting_whitespace() -> None:
     left = "Решите:\n\n$ x+1=0 $"
-    right = "Решите:  $ x+1=0 $"
+    right = "Решите:  $x+1=0$"
     assert canonical_condition(left) == canonical_condition(right)
     assert condition_fingerprint(left) == condition_fingerprint(right)
+
+
+def test_canonical_condition_keeps_math_content_strict() -> None:
+    assert canonical_condition("Решите $x+1=0$") != canonical_condition(
+        "Решите $x+2=0$"
+    )
+    assert condition_fingerprint("Решите $x+1=0$") != condition_fingerprint(
+        "Решите $x+2=0$"
+    )
 
 
 def test_records_and_applies_verified_condition_correction(tmp_path) -> None:
@@ -34,6 +43,42 @@ def test_records_and_applies_verified_condition_correction(tmp_path) -> None:
     assert path.is_file()
     assert apply_verified_condition_correction(
         source,
+        data_store=store,
+    ) == corrected
+
+
+def test_applies_saved_correction_when_only_math_edge_spaces_differ(tmp_path) -> None:
+    store = DataStore(tmp_path / "data")
+    source = (
+        "B446\n\n"
+        "1) 9\n\n"
+        "2) $\\sqrt{480}$\n\n"
+        "3) 81\n\n"
+        "4) $\\sqrt{8}$"
+    )
+    runtime_source = (
+        "B446\n\n"
+        "1) 9\n\n"
+        "2)  $ \\sqrt{480} $\n\n"
+        "3) 81\n\n"
+        "4)  $ \\sqrt{8} $"
+    )
+    corrected = (
+        "Вычислите: $\\frac{\\sqrt{486}}{\\sqrt{6}}$\n\n"
+        "1) 9\n\n"
+        "2) $\\sqrt{480}$\n\n"
+        "3) 81\n\n"
+        "4) $\\sqrt{8}$"
+    )
+
+    record_verified_condition_correction(
+        source,
+        corrected,
+        data_store=store,
+    )
+
+    assert apply_verified_condition_correction(
+        runtime_source,
         data_store=store,
     ) == corrected
 
