@@ -18,6 +18,8 @@ _INCOMPLETE_PARAMETER_INEQUALITY_PATTERN = re.compile(
 _TERMINAL_INEQUALITY_PATTERN = re.compile(
     r"(?s)(?:\\leq|\\geq|<=|>=|<|>)\s*0\s*\$[.!]?\s*$"
 )
+_SAFE_INTRO_WORD_PATTERN = re.compile(r"[А-Яа-яЁё]{2,}")
+_UNSAFE_INTRO_PATTERN = re.compile(r"[A-Za-z0-9=+*/\\^<>ƒ]")
 
 
 def install_pdf_reference_repairs() -> None:
@@ -28,6 +30,28 @@ def install_pdf_reference_repairs() -> None:
     original = reference.repair_markdown_from_pdf
     if getattr(original, "_terminal_phrase_repair", False):
         return
+
+    original_intro = reference._restore_missing_condition_intro
+    if not getattr(original_intro, "_safe_pdf_intro_repair", False):
+
+        def restore_missing_condition_intro(
+            markdown_block: str,
+            pdf_block: str,
+        ) -> tuple[str, tuple[str, str] | None]:
+            repaired, change = original_intro(markdown_block, pdf_block)
+            if change is None:
+                return repaired, None
+
+            old, new = change
+            if old != "пропущенное начало условия":
+                return repaired, change
+            if _is_safe_missing_intro(new):
+                return repaired, change
+
+            return markdown_block, None
+
+        restore_missing_condition_intro._safe_pdf_intro_repair = True  # type: ignore[attr-defined]
+        reference._restore_missing_condition_intro = restore_missing_condition_intro
 
     def repair_markdown_from_pdf(
         pdf_path: str | Path,
@@ -66,6 +90,19 @@ def install_pdf_reference_repairs() -> None:
 
     repair_markdown_from_pdf._terminal_phrase_repair = True  # type: ignore[attr-defined]
     reference.repair_markdown_from_pdf = repair_markdown_from_pdf
+
+
+def _is_safe_missing_intro(value: str) -> bool:
+    """Разрешает переносить из PDF только короткую чистую текстовую вводную."""
+
+    compact = re.sub(r"\s+", " ", value).strip()
+    if not compact or len(compact) > 100:
+        return False
+    if _UNSAFE_INTRO_PATTERN.search(compact):
+        return False
+
+    words = _SAFE_INTRO_WORD_PATTERN.findall(compact)
+    return 2 <= len(words) <= 10
 
 
 def _collect_pdf_terminal_phrase_repairs(
