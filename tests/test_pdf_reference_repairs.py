@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from exam_parser import pdf_reference
 from exam_parser.pdf_reference_repairs import (
     _restore_terminal_phrase_from_pdf_text,
 )
@@ -80,3 +81,48 @@ def test_is_idempotent_when_phrase_already_present() -> None:
 
     assert repaired == markdown
     assert tasks == []
+
+
+def test_allows_short_clean_missing_intro() -> None:
+    markdown = r"$$ x+y=2 $$"
+    pdf_block = "Решите систему уравнений"
+
+    repaired, change = pdf_reference._restore_missing_condition_intro(
+        markdown,
+        pdf_block,
+    )
+
+    assert repaired.startswith("\nРешите систему уравнений\n\n")
+    assert change == (
+        "пропущенное начало условия",
+        "Решите систему уравнений",
+    )
+
+
+def test_rejects_dirty_math_heavy_pdf_intro() -> None:
+    markdown = r"$2^{x}=8$"
+    pdf_block = (
+        "Найдите значение выражения 23 + log 2 15 . "
+        "котором значение выручки предприяти"
+    )
+
+    repaired, change = pdf_reference._restore_missing_condition_intro(
+        markdown,
+        pdf_block,
+    )
+
+    assert repaired == markdown
+    assert change is None
+
+
+def test_rejects_broken_visual_pdf_intro() -> None:
+    markdown = "Треугольник изображен на клетчатой бумаге."
+    pdf_block = "Найдите площадь треугольника, изобра- y=ƒ(x) 1 см женного"
+
+    repaired, change = pdf_reference._restore_missing_condition_intro(
+        markdown,
+        pdf_block,
+    )
+
+    assert repaired == markdown
+    assert change is None
