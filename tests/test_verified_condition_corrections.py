@@ -19,7 +19,10 @@ def test_canonical_condition_ignores_only_formatting_whitespace() -> None:
 def test_records_and_applies_verified_condition_correction(tmp_path) -> None:
     store = DataStore(tmp_path / "data")
     source = "Вычислите:\n\nB446\n\n1) 9"
-    corrected = r"Вычислите: $\frac{\sqrt{486}}{\sqrt{6}}$\n\n1) 9"
+    corrected = (
+        "Вычислите: $\\frac{\\sqrt{486}}{\\sqrt{6}}$\n\n"
+        "1) 9"
+    )
 
     path = record_verified_condition_correction(
         source,
