@@ -1377,6 +1377,45 @@ class EmptyModelConditionTests(unittest.TestCase):
 
 
 class MissingTaskRecoveryTests(unittest.TestCase):
+    def test_strips_markdown_emphasis_from_task_numbers(self) -> None:
+        tasks = [
+            (
+                ExtractedTask(
+                    task_num="*B9",
+                    condition="Найдите значение.",
+                ),
+                Path("page_1.md"),
+            ),
+            (
+                ExtractedTask(
+                    task_num="*B10*",
+                    condition="Решите уравнение.",
+                ),
+                Path("page_1.md"),
+            ),
+        ]
+
+        result = _clean_extracted_tasks(tasks)
+
+        self.assertEqual(
+            [task.task_num for task, _page_path in result],
+            ["B9", "B10"],
+        )
+
+    def test_reads_emphasized_and_cyrillic_legacy_headings(self) -> None:
+        blocks = _task_condition_blocks(
+            "СЗ Найдите все значения параметра.\n\n"
+            "*C4 Докажите утверждение.\n\n"
+            "*B9 Решите задачу.\n\n"
+            "*B10* Найдите значение.\n\n"
+            "*B11 Укажите длину."
+        )
+
+        self.assertEqual(
+            list(blocks),
+            ["C3", "C4", "B9", "B10", "B11"],
+        )
+
     def test_sorts_lettered_task_numbers_by_section_and_number(self) -> None:
         page = Path("page_1.md")
         extracted = [
@@ -1577,6 +1616,274 @@ class MissingTaskRecoveryTests(unittest.TestCase):
             document_markdown=(
                 "Ответом на задания B1-B6 должно быть некоторое число."
             ),
+        )
+
+        self.assertEqual(result, extracted)
+        self.assertEqual(client.calls, [])
+
+    def test_restores_single_lost_prefix_inside_complete_declared_range(
+        self,
+    ) -> None:
+        client = _MissingTaskClient([])
+        page_1 = Path("page_1.md")
+        page_2 = Path("page_2.md")
+        extracted = [
+            *[
+                (
+                    ExtractedTask(
+                        task_num=f"B{number}",
+                        condition=f"Найдите значение B{number}.",
+                    ),
+                    page_1,
+                )
+                for number in range(1, 15)
+                if number != 4
+            ],
+            (
+                ExtractedTask(
+                    task_num="1",
+                    condition="Сколько рублей составит скидка?",
+                ),
+                page_1,
+            ),
+            (
+                ExtractedTask(task_num="C1", condition="Решите уравнение."),
+                page_2,
+            ),
+        ]
+
+        result = _reconcile_lettered_source_tasks(
+            client,
+            extracted,
+            {},
+            document_markdown=(
+                "Ответом на задания B1-B14 должно быть некоторое число.\n"
+                "Для записи решений заданий C1-C6 используйте бланк №2."
+            ),
+        )
+
+        by_number = {task.task_num: task for task, _page_path in result}
+        self.assertNotIn("1", by_number)
+        self.assertEqual(
+            by_number["B4"].condition,
+            "Сколько рублей составит скидка?",
+        )
+        self.assertEqual(client.calls, [])
+
+    def test_restores_matching_gaps_and_one_damaged_number(self) -> None:
+        client = _MissingTaskClient([])
+        page_1 = Path("page_1.md")
+        page_2 = Path("page_2.md")
+        missing = {4, 6, 9, 10, 12, 13, 14}
+        extracted = [
+            *[
+                (
+                    ExtractedTask(
+                        task_num=f"B{number}",
+                        condition=f"Найдите значение B{number}.",
+                    ),
+                    page_1,
+                )
+                for number in range(1, 15)
+                if number not in missing
+            ],
+            *[
+                (
+                    ExtractedTask(
+                        task_num=str(number),
+                        condition=f"Найдите числовое значение {number}.",
+                    ),
+                    page_1,
+                )
+                for number in (1, 6, 9, 10, 12, 13, 14)
+            ],
+            (
+                ExtractedTask(task_num="C1", condition="Решите уравнение."),
+                page_2,
+            ),
+        ]
+
+        result = _reconcile_lettered_source_tasks(
+            client,
+            extracted,
+            {},
+            document_markdown=(
+                "Ответом на задания B1-B14 должно быть некоторое число.\n"
+                "Для записи решений заданий C1-C6 используйте бланк №2."
+            ),
+        )
+
+        by_number = {task.task_num: task for task, _page_path in result}
+        self.assertTrue(
+            {f"B{number}" for number in range(1, 15)}.issubset(by_number)
+        )
+        self.assertFalse(any(number.isdigit() for number in by_number))
+        self.assertEqual(
+            by_number["B4"].condition,
+            "Найдите числовое значение 1.",
+        )
+        self.assertEqual(client.calls, [])
+
+    def test_does_not_restore_multiple_ambiguous_lost_prefixes(self) -> None:
+        client = _MissingTaskClient([])
+        page_1 = Path("page_1.md")
+        page_2 = Path("page_2.md")
+        extracted = [
+            *[
+                (
+                    ExtractedTask(
+                        task_num=f"B{number}",
+                        condition=f"Найдите значение B{number}.",
+                    ),
+                    page_1,
+                )
+                for number in (1, 2, 3, 6)
+            ],
+            (
+                ExtractedTask(task_num="31", condition="Найдите первое."),
+                page_1,
+            ),
+            (
+                ExtractedTask(task_num="42", condition="Найдите второе."),
+                page_1,
+            ),
+            (
+                ExtractedTask(task_num="C1", condition="Решите уравнение."),
+                page_2,
+            ),
+        ]
+
+        result = _reconcile_lettered_source_tasks(
+            client,
+            extracted,
+            {},
+            document_markdown=(
+                "Ответом на задания B1-B6 должно быть некоторое число.\n"
+                "Для записи решений заданий C1-C2 используйте бланк №2."
+            ),
+        )
+
+        self.assertEqual(result, extracted)
+        self.assertEqual(client.calls, [])
+
+    def test_restores_single_unlabeled_gap_on_same_page(self) -> None:
+        client = _MissingTaskClient([])
+        page = Path("page_2.md")
+        extracted = [
+            (
+                ExtractedTask(
+                    task_num=f"B{number}",
+                    condition=f"Найдите значение B{number}.",
+                ),
+                page,
+            )
+            for number in (1, 2, 3, 4, 6)
+        ]
+        markdown = (
+            "B4 Решите уравнение $6^x+5=0$.\n\n"
+            "Если корней несколько, запишите их произведение.\n\n"
+            "Вычислите значение выражения $6^5+100^8$.\n\n"
+            "B6 Найдите число точек максимума функции."
+        )
+
+        result = _reconcile_lettered_source_tasks(
+            client,
+            extracted,
+            {},
+            document_markdown=(
+                "Ответом на задания B1-B6 должно быть число.\n"
+                "Для записи решений заданий C1 и C2 используйте бланк №2."
+            ),
+            source_pages=[(page, markdown)],
+        )
+
+        by_number = {task.task_num: task for task, _page_path in result}
+        self.assertEqual(
+            by_number["B4"].condition,
+            "Решите уравнение $6^x+5=0$.\n\n"
+            "Если корней несколько, запишите их произведение.",
+        )
+        self.assertEqual(
+            by_number["B5"].condition,
+            "Вычислите значение выражения $6^5+100^8$.",
+        )
+        self.assertEqual(client.calls, [])
+
+    def test_restores_single_unlabeled_gap_at_page_start(self) -> None:
+        client = _MissingTaskClient([])
+        previous_page = Path("page_1.md")
+        following_page = Path("page_2.md")
+        extracted = [
+            *[
+                (
+                    ExtractedTask(
+                        task_num=f"B{number}",
+                        condition=f"Найдите значение B{number}.",
+                    ),
+                    previous_page if number <= 3 else following_page,
+                )
+                for number in (1, 2, 3, 5, 6)
+            ],
+            (
+                ExtractedTask(task_num="C1", condition="Решите уравнение."),
+                following_page,
+            ),
+        ]
+        missing_condition = (
+            "Компания предложила клиенту три разные скидки.\n\n"
+            "Клиент изучил расходы. Какую скидку ему следует выбрать?"
+        )
+
+        result = _reconcile_lettered_source_tasks(
+            client,
+            extracted,
+            {},
+            document_markdown=(
+                "Ответом на задания B1-B6 должно быть число.\n"
+                "Для записи решений заданий C1 и C2 используйте бланк №2."
+            ),
+            source_pages=[
+                (previous_page, "B3 Найдите площадь фигуры."),
+                (
+                    following_page,
+                    f"{missing_condition}\n\nB5 Решите уравнение.",
+                ),
+            ],
+        )
+
+        by_number = {task.task_num: task for task, _page_path in result}
+        self.assertEqual(by_number["B4"].condition, missing_condition)
+        self.assertEqual(client.calls, [])
+
+    def test_does_not_restore_ambiguous_page_start_gap(self) -> None:
+        client = _MissingTaskClient([])
+        previous_page = Path("page_1.md")
+        following_page = Path("page_2.md")
+        extracted = [
+            (
+                ExtractedTask(
+                    task_num=f"B{number}",
+                    condition=f"Найдите значение B{number}.",
+                ),
+                previous_page if number <= 3 else following_page,
+            )
+            for number in (1, 2, 3, 5, 6)
+        ]
+
+        result = _reconcile_lettered_source_tasks(
+            client,
+            extracted,
+            {},
+            document_markdown="Ответом на задания B1-B6 должно быть число.",
+            source_pages=[
+                (previous_page, "B3 Найдите площадь фигуры."),
+                (
+                    following_page,
+                    "Найдите первое значение.\n\n"
+                    "Найдите второе значение.\n\n"
+                    "B5 Решите уравнение.",
+                ),
+            ],
         )
 
         self.assertEqual(result, extracted)

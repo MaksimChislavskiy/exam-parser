@@ -16,9 +16,15 @@ TASK_HEADING_PATTERN = re.compile(
     r"(?:\.[ \t]+|[ \t]+(?=[A-Za-zА-Яа-яЁё0-9])|[ \t]*$)"
 )
 LEGACY_TASK_LINE_PATTERN = re.compile(
-    r"^(?P<part>[BВCС])\s*(?P<number>(?:1[0-9]|[1-9]|[Зз]))"
-    r"(?:\s*[.)]|\s+|$)",
+    r"^(?P<part>[AАBВCС])\s*(?P<number>(?:1[0-9]|[1-9]|[Зз]))"
+    r"(?:[*_`~]*\s*[.)]|[*_`~]+\s+|\s+|$)",
     re.IGNORECASE,
+)
+LEGACY_TASK_RANGE_PATTERN = re.compile(
+    r"(?i)\bзадани(?:я|й|е|ям|ями|ях)\s+"
+    r"(?P<start_part>[ABCАВС])\s*(?P<start>[1-9]|1[0-9])\s*"
+    r"(?:[-–—]|и)\s*(?P<end_part>[ABCАВС])?\s*"
+    r"(?P<end>[1-9]|1[0-9])\b"
 )
 PART_ONE_PATTERN = re.compile(r"(?im)^\s*#{0,6}\s*Часть\s*1\b")
 PART_TWO_PATTERN = re.compile(
@@ -124,10 +130,12 @@ def detect_document_variants(
         raise FileNotFoundError(f"В {markdown_dir} нет page_N/page_N.md")
 
     drafts: list[_VariantDraft] = []
+    document_markdown: list[str] = []
     current: _VariantDraft | None = None
 
     for page_path in pages:
         markdown = page_path.read_text(encoding="utf-8")
+        document_markdown.append(markdown)
         page_num = _page_number(page_path)
         for fragment in _split_page_fragments(markdown, page_num):
             fragment_markdown = markdown[fragment.start : fragment.end]
@@ -179,6 +187,10 @@ def detect_document_variants(
     if current is not None:
         drafts.append(current)
 
+    drafts = _merge_shuffled_legacy_suffix(
+        drafts,
+        _declared_legacy_task_numbers("\n".join(document_markdown)),
+    )
     return _finalize_variants(drafts)
 
 
@@ -418,7 +430,7 @@ def _task_numbers(markdown: str) -> set[int]:
 
 
 def _legacy_task_numbers(markdown: str) -> set[tuple[str, int]]:
-    """Извлекает старые номера В1..В15/С1..С6 из начала строк Markdown."""
+    """Извлекает старые номера A/В/С из начала строк Markdown."""
 
     result: set[tuple[str, int]] = set()
     for raw_line in markdown.splitlines():
@@ -429,10 +441,142 @@ def _legacy_task_numbers(markdown: str) -> set[tuple[str, int]]:
             continue
         part = match.group("part").upper().translate(CONFUSABLE_LETTERS)
         number_text = match.group("number").upper().replace("З", "3")
-        if part not in {"B", "C"} or not number_text.isdigit():
+        if part not in {"A", "B", "C"} or not number_text.isdigit():
             continue
         result.add((part, int(number_text)))
     return result
+
+
+def _declared_legacy_task_numbers(
+    markdown: str,
+) -> dict[str, set[int]]:
+    declared: dict[str, set[int]] = {}
+    for match in LEGACY_TASK_RANGE_PATTERN.finditer(markdown):
+        start_part = match.group("start_part").upper().translate(
+            CONFUSABLE_LETTERS
+        )
+        end_part = (
+            match.group("end_part") or match.group("start_part")
+        ).upper().translate(CONFUSABLE_LETTERS)
+        start = int(match.group("start"))
+        end = int(match.group("end"))
+        if start_part != end_part or end < start:
+            continue
+        declared.setdefault(start_part, set()).update(range(start, end + 1))
+    return declared
+
+
+def _merge_shuffled_legacy_suffix(
+    drafts: list[_VariantDraft],
+    declared: dict[str, set[int]],
+) -> list[_VariantDraft]:
+    """Склеивает вынесенный в начало документа хвост старого варианта.
+
+    Иногда страницы одного скана физически переставлены: сначала лежит
+    непрерывный хвост последнего раздела (например, C3--C5), затем почти весь
+    вариант с A/B и началом C. Такая страница выглядит как отдельный вариант.
+    Склейка выполняется лишь при отсутствии идентификаторов и пересечений,
+    точном стыке префикса/суффикса последнего раздела и покрытии не менее 90%
+    всех объявленных номеров с максимум одним OCR-пропуском на раздел.
+    """
+
+    if len(drafts) < 2 or len(declared) < 3:
+        return drafts
+
+    result: list[_VariantDraft] = []
+    index = 0
+    while index < len(drafts):
+        if index + 1 >= len(drafts) or not _is_shuffled_legacy_suffix_pair(
+            drafts[index],
+            drafts[index + 1],
+            declared,
+        ):
+            result.append(drafts[index])
+            index += 1
+            continue
+
+        first = drafts[index]
+        second = drafts[index + 1]
+        result.append(
+            _VariantDraft(
+                identifier=None,
+                page_numbers=[*first.page_numbers, *second.page_numbers],
+                page_fragments=[
+                    *first.page_fragments,
+                    *second.page_fragments,
+                ],
+                task_numbers=first.task_numbers | second.task_numbers,
+                legacy_task_numbers=(
+                    first.legacy_task_numbers | second.legacy_task_numbers
+                ),
+            )
+        )
+        index += 2
+    return result
+
+
+def _is_shuffled_legacy_suffix_pair(
+    first: _VariantDraft,
+    second: _VariantDraft,
+    declared: dict[str, set[int]],
+) -> bool:
+    if first.identifier is not None or second.identifier is not None:
+        return False
+    if set(first.page_numbers) & set(second.page_numbers):
+        return False
+    if not first.legacy_task_numbers or not second.legacy_task_numbers:
+        return False
+    if first.legacy_task_numbers & second.legacy_task_numbers:
+        return False
+
+    part_order = {"A": 0, "B": 1, "C": 2}
+    declared_parts = sorted(declared, key=part_order.__getitem__)
+    last_part = declared_parts[-1]
+    if any(part != last_part for part, _number in first.legacy_task_numbers):
+        return False
+
+    expected_last = declared[last_part]
+    first_numbers = {
+        number
+        for part, number in first.legacy_task_numbers
+        if part == last_part
+    }
+    if not first_numbers or max(first_numbers) != max(expected_last):
+        return False
+    suffix_start = min(first_numbers)
+    if suffix_start <= min(expected_last):
+        return False
+    if first_numbers != set(range(suffix_start, max(expected_last) + 1)):
+        return False
+
+    second_last_numbers = {
+        number
+        for part, number in second.legacy_task_numbers
+        if part == last_part
+    }
+    if second_last_numbers != set(range(min(expected_last), suffix_start)):
+        return False
+
+    earlier_parts = declared_parts[:-1]
+    if sum(
+        any(part == expected for part, _number in second.legacy_task_numbers)
+        for expected in earlier_parts
+    ) < 2:
+        return False
+
+    combined = first.legacy_task_numbers | second.legacy_task_numbers
+    expected_total = sum(len(numbers) for numbers in declared.values())
+    covered = 0
+    for part, expected in declared.items():
+        seen = {
+            number
+            for candidate_part, number in combined
+            if candidate_part == part and number in expected
+        }
+        if len(expected - seen) > 1:
+            return False
+        covered += len(seen)
+    return covered / expected_total >= 0.9
 
 
 def _finalize_variants(drafts: list[_VariantDraft]) -> list[DocumentVariant]:

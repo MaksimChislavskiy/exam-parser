@@ -133,6 +133,82 @@ class VariantDetectionTests(unittest.TestCase):
             [(1, 2, 3), (4, 5, 6)],
         )
 
+    def test_merges_shuffled_final_section_suffix_into_legacy_variant(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            markdown_dir = Path(temp)
+            _write_page(
+                markdown_dir,
+                1,
+                "Для записи ответов на задания C3-C5 используйте бланк №2.\n"
+                "СЗ Найдите параметры.\n"
+                "*C4 Докажите утверждение.\n"
+                "C5 Найдите значение.",
+            )
+            _write_page(
+                markdown_dir,
+                2,
+                "Ответом на задания B1-B11 должно быть число.\n"
+                + "\n".join(
+                    f"B{number} Найдите значение."
+                    for number in (*range(1, 5), *range(6, 12))
+                )
+                + "\nДля записи решений заданий C1 и C2 используйте бланк.\n"
+                "C1 Решите уравнение.\nC2 Решите неравенство.",
+            )
+            _write_page(
+                markdown_dir,
+                3,
+                "При выполнении заданий A1-A10 выберите ответ.\n"
+                + "\n".join(
+                    f"A{number} Выберите ответ."
+                    for number in range(2, 11)
+                ),
+            )
+
+            variants = detect_document_variants(markdown_dir)
+
+        self.assertEqual(len(variants), 1)
+        self.assertEqual(variants[0].page_numbers, (1, 2, 3))
+
+    def test_does_not_merge_shuffled_suffix_when_task_sets_overlap(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            markdown_dir = Path(temp)
+            _write_page(
+                markdown_dir,
+                1,
+                "Для записи ответов на задания C3-C5 используйте бланк №2.\n"
+                "C3 Найдите параметры.\nC4 Докажите.\nC5 Найдите.",
+            )
+            _write_page(
+                markdown_dir,
+                2,
+                "Ответом на задания B1-B11 должно быть число.\n"
+                "B1 Найдите.\nB2 Найдите.\nB3 Найдите.",
+            )
+            _write_page(
+                markdown_dir,
+                3,
+                "При выполнении заданий A1-A10 выберите ответ.\n"
+                + "\n".join(
+                    f"A{number} Выберите ответ."
+                    for number in range(1, 11)
+                )
+                + "\nДля записи решений заданий C1-C5 используйте бланк.\n"
+                "C1 Решите.\nC2 Решите.\nC3 Другая задача.",
+            )
+
+            variants = detect_document_variants(markdown_dir)
+
+        self.assertEqual(len(variants), 2)
+        self.assertEqual(
+            [variant.page_numbers for variant in variants],
+            [(1,), (2, 3)],
+        )
+
     def test_numbered_list_without_part_one_does_not_split_variant(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             markdown_dir = Path(temp)
