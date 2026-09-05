@@ -134,6 +134,7 @@ def test_does_not_invent_no_solutions_without_raw_phrase() -> None:
 def test_removes_trailing_math_repeated_at_start_of_next_same_page_task() -> None:
     page = Path("page_2/page_2.md")
     repeated = r"$\frac{5x-15}{(x+6)(x-8)}>0.$"
+    normalized_repeated = r"$\frac{5x-15}{(x+6)(x-8)}>0$."
     tasks = [
         (
             ExtractedTask(
@@ -156,9 +157,9 @@ def test_removes_trailing_math_repeated_at_start_of_next_same_page_task() -> Non
 
     repaired = _remove_trailing_math_repeated_in_next_task(tasks)
 
-    assert repeated not in repaired[0][0].condition
+    assert normalized_repeated not in repaired[0][0].condition
     assert repaired[0][0].condition.endswith("4)")
-    assert repeated in repaired[1][0].condition
+    assert normalized_repeated in repaired[1][0].condition
 
 
 def test_keeps_trailing_math_when_next_task_is_on_another_page() -> None:
