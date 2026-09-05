@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from .models import ExtractedTask
 
@@ -44,6 +43,17 @@ _HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
 _NO_SOLUTIONS_TEXT_PATTERN = re.compile(
     r"(?i)\bне\s+имеет\s+решени(?:й|я)\b"
 )
+_BARE_INTERVAL_PATTERN = re.compile(
+    r"(?<![A-Za-zА-Яа-яЁё0-9_$])"
+    r"(?P<interval>[\[(]\s*[+-]?\d+(?:[.,]\d+)?\s*;\s*"
+    r"[+-]?\d+(?:[.,]\d+)?\s*[\])])"
+    r"(?![A-Za-zА-Яа-яЁё0-9_$])"
+)
+_BARE_SYMBOLIC_OPTION_PATTERN = re.compile(
+    r"(?m)^(?P<prefix>\s*[1-9]\)\s*)"
+    r"(?P<body>[^$\n]*[π∈][^$\n]*)$"
+)
+_MATH_SPAN_SPLIT_PATTERN = re.compile(r"(\$[^$]*\$)", re.DOTALL)
 
 
 def install_release_quality_repairs_v2() -> None:
@@ -84,6 +94,8 @@ def repair_final_condition(value: str, *, image_id: str | None = None) -> str:
     cleaned = _collapse_nested_math(value)
     cleaned = _repair_prism_notation(cleaned)
     cleaned = _remove_visual_choice_math_tail(cleaned, image_id=image_id)
+    cleaned = _wrap_bare_intervals(cleaned)
+    cleaned = _wrap_bare_symbolic_options(cleaned)
     return cleaned.strip()
 
 
@@ -158,6 +170,42 @@ def _remove_visual_choice_math_tail(
     if len(prefix) < 40:
         return value
     return prefix + "\n\n1)\n\n2)\n\n3)\n\n4)"
+
+
+def _transform_outside_math(value: str, transform) -> str:
+    parts = _MATH_SPAN_SPLIT_PATTERN.split(value)
+    for index in range(0, len(parts), 2):
+        parts[index] = transform(parts[index])
+    return "".join(parts)
+
+
+def _wrap_bare_intervals(value: str) -> str:
+    """Оборачивает числовые интервалы вне уже существующего LaTeX."""
+
+    return _transform_outside_math(
+        value,
+        lambda text: _BARE_INTERVAL_PATTERN.sub(
+            lambda match: f"${match.group('interval')}$",
+            text,
+        ),
+    )
+
+
+def _wrap_bare_symbolic_options(value: str) -> str:
+    """Оборачивает строку варианта ответа с π/∈ в LaTeX."""
+
+    def replace(match: re.Match[str]) -> str:
+        body = match.group("body").strip()
+        if re.search(r"[А-Яа-яЁё]", body):
+            return match.group(0)
+        body = body.replace("π", r"\pi ").replace("∈", r"\in ")
+        body = re.sub(r"\s+", " ", body).strip()
+        return f"{match.group('prefix')}${body}$"
+
+    return _transform_outside_math(
+        value,
+        lambda text: _BARE_SYMBOLIC_OPTION_PATTERN.sub(replace, text),
+    )
 
 
 def restore_no_solutions_from_page_text(
