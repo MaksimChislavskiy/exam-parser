@@ -16,7 +16,7 @@ from .models import ExtractedTask
 _INSTALLED = False
 
 # A section heading can leak into an unnumbered task when the task is recovered
-# from the prefix of a page.  Only Markdown headings are stripped here; plain
+# from the prefix of a page. Only Markdown headings are stripped here; plain
 # prose such as "Часть 2 ..." may be meaningful inside a condition.
 _LEADING_SECTION_HEADING = re.compile(
     r"^\s*#{1,6}\s*Часть\s+\d+\s*[.:;—–-]?\s*",
@@ -29,11 +29,17 @@ _FRAGMENTED_SUBSCRIPT = re.compile(
     r"\$\$\s*(?P<symbol>[A-Za-zА-ЯЁ])\s*\$_\{\s*(?P<index>[A-Za-z0-9]+)\s*\}\$"
 )
 
-# Missing whitespace at a prose/math boundary is formatting-only.  Restrict the
-# rule to alphanumeric prose characters so punctuation and display math stay
-# untouched.
-_PROSE_BEFORE_MATH = re.compile(r"(?<=[A-Za-zА-Яа-яЁё0-9])(?=\$)")
-_MATH_BEFORE_PROSE = re.compile(r"(?<=\$)(?=[A-Za-zА-Яа-яЁё])")
+# Missing whitespace at a prose/math boundary is formatting-only. The opening
+# delimiter rule requires a plausible first math token after ``$`` so a closing
+# delimiter such as ``$5$.`` is never modified. The closing-boundary rule
+# consumes the complete inline span, which prevents inserting whitespace after
+# an opening ``$`` (the bug this module must avoid).
+_PROSE_BEFORE_OPENING_MATH = re.compile(
+    r"(?<=[A-Za-zА-Яа-яЁё0-9])(?=\$(?:\\|[A-Za-zА-ЯЁ0-9]))"
+)
+_INLINE_MATH_BEFORE_PROSE = re.compile(
+    r"(?P<math>\$(?!\$)[^$\n]+\$)(?=[A-Za-zА-Яа-яЁё])"
+)
 
 
 def clean_release_condition(value: str) -> str:
@@ -44,8 +50,11 @@ def clean_release_condition(value: str) -> str:
         lambda match: f"${match.group('symbol')}_{{{match.group('index')}}}$",
         cleaned,
     )
-    cleaned = _PROSE_BEFORE_MATH.sub(" ", cleaned)
-    cleaned = _MATH_BEFORE_PROSE.sub(" ", cleaned)
+    cleaned = _PROSE_BEFORE_OPENING_MATH.sub(" ", cleaned)
+    cleaned = _INLINE_MATH_BEFORE_PROSE.sub(
+        lambda match: f"{match.group('math')} ",
+        cleaned,
+    )
     return cleaned.strip()
 
 
