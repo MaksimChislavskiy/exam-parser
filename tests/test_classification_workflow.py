@@ -159,6 +159,35 @@ def test_confusable_task_numbers_are_collapsed_before_classification(
     assert all(record.topics_id == 163 for record in result)
 
 
+def test_trailing_dot_task_number_duplicates_are_collapsed_before_classification(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "tasks.xlsx"
+    write_tasks_xlsx(
+        [
+            TaskRecord(task_num="17.2", condition="Первое условие"),
+            TaskRecord(task_num="17.2.", condition="Дубль с точкой"),
+            TaskRecord(task_num="18.1", condition="Другая задача"),
+        ],
+        input_path,
+    )
+
+    classify_tasks_workbook(
+        input_path,
+        input_path,
+        classifier=FakeClassifier(),
+        exams_catalog=_catalog("exams", 171, "Exam category"),
+        topics_catalog=_catalog("topics", 163, "Topic category"),
+    )
+
+    result = read_tasks_xlsx(input_path)
+    assert [record.task_num for record in result] == ["17.2", "18.1"]
+    assert [record.condition for record in result] == [
+        "Первое условие",
+        "Другая задача",
+    ]
+
+
 def test_cyrillic_zhe_like_three_is_normalized_in_task_number(
     tmp_path: Path,
 ) -> None:
