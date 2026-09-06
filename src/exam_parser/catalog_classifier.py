@@ -153,21 +153,45 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
         return result
 
 
+def _classification_task_num_key(value: str) -> str:
+    """Считает завершающую точку оформлением, а не частью номера задачи."""
+
+    return task_num_match_key(value).rstrip(".")
+
+
 def _only_requested_assignments(
     records: list[TaskRecord],
     batch: ClassificationBatch,
 ) -> ClassificationBatch:
     """Отбрасывает только лишние номера, которые модель не получала в запросе."""
 
-    requested = {task_num_match_key(record.task_num) for record in records}
+    requested: dict[str, str] = {}
+    for record in records:
+        key = _classification_task_num_key(record.task_num)
+        previous = requested.get(key)
+        if previous is not None and previous != record.task_num:
+            raise ValueError(
+                "Неоднозначные номера задач для классификации: "
+                f"{previous!r} и {record.task_num!r}"
+            )
+        requested[key] = record.task_num
+
     kept: list[ClassificationAssignment] = []
     ignored: list[str] = []
 
     for assignment in batch.assignments:
-        if task_num_match_key(assignment.task_num) in requested:
-            kept.append(assignment)
-        else:
+        requested_task_num = requested.get(
+            _classification_task_num_key(assignment.task_num)
+        )
+        if requested_task_num is None:
             ignored.append(assignment.task_num)
+            continue
+
+        if assignment.task_num != requested_task_num:
+            assignment = assignment.model_copy(
+                update={"task_num": requested_task_num}
+            )
+        kept.append(assignment)
 
     if ignored:
         print(
