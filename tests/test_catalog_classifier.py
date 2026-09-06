@@ -81,6 +81,27 @@ def test_classifier_ignores_unrequested_extra_task(tmp_path: Path) -> None:
     assert batch.assignments[0].catalog_id == 2
 
 
+def test_classifier_accepts_omitted_trailing_dot_in_task_number(
+    tmp_path: Path,
+) -> None:
+    catalog = _catalog(tmp_path)
+    records = [TaskRecord(task_num="1.1.", condition="Дан треугольник ABC.")]
+    classifier = _classifier_without_cache()
+
+    def fake_request(prompt, response_model, *, thinking):
+        return ClassificationBatch(
+            assignments=[
+                {"task_num": "1.1", "catalog_id": 2, "catalog_name": "Triangle"}
+            ]
+        )
+
+    classifier._request_structured = fake_request  # type: ignore[method-assign]
+    batch = classifier.classify_catalog(records, catalog)
+
+    assert [assignment.task_num for assignment in batch.assignments] == ["1.1."]
+    assert batch.assignments[0].catalog_id == 2
+
+
 def test_classifier_still_rejects_missing_requested_task(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path)
     records = [
