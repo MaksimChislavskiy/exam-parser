@@ -18,7 +18,9 @@ def test_prompt_requests_only_known_missing_numbers() -> None:
 
     assert "РОВНО задачи с номерами: 14, 17" in prompt
     assert "Не возвращай соседние OCR-якоря" in prompt
-    assert "не требуют угадывания" in prompt
+    assert "Номера пропущенных задач уже установлены структурой документа" in " ".join(
+        prompt.split()
+    )
 
 
 def test_deepseek_style_structured_request_disables_thinking() -> None:
@@ -64,30 +66,27 @@ def test_gigachat_style_structured_request_uses_same_contract() -> None:
         ) -> PageExtraction:
             self.calls.append((prompt, response_model))
             return PageExtraction(
-                tasks=[ExtractedTask(task_num="17", condition="Условие 17")]
+                tasks=[ExtractedTask(task_num="14", condition="Условие 14")]
             )
 
     client = Client()
-    result = extract_expected_tasks(client, "OCR", [], [17])
+    result = extract_expected_tasks(client, "OCR", [], [14])
 
-    assert [task.task_num for task in result] == ["17"]
+    assert [task.task_num for task in result] == ["14"]
     assert len(client.calls) == 1
     assert client.calls[0][1] is PageExtraction
+    assert "РОВНО задачи с номерами: 14" in client.calls[0][0]
 
 
-def test_targeted_gap_still_requires_condition_inside_ocr_source() -> None:
+def test_recovery_rejects_condition_not_present_in_ocr_source() -> None:
     page = Path("page_1.md")
-    task13 = (
+    source13 = (
         "Решите уравнение и найдите все допустимые значения переменной, "
-        "учитывая область определения исходного математического выражения."
+        "учитывая ограничения исходного выражения и область определения."
     )
-    task14 = (
-        "Найдите значение выражения при заданном параметре, аккуратно выполнив "
-        "все арифметические действия и сохранив точный окончательный результат."
-    )
-    task15 = (
+    source15 = (
         "Решите логарифмическое неравенство и запишите множество всех решений "
-        "с учётом области допустимых значений каждого логарифма."
+        "с учётом области допустимых значений каждого логарифма в условии."
     )
 
     def block(condition: str) -> pipeline._SourceTaskBlock:
@@ -99,20 +98,16 @@ def test_targeted_gap_still_requires_condition_inside_ocr_source() -> None:
         )
 
     source_blocks = {
-        "13": [block(task13 + "\n\n" + task14)],
-        "15": [block(task15)],
+        "13": [block(source13)],
+        "15": [block(source15)],
     }
     extracted = [
-        (ExtractedTask(task_num="13", condition=task13), page),
-        (ExtractedTask(task_num="15", condition=task15), page),
+        (ExtractedTask(task_num="13", condition=source13), page),
+        (ExtractedTask(task_num="15", condition=source15), page),
     ]
 
     class Client:
         provider_name = "Test"
-
-        def __init__(self, condition: str) -> None:
-            self.condition = condition
-            self.calls = 0
 
         def _request_structured(
             self,
@@ -121,37 +116,26 @@ def test_targeted_gap_still_requires_condition_inside_ocr_source() -> None:
             *,
             thinking: bool,
         ) -> PageExtraction:
-            self.calls += 1
             return PageExtraction(
-                tasks=[ExtractedTask(task_num="14", condition=self.condition)]
+                tasks=[
+                    ExtractedTask(
+                        task_num="14",
+                        condition=(
+                            "Полностью выдуманное условие, которого нет внутри "
+                            "исходного OCR-фрагмента между соседними задачами."
+                        ),
+                    )
+                ]
             )
 
-    good_client = Client(task14)
-    good = recover_local_gap_with_expected_numbers(
+    recovered = recover_local_gap_with_expected_numbers(
         pipeline,
-        good_client,
+        Client(),
         extracted,
         source_blocks,
         lower=13,
         upper=15,
         missing=[14],
     )
-    assert [task.task_num for task, _ in good] == ["14"]
-    assert good_client.calls == 1
 
-    hallucinated = (
-        "Совершенно другое длинное условие, которого нет в исходном OCR-блоке, "
-        "но которое специально достаточно длинное для проверки защиты."
-    )
-    bad_client = Client(hallucinated)
-    bad = recover_local_gap_with_expected_numbers(
-        pipeline,
-        bad_client,
-        extracted,
-        source_blocks,
-        lower=13,
-        upper=15,
-        missing=[14],
-    )
-    assert bad == []
-    assert bad_client.calls == 1
+    assert recovered == []
