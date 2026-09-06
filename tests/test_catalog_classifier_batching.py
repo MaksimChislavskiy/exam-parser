@@ -35,28 +35,32 @@ def test_direct_classification_batches_twenty_tasks_per_request(tmp_path: Path) 
     classifier = DeepSeekCatalogClassifier.__new__(DeepSeekCatalogClassifier)
     classifier.classification_cache = None
     classifier.refresh_cache = False
-    calls: list[list[TaskRecord]] = []
+    calls: list[int] = []
 
     def fake_request(prompt, response_model, *, thinking):
         assert response_model is ClassificationBatch
         assert thinking is False
-        selected = records[:20] if not calls else records[20:]
-        calls.append(selected)
-        for record in selected:
-            assert f"ЗАДАЧА {record.task_num}" in prompt
+        count = 20 if not calls else 1
+        calls.append(count)
+        request_nums = [f"Q{index:03d}" for index in range(1, count + 1)]
+        for request_num in request_nums:
+            assert f"ЗАДАЧА {request_num}" in prompt
         return ClassificationBatch(
             assignments=[
                 {
-                    "task_num": record.task_num,
+                    "task_num": request_num,
                     "catalog_id": 2,
                     "catalog_name": "Triangle",
                 }
-                for record in selected
+                for request_num in request_nums
             ]
         )
 
     classifier._request_structured = fake_request  # type: ignore[method-assign]
     batch = classifier.classify_catalog(records, catalog)
 
-    assert [len(chunk) for chunk in calls] == [20, 1]
+    assert calls == [20, 1]
+    assert [assignment.task_num for assignment in batch.assignments] == [
+        str(index) for index in range(1, 22)
+    ]
     assert [assignment.catalog_id for assignment in batch.assignments] == [2] * 21
