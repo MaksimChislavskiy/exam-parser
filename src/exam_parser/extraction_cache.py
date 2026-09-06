@@ -15,6 +15,10 @@ from .models import (
 
 
 EXTRACTION_CACHE_SCHEMA_VERSION = 1
+# Менять при смысловом изменении build_task_extraction_prompt. Кэш должен
+# зависеть не только от OCR-входа и модели, но и от правил, по которым модель
+# извлекала задачи. Иначе новый prompt может молча получить старый ответ.
+EXTRACTION_PROMPT_VERSION = "boundary-aware-v2"
 
 
 class PageExtractionCache:
@@ -26,10 +30,12 @@ class PageExtractionCache:
         *,
         provider: str,
         model: str,
+        prompt_version: str = EXTRACTION_PROMPT_VERSION,
     ) -> None:
         self.cache_dir = Path(cache_dir)
         self.provider = provider
         self.model = model
+        self.prompt_version = prompt_version
 
     def load(
         self,
@@ -71,6 +77,7 @@ class PageExtractionCache:
         path = self._path(page_num, key)
         payload = {
             "schema_version": EXTRACTION_CACHE_SCHEMA_VERSION,
+            "prompt_version": self.prompt_version,
             "key": key,
             "provider": self.provider,
             "model": self.model,
@@ -101,6 +108,7 @@ class PageExtractionCache:
         ]
         context = {
             "schema_version": EXTRACTION_CACHE_SCHEMA_VERSION,
+            "prompt_version": self.prompt_version,
             "provider": self.provider,
             "model": self.model,
             "markdown": markdown,
