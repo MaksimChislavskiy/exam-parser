@@ -21,14 +21,28 @@ def test_recovers_single_same_page_numeric_gap(tmp_path: Path) -> None:
     page = _write_page(
         tmp_path,
         6,
-        """13 Решите уравнение и укажите все корни на заданном отрезке.\n\n"
-        "В правильной пирамиде дана сторона основания и боковое ребро. "
-        "а) Докажите равенство двух отрезков. б) Найдите объём пирамиды.\n\n"
-        "15 Решите неравенство и запишите множество всех его решений.\n""",
+        (
+            "13 Решите уравнение и укажите все корни на заданном отрезке.\n\n"
+            "В правильной пирамиде дана сторона основания и боковое ребро. "
+            "а) Докажите равенство двух отрезков. б) Найдите объём пирамиды.\n\n"
+            "15 Решите неравенство и запишите множество всех его решений.\n"
+        ),
     )
     extracted = [
-        (ExtractedTask(task_num="13", condition="Решите уравнение и укажите все корни на заданном отрезке."), page),
-        (ExtractedTask(task_num="15", condition="Решите неравенство и запишите множество всех его решений."), page),
+        (
+            ExtractedTask(
+                task_num="13",
+                condition="Решите уравнение и укажите все корни на заданном отрезке.",
+            ),
+            page,
+        ),
+        (
+            ExtractedTask(
+                task_num="15",
+                condition="Решите неравенство и запишите множество всех его решений.",
+            ),
+            page,
+        ),
     ]
 
     recovered = recover_single_numeric_gaps(pipeline, Client(), extracted, 19)
@@ -48,12 +62,32 @@ def test_recovers_single_gap_from_prefix_of_next_page(tmp_path: Path) -> None:
     following = _write_page(
         tmp_path,
         5,
-        """## Часть 2\n\nНайдите значение выражения $36\\sqrt{6}$.\n\nОтвет: ___.\n\n"
-        "10 Автомобиль движется с постоянным ускорением. Найдите ускорение автомобиля.\n""",
+        (
+            "## Часть 2\n\n"
+            "Найдите значение выражения $36\\sqrt{6}$.\n\n"
+            "Ответ: ___.\n\n"
+            "10 Автомобиль движется с постоянным ускорением. "
+            "Найдите ускорение автомобиля.\n"
+        ),
     )
     extracted = [
-        (ExtractedTask(task_num="8", condition="Найдите объём многогранника по данным размерам параллелепипеда."), previous),
-        (ExtractedTask(task_num="10", condition="Автомобиль движется с постоянным ускорением. Найдите ускорение автомобиля."), following),
+        (
+            ExtractedTask(
+                task_num="8",
+                condition="Найдите объём многогранника по данным размерам параллелепипеда.",
+            ),
+            previous,
+        ),
+        (
+            ExtractedTask(
+                task_num="10",
+                condition=(
+                    "Автомобиль движется с постоянным ускорением. "
+                    "Найдите ускорение автомобиля."
+                ),
+            ),
+            following,
+        ),
     ]
 
     recovered = recover_single_numeric_gaps(pipeline, Client(), extracted, 19)
@@ -64,7 +98,11 @@ def test_recovers_single_gap_from_prefix_of_next_page(tmp_path: Path) -> None:
 
 
 def test_does_not_apply_nonstandard_numeric_range(tmp_path: Path) -> None:
-    page = _write_page(tmp_path, 1, "13 Решите уравнение.\n\n15 Решите неравенство.")
+    page = _write_page(
+        tmp_path,
+        1,
+        "13 Решите уравнение.\n\n15 Решите неравенство.",
+    )
     extracted = [
         (ExtractedTask(task_num="13", condition="Решите уравнение."), page),
         (ExtractedTask(task_num="15", condition="Решите неравенство."), page),
