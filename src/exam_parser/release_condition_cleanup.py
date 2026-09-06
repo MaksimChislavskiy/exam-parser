@@ -29,17 +29,44 @@ _FRAGMENTED_SUBSCRIPT = re.compile(
     r"\$\$\s*(?P<symbol>[A-Za-zА-ЯЁ])\s*\$_\{\s*(?P<index>[A-Za-z0-9]+)\s*\}\$"
 )
 
-# Missing whitespace at a prose/math boundary is formatting-only. The opening
-# delimiter rule requires a plausible first math token after ``$`` so a closing
-# delimiter such as ``$5$.`` is never modified. The closing-boundary rule
-# consumes the complete inline span, which prevents inserting whitespace after
-# an opening ``$`` (the bug this module must avoid).
-_PROSE_BEFORE_OPENING_MATH = re.compile(
-    r"(?<=[A-Za-zА-Яа-яЁё0-9])(?=\$(?:\\|[A-Za-zА-ЯЁ0-9]))"
+# Complete single-dollar inline math spans. Display math ``$$...$$`` and
+# incomplete delimiters are intentionally ignored. Spacing is added only
+# outside these spans, so already-correct math such as ``$A$`` remains byte-for-
+# byte unchanged.
+_INLINE_MATH_SPAN = re.compile(
+    r"(?<!\$)\$(?!\$)[^$\n]*?(?<!\$)\$(?!\$)"
 )
-_INLINE_MATH_BEFORE_PROSE = re.compile(
-    r"(?P<math>\$(?!\$)[^$\n]+\$)(?=[A-Za-zА-Яа-яЁё])"
-)
+_PROSE_BEFORE_MATH = re.compile(r"[A-Za-zА-Яа-яЁё0-9]")
+_PROSE_AFTER_MATH = re.compile(r"[A-Za-zА-Яа-яЁё]")
+
+
+def _space_inline_math_boundaries(value: str) -> str:
+    matches = list(_INLINE_MATH_SPAN.finditer(value))
+    if not matches:
+        return value
+
+    parts: list[str] = []
+    cursor = 0
+    for match in matches:
+        parts.append(value[cursor : match.start()])
+        if (
+            match.start() > 0
+            and _PROSE_BEFORE_MATH.fullmatch(value[match.start() - 1])
+        ):
+            parts.append(" ")
+
+        # Preserve the complete math span exactly as it appeared in the input.
+        parts.append(match.group(0))
+
+        if (
+            match.end() < len(value)
+            and _PROSE_AFTER_MATH.fullmatch(value[match.end()])
+        ):
+            parts.append(" ")
+        cursor = match.end()
+
+    parts.append(value[cursor:])
+    return "".join(parts)
 
 
 def clean_release_condition(value: str) -> str:
@@ -50,11 +77,7 @@ def clean_release_condition(value: str) -> str:
         lambda match: f"${match.group('symbol')}_{{{match.group('index')}}}$",
         cleaned,
     )
-    cleaned = _PROSE_BEFORE_OPENING_MATH.sub(" ", cleaned)
-    cleaned = _INLINE_MATH_BEFORE_PROSE.sub(
-        lambda match: f"{match.group('math')} ",
-        cleaned,
-    )
+    cleaned = _space_inline_math_boundaries(cleaned)
     return cleaned.strip()
 
 
