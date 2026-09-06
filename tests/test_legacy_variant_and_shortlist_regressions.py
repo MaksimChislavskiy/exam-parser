@@ -96,7 +96,7 @@ def test_legacy_answer_page_does_not_look_like_new_variant(tmp_path: Path) -> No
     assert variants[0].page_numbers == (1, 2, 3)
 
 
-def test_direct_classifier_canonicalizes_latin_c_to_cyrillic_task_number(
+def test_direct_classifier_preserves_original_cyrillic_task_number(
     tmp_path: Path,
 ) -> None:
     records = [TaskRecord(task_num="С6", condition="Условие")]
@@ -107,8 +107,12 @@ def test_direct_classifier_canonicalizes_latin_c_to_cyrillic_task_number(
     def fake_request(prompt, response_model, *, thinking):
         assert response_model is ClassificationBatch
         assert thinking is False
+        assert "ЗАДАЧА Q001" in prompt
+        assert "ЗАДАЧА С6" not in prompt
         return ClassificationBatch(
-            assignments=[{"task_num": "C6", "catalog_id": 1, "catalog_name": "One"}]
+            assignments=[
+                {"task_num": "Q001", "catalog_id": 1, "catalog_name": "One"}
+            ]
         )
 
     classifier._request_structured = fake_request  # type: ignore[method-assign]
