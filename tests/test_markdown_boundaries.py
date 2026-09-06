@@ -8,6 +8,8 @@ from PIL import Image, ImageDraw
 
 from exam_parser.markdown_boundaries import _normalize_page
 from exam_parser.boundary_repairs import (
+    _normalize_ocr_answer_labels,
+    _normalize_ocr_task_number_lines,
     _repair_legacy_task_marker_images,
     _repair_uniform_detached_math_tasks,
 )
@@ -36,6 +38,40 @@ def _draw_cropped_boxed_marker(path: Path) -> None:
 
 
 class MarkdownBoundaryTests(unittest.TestCase):
+    def test_normalizes_standalone_ocr_number_markers(self) -> None:
+        markdown = (
+            "N15\nРешите неравенство.\n\n"
+            "NO.1.3\nНайдите площадь.\n\n"
+            "N=9.1\nРешите уравнение.\n"
+        )
+
+        repaired = _normalize_ocr_task_number_lines(markdown)
+
+        self.assertIn("15. \nРешите неравенство", repaired)
+        self.assertIn("1.3. \nНайдите площадь", repaired)
+        self.assertIn("9.1. \nРешите уравнение", repaired)
+        self.assertEqual(
+            set(_task_condition_blocks(repaired)),
+            {"15", "1.3", "9.1"},
+        )
+
+    def test_does_not_normalize_math_variable_n_inside_condition(self) -> None:
+        markdown = "Найдите N = 15 при заданных условиях.\n"
+        self.assertEqual(_normalize_ocr_task_number_lines(markdown), markdown)
+
+    def test_normalizes_formula_like_ocr_answer_label(self) -> None:
+        markdown = (
+            "7. Найдите значение производной.\n"
+            "O_{T\\beta t}:\n\n"
+            "8. Найдите объём.\n"
+            "O_{T\\beta\\tau}:\n"
+        )
+
+        repaired = _normalize_ocr_answer_labels(markdown)
+
+        self.assertEqual(repaired.count("Ответ:"), 2)
+        self.assertNotIn("O_{T\\beta", repaired)
+
     def test_reattaches_uniform_formulas_by_task_order(self) -> None:
         markdown = (
             "### Задачи №15. Условия\n\n"
