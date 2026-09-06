@@ -99,14 +99,6 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
                 computed_batch,
                 catalog,
             )
-            if cache is not None:
-                for record in pending_records:
-                    assignment = computed_assignments[record.task_num]
-                    cache.save(
-                        record.condition,
-                        catalog,
-                        catalog_id=assignment.catalog_id,
-                    )
         else:
             print("DeepSeek: все задачи взяты из кэша", flush=True)
 
@@ -124,6 +116,7 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
     ) -> ClassificationBatch:
         assignments: dict[str, ClassificationAssignment] = {}
         chunks = _chunk_records(records, DIRECT_BATCH_SIZE)
+        cache = getattr(self, "classification_cache", None)
 
         for index, chunk in enumerate(chunks, start=1):
             nums = ", ".join(record.task_num for record in chunk)
@@ -132,25 +125,74 @@ class DeepSeekCatalogClassifier(DeepSeekTaskClient):
                 f"(батч {index}/{len(chunks)}): {nums}",
                 flush=True,
             )
-            prompt = build_classification_prompt(chunk, catalog)
-            chunk_batch = self._request_structured(
+
+            request_records, original_by_request_num = _build_request_records(chunk)
+            prompt = build_classification_prompt(request_records, catalog)
+            request_batch = self._request_structured(
                 prompt,
                 ClassificationBatch,
                 thinking=False,
             )
-            chunk_batch = _only_requested_assignments(chunk, chunk_batch)
-            chunk_assignments = validate_classification_batch(
-                chunk,
-                chunk_batch,
+            request_batch = _only_requested_assignments(
+                request_records,
+                request_batch,
+            )
+            request_assignments = validate_classification_batch(
+                request_records,
+                request_batch,
                 catalog,
             )
+
+            chunk_by_num = {record.task_num: record for record in chunk}
+            chunk_assignments: dict[str, ClassificationAssignment] = {}
+            for request_record in request_records:
+                request_num = request_record.task_num
+                original_num = original_by_request_num[request_num]
+                assignment = request_assignments[request_num].model_copy(
+                    update={"task_num": original_num}
+                )
+                chunk_assignments[original_num] = assignment
+
             assignments.update(chunk_assignments)
+
+            # Сохраняем каждый уже оплаченный и валидированный батч сразу.
+            # Если следующий батч упадёт, повторный запуск не должен заново
+            # оплачивать успешно классифицированные задачи этого батча.
+            if cache is not None:
+                for task_num, assignment in chunk_assignments.items():
+                    record = chunk_by_num[task_num]
+                    cache.save(
+                        record.condition,
+                        catalog,
+                        catalog_id=assignment.catalog_id,
+                    )
 
         result = ClassificationBatch(
             assignments=[assignments[record.task_num] for record in records]
         )
         validate_classification_batch(records, result, catalog)
         return result
+
+
+def _build_request_records(
+    records: list[TaskRecord],
+) -> tuple[list[TaskRecord], dict[str, str]]:
+    """Заменяет исходные номера безопасными техническими ID для LLM.
+
+    OCR-номер может быть любым: ``N16``, ``NO.1.3``, формулой, номером с
+    региональной пометкой и т.п. Модель не должна переписывать такой номер и
+    тем самым ломать сопоставление ответа. Поэтому в одном запросе она видит
+    только Q001, Q002, ...; после валидации ID детерминированно заменяются
+    обратно на исходные task_num.
+    """
+
+    request_records: list[TaskRecord] = []
+    original_by_request_num: dict[str, str] = {}
+    for index, record in enumerate(records, start=1):
+        request_num = f"Q{index:03d}"
+        request_records.append(record.model_copy(update={"task_num": request_num}))
+        original_by_request_num[request_num] = record.task_num
+    return request_records, original_by_request_num
 
 
 def _classification_task_num_key(value: str) -> str:
@@ -178,6 +220,7 @@ def _only_requested_assignments(
 
     kept: list[ClassificationAssignment] = []
     ignored: list[str] = []
+    exact_seen: set[tuple[str, int, str | None]] = set()
 
     for assignment in batch.assignments:
         requested_task_num = requested.get(
@@ -191,6 +234,20 @@ def _only_requested_assignments(
             assignment = assignment.model_copy(
                 update={"task_num": requested_task_num}
             )
+
+        exact_key = (
+            assignment.task_num,
+            assignment.catalog_id,
+            assignment.catalog_name,
+        )
+        if exact_key in exact_seen:
+            print(
+                "DeepSeek: проигнорирован точный дубль классификации: "
+                f"{assignment.task_num}",
+                flush=True,
+            )
+            continue
+        exact_seen.add(exact_key)
         kept.append(assignment)
 
     if ignored:
