@@ -7,6 +7,7 @@ from pathlib import Path
 import fitz
 from PIL import Image, ImageFilter, ImageOps
 
+from .fidelity_retry_guard import install_fidelity_retry_guard
 from .legacy_cache_salvage import install_legacy_cache_salvage
 from .numeric_gap_recovery import install_numeric_gap_recovery
 from .pipeline_runtime_v4 import install_runtime_repairs as install_v4_repairs
@@ -227,6 +228,7 @@ def install_runtime_repairs() -> None:
     install_targeted_gap_recovery()
     install_numeric_gap_recovery()
     install_legacy_cache_salvage()
+    install_fidelity_retry_guard()
 
     from . import markdown_pipeline as pipeline
 
