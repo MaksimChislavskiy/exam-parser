@@ -45,6 +45,42 @@ def _condition_is_source_prefix(
     return matching / len(candidate_values) >= 0.94
 
 
+def _condition_start_in_source(
+    pipeline: Any,
+    source: str,
+    candidate: str,
+) -> int | None:
+    """Находит самостоятельное условие внутри склеенного OCR-блока.
+
+    В отличие от ``_embedded_condition_start`` условие не обязано занимать весь
+    хвост: между двумя явными OCR-якорями могут подряд потеряться несколько
+    заголовков. Сопоставление идёт по длинной последовательности токенов, поэтому
+    короткая похожая фраза не считается доказательством присутствия задачи.
+    """
+
+    source_tokens = pipeline._comparison_tokens(source)
+    candidate_tokens = pipeline._comparison_tokens(candidate)
+    if len(candidate_tokens) < 12 or len(source_tokens) < len(candidate_tokens):
+        return None
+
+    candidate_values = [token.canonical for token in candidate_tokens]
+    width = len(candidate_values)
+    best: tuple[float, int] | None = None
+    for index in range(len(source_tokens) - width + 1):
+        window = source_tokens[index : index + width]
+        matching = sum(
+            token.canonical == expected
+            for token, expected in zip(window, candidate_values)
+        )
+        score = matching / width
+        if score < 0.94:
+            continue
+        start = window[0].start
+        if best is None or score > best[0]:
+            best = (score, start)
+    return None if best is None else best[1]
+
+
 def _reconcile_numeric_task_shift(
     pipeline: Any,
     tasks: list[ExtractedTask],
@@ -92,7 +128,6 @@ def _reconcile_numeric_task_shift(
     if len(anchors) < 2:
         return tasks
 
-    # Якоря должны идти в том же порядке, что и задачи на странице.
     source_anchor_numbers = [source_number for _, _, source_number in anchors]
     if source_anchor_numbers != sorted(source_anchor_numbers):
         return tasks
@@ -117,8 +152,6 @@ def _reconcile_numeric_task_shift(
         return tasks
     if resolved_numbers != sorted(resolved_numbers):
         return tasks
-
-    # После сдвига каждый найденный OCR-якорь обязан попасть точно в свой номер.
     if any(
         resolved_numbers[index] != source_number
         for index, _model_number, source_number in anchors
@@ -148,12 +181,7 @@ def _split_glued_source_blocks(
     provider_name: str,
     page_num: int,
 ) -> None:
-    """Обрезает OCR-блок N по семантически найденной границе задачи N+1.
-
-    Срабатывает только для соседних простых номеров, когда OCR-заголовок N+1
-    отсутствует, а условие N+1 надёжно найдено как длинный хвост source-блока N.
-    Само условие N+1 остаётся результатом семантического извлечения LLM.
-    """
+    """Обрезает OCR-блок N по семантически найденной границе задачи N+1."""
 
     for current, following in zip(tasks, tasks[1:]):
         current_number = _simple_task_number(current.task_num)
@@ -195,12 +223,7 @@ def _expected_contiguous_numeric_range(
     source_blocks: dict[str, list[Any]],
     expected_tasks: int | None,
 ) -> list[int] | None:
-    """Выводит диапазон N..M, только если его длина равна expected_tasks.
-
-    Это обобщает старое предположение 1..expected_tasks на фрагменты вроде
-    13..19. Диапазон должен подтверждаться минимум двумя реально извлечёнными
-    числовыми задачами и всеми явными OCR-якорями, попавшими в тот же span.
-    """
+    """Выводит диапазон N..M, только если его длина равна expected_tasks."""
 
     if expected_tasks is None or expected_tasks < 1:
         return None
@@ -299,25 +322,27 @@ def _recover_local_gap_with_llm(
         flush=True,
     )
     retry_tasks = client.extract_markdown(local_markdown, available_images)
+    expected_keys = {str(number) for number in missing}
     by_number = {
         task.task_num: pipeline._clean_extracted_task(task)
         for task in retry_tasks
-        if task.task_num in {str(number) for number in missing}
+        if task.task_num in expected_keys
     }
-    if set(by_number) != {str(number) for number in missing}:
+    if set(by_number) != expected_keys:
         return []
 
     positions: list[int] = []
     recovered: list[tuple[ExtractedTask, Any]] = []
     for number in missing:
         task = by_number[str(number)]
-        cut = pipeline._embedded_condition_start(
+        start = _condition_start_in_source(
+            pipeline,
             lower_source.condition,
             task.condition,
         )
-        if cut is None:
+        if start is None:
             return []
-        positions.append(cut)
+        positions.append(start)
         task.image_id = pipeline._resolve_image_id(
             task.image_id,
             None,
@@ -351,8 +376,6 @@ def _recover_nonstandard_numeric_range(
     recovered_items = list(extracted)
     present = {int(task.task_num) for task, _ in recovered_items}
 
-    # Явно пронумерованный OCR-блок — уже достаточное доказательство границы.
-    # Для него повтор LLM не нужен: OCR остаётся источником содержания.
     for number in expected_numbers:
         if number in present:
             continue
