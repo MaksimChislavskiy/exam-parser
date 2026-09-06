@@ -7,6 +7,8 @@ from pathlib import Path
 import fitz
 from PIL import Image, ImageFilter, ImageOps
 
+from .legacy_cache_salvage import install_legacy_cache_salvage
+from .numeric_gap_recovery import install_numeric_gap_recovery
 from .pipeline_runtime_v4 import install_runtime_repairs as install_v4_repairs
 from .semantic_boundary_repairs import install_semantic_boundary_repairs
 from .targeted_gap_recovery import install_targeted_gap_recovery
@@ -223,6 +225,8 @@ def install_runtime_repairs() -> None:
     install_v4_repairs()
     install_semantic_boundary_repairs()
     install_targeted_gap_recovery()
+    install_numeric_gap_recovery()
+    install_legacy_cache_salvage()
 
     from . import markdown_pipeline as pipeline
 
