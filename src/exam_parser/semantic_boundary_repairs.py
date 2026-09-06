@@ -7,10 +7,12 @@ from collections.abc import Callable
 from typing import Any
 
 from .models import ExtractedTask
+from .ocr_noise import OCR_UNREADABLE_REPEAT_MARKER
 
 
 _SIMPLE_TASK_NUM_PATTERN = re.compile(r"[1-9]\d*")
 _INSTALLED = False
+_MAX_LOCAL_GAP_MARKDOWN_CHARS = 12000
 
 
 def _simple_task_number(value: str) -> int | None:
@@ -188,6 +190,236 @@ def _split_glued_source_blocks(
         )
 
 
+def _expected_contiguous_numeric_range(
+    extracted: list[tuple[ExtractedTask, Any]],
+    source_blocks: dict[str, list[Any]],
+    expected_tasks: int | None,
+) -> list[int] | None:
+    """Выводит диапазон N..M, только если его длина равна expected_tasks.
+
+    Это обобщает старое предположение 1..expected_tasks на фрагменты вроде
+    13..19. Диапазон должен подтверждаться минимум двумя реально извлечёнными
+    числовыми задачами и всеми явными OCR-якорями, попавшими в тот же span.
+    """
+
+    if expected_tasks is None or expected_tasks < 1:
+        return None
+
+    extracted_numbers: list[int] = []
+    for task, _page_path in extracted:
+        number = _simple_task_number(task.task_num)
+        if number is None:
+            return None
+        extracted_numbers.append(number)
+    if len(set(extracted_numbers)) < 2:
+        return None
+
+    anchor_numbers = set(extracted_numbers)
+    anchor_numbers.update(
+        number
+        for task_num in source_blocks
+        if (number := _simple_task_number(task_num)) is not None
+    )
+    if len(anchor_numbers) < 2:
+        return None
+
+    start = min(anchor_numbers)
+    end = max(anchor_numbers)
+    if end - start + 1 != expected_tasks:
+        return None
+    return list(range(start, end + 1))
+
+
+def _selected_source(
+    pipeline: Any,
+    task_num: int,
+    source_blocks: dict[str, list[Any]],
+    extracted: list[tuple[ExtractedTask, Any]],
+) -> Any | None:
+    return pipeline._select_source_task_block(
+        str(task_num),
+        source_blocks.get(str(task_num), []),
+        extracted,
+    )
+
+
+def _recover_local_gap_with_llm(
+    pipeline: Any,
+    client: Any,
+    extracted: list[tuple[ExtractedTask, Any]],
+    source_blocks: dict[str, list[Any]],
+    *,
+    lower: int,
+    upper: int,
+    missing: list[int],
+) -> list[tuple[ExtractedTask, Any]]:
+    """Точечно восстанавливает безномерные задачи между двумя OCR-якорями."""
+
+    lower_source = _selected_source(
+        pipeline,
+        lower,
+        source_blocks,
+        extracted,
+    )
+    upper_source = _selected_source(
+        pipeline,
+        upper,
+        source_blocks,
+        extracted,
+    )
+    if lower_source is None or upper_source is None:
+        return []
+    if pipeline._page_number(lower_source.page_path) != pipeline._page_number(
+        upper_source.page_path
+    ):
+        return []
+    if OCR_UNREADABLE_REPEAT_MARKER in lower_source.condition:
+        return []
+
+    local_markdown = (
+        f"{lower}. {lower_source.condition}\n\n"
+        f"{upper}. {upper_source.condition}"
+    )
+    if len(local_markdown) > _MAX_LOCAL_GAP_MARKDOWN_CHARS:
+        print(
+            f"{client.provider_name}: локальный фрагмент {lower}-{upper} слишком "
+            "велик для безопасного точечного повтора; запрос пропущен",
+            flush=True,
+        )
+        return []
+
+    available_images = list(
+        dict.fromkeys(
+            (*lower_source.available_image_ids, *upper_source.available_image_ids)
+        )
+    )
+    print(
+        f"{client.provider_name}: точечное восстановление задач "
+        f"{', '.join(map(str, missing))} между OCR-якорями {lower} и {upper}",
+        flush=True,
+    )
+    retry_tasks = client.extract_markdown(local_markdown, available_images)
+    by_number = {
+        task.task_num: pipeline._clean_extracted_task(task)
+        for task in retry_tasks
+        if task.task_num in {str(number) for number in missing}
+    }
+    if set(by_number) != {str(number) for number in missing}:
+        return []
+
+    positions: list[int] = []
+    recovered: list[tuple[ExtractedTask, Any]] = []
+    for number in missing:
+        task = by_number[str(number)]
+        cut = pipeline._embedded_condition_start(
+            lower_source.condition,
+            task.condition,
+        )
+        if cut is None:
+            return []
+        positions.append(cut)
+        task.image_id = pipeline._resolve_image_id(
+            task.image_id,
+            None,
+            available_images,
+            task_block_found=False,
+        )
+        recovered.append((task, lower_source.page_path))
+
+    if positions != sorted(positions) or len(set(positions)) != len(positions):
+        return []
+    return recovered
+
+
+def _recover_nonstandard_numeric_range(
+    pipeline: Any,
+    client: Any,
+    extracted: list[tuple[ExtractedTask, Any]],
+    source_blocks: dict[str, list[Any]],
+    expected_tasks: int | None,
+) -> list[tuple[ExtractedTask, Any]] | None:
+    """Восстанавливает диапазон вроде 13..19 без повторного прогона страницы."""
+
+    expected_numbers = _expected_contiguous_numeric_range(
+        extracted,
+        source_blocks,
+        expected_tasks,
+    )
+    if expected_numbers is None or expected_numbers[0] == 1:
+        return None
+
+    recovered_items = list(extracted)
+    present = {int(task.task_num) for task, _ in recovered_items}
+
+    # Явно пронумерованный OCR-блок — уже достаточное доказательство границы.
+    # Для него повтор LLM не нужен: OCR остаётся источником содержания.
+    for number in expected_numbers:
+        if number in present:
+            continue
+        source = _selected_source(
+            pipeline,
+            number,
+            source_blocks,
+            recovered_items,
+        )
+        if source is None:
+            continue
+        recovered_items.append(
+            (
+                ExtractedTask(
+                    task_num=str(number),
+                    condition=source.condition,
+                    image_id=source.image_id,
+                ),
+                source.page_path,
+            )
+        )
+        present.add(number)
+        print(
+            f"{client.provider_name}: задача {number} восстановлена из явного "
+            "OCR-блока без повтора модели",
+            flush=True,
+        )
+
+    explicit_anchors = sorted(
+        number
+        for number in expected_numbers
+        if source_blocks.get(str(number))
+    )
+    for lower, upper in zip(explicit_anchors, explicit_anchors[1:]):
+        missing = [
+            number
+            for number in range(lower + 1, upper)
+            if number not in present
+        ]
+        if not missing:
+            continue
+        local = _recover_local_gap_with_llm(
+            pipeline,
+            client,
+            recovered_items,
+            source_blocks,
+            lower=lower,
+            upper=upper,
+            missing=missing,
+        )
+        for task, page_path in local:
+            number = int(task.task_num)
+            if number in present:
+                continue
+            recovered_items.append((task, page_path))
+            present.add(number)
+
+    unresolved = [number for number in expected_numbers if number not in present]
+    if unresolved:
+        print(
+            f"{client.provider_name}: после точечного восстановления не найдены "
+            f"задачи {', '.join(map(str, unresolved))}",
+            flush=True,
+        )
+    return recovered_items
+
+
 def install_semantic_boundary_repairs() -> None:
     """Подключает постобработку ответа LLM до fidelity-проверки условий."""
 
@@ -197,13 +429,16 @@ def install_semantic_boundary_repairs() -> None:
 
     from . import markdown_pipeline as pipeline
 
-    original: Callable[..., list[ExtractedTask]] = pipeline._extract_page_tasks
+    original_extract: Callable[..., list[ExtractedTask]] = pipeline._extract_page_tasks
+    original_recover: Callable[..., list[tuple[ExtractedTask, Any]]] = (
+        pipeline._recover_missing_expected_tasks
+    )
 
     def extract_page_tasks_with_ocr_anchors(
         *args: Any,
         **kwargs: Any,
     ) -> list[ExtractedTask]:
-        tasks = original(*args, **kwargs)
+        tasks = original_extract(*args, **kwargs)
         source_by_task = kwargs.get("source_by_task")
         if not isinstance(source_by_task, dict) or not tasks:
             return tasks
@@ -228,5 +463,30 @@ def install_semantic_boundary_repairs() -> None:
         )
         return tasks
 
+    def recover_missing_expected_tasks_with_numeric_range(
+        client: Any,
+        extracted: list[tuple[ExtractedTask, Any]],
+        source_blocks: dict[str, list[Any]],
+        expected_tasks: int | None,
+    ) -> list[tuple[ExtractedTask, Any]]:
+        recovered = _recover_nonstandard_numeric_range(
+            pipeline,
+            client,
+            extracted,
+            source_blocks,
+            expected_tasks,
+        )
+        if recovered is not None:
+            return recovered
+        return original_recover(
+            client,
+            extracted,
+            source_blocks,
+            expected_tasks,
+        )
+
     pipeline._extract_page_tasks = extract_page_tasks_with_ocr_anchors
+    pipeline._recover_missing_expected_tasks = (
+        recover_missing_expected_tasks_with_numeric_range
+    )
     _INSTALLED = True
