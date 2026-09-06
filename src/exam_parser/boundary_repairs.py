@@ -12,7 +12,10 @@ from .boundary_rules import repair_page_group
 
 ANSWER_LINE_PATTERN = re.compile(
     r"^[ \t]*(?:<[^>\n]+>[ \t]*)*"
-    r"[ОOоo][ТTтt][ВVвv][ЕEеe][ТTтt][ \t]*:"
+    r"(?:"
+    r"[ОOоo][ТTтt][ВVвv][ЕEеe][ТTтt][ \t]*:|"
+    r"[ОOоo]_[{][ \t]*[ТTтt][ \t]*\\beta[ \t]*(?:[tTтТ]|\\tau)[ \t]*[}][ \t]*:"
+    r")"
     r"[^\n]*(?:[ \t]*</[^>\n]+>)*[ \t]*$",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -30,6 +33,16 @@ _DUPLICATE_TASK_PREFIX_PATTERN = re.compile(
     r"^[ \t]*(?P<num>(?:1[0-9]|[1-9]))\.[ \t]+"
     r"(?P=num)(?=[ \t\n])",
     re.MULTILINE,
+)
+_OCR_TASK_NUMBER_LINE_PATTERN = re.compile(
+    r"(?im)^(?P<indent>[ \t]*)(?:#{1,6}[ \t]*)?"
+    r"(?:№[ \t]*|N(?:O)?[.=]?[ \t]*)"
+    r"(?P<num>[1-9]\d?(?:\.\d+)?)"
+    r"[ \t]*$"
+)
+_OCR_ANSWER_LABEL_PATTERN = re.compile(
+    r"(?im)^[ \t]*[ОOоo]_[{][ \t]*[ТTтt][ \t]*\\beta"
+    r"[ \t]*(?:[tTтТ]|\\tau)[ \t]*[}][ \t]*:[ \t]*$"
 )
 _LEGACY_SET_INSTRUCTION_PATTERN = re.compile(
     r"(?i)задания\s+[CС]1\s*[-–—]\s*[CС]6"
@@ -117,13 +130,19 @@ def repair_long_task_boundaries(
     replacements: dict[Path, str] = {}
     for group in groups:
         source_texts = [path.read_text(encoding="utf-8") for path in group]
+        normalized_sources = [
+            _normalize_ocr_answer_labels(
+                _normalize_ocr_task_number_lines(value)
+            )
+            for value in source_texts
+        ]
         repaired_texts = [
             _remove_duplicate_task_prefixes(
                 _repair_uniform_detached_math_tasks(
                     _repair_legacy_task_marker_images(value)
                 )
             )
-            for value in repair_page_group(source_texts)
+            for value in repair_page_group(normalized_sources)
         ]
         for path, source, repaired in zip(group, source_texts, repaired_texts):
             if source != repaired:
@@ -144,6 +163,26 @@ def repair_long_task_boundaries(
         )
         target.write_text(repaired, encoding="utf-8")
     return normalized_dir
+
+
+def _normalize_ocr_task_number_lines(value: str) -> str:
+    """Нормализует отдельные OCR-варианты знака «№» перед номером задачи.
+
+    Правило применяется только к строке, которая целиком состоит из такого
+    маркера и номера. Поэтому обычные математические переменные ``N`` внутри
+    условия не затрагиваются.
+    """
+
+    return _OCR_TASK_NUMBER_LINE_PATTERN.sub(
+        lambda match: f"{match.group('indent')}{match.group('num')}. ",
+        value,
+    )
+
+
+def _normalize_ocr_answer_labels(value: str) -> str:
+    """Возвращает известный формульный OCR-артефакт строки «Ответ:»."""
+
+    return _OCR_ANSWER_LABEL_PATTERN.sub("Ответ:", value)
 
 
 def _remove_duplicate_task_prefixes(value: str) -> str:
