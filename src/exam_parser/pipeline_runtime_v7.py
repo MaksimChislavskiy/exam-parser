@@ -9,6 +9,7 @@ from PIL import Image, ImageFilter, ImageOps
 
 from .pipeline_runtime_v4 import install_runtime_repairs as install_v4_repairs
 from .semantic_boundary_repairs import install_semantic_boundary_repairs
+from .targeted_gap_recovery import install_targeted_gap_recovery
 
 
 _BBOX_PATTERN = re.compile(
@@ -221,6 +222,7 @@ def install_runtime_repairs() -> None:
     # Paddle прямыми кропами страницы. v5 и v6 намеренно не подключаются.
     install_v4_repairs()
     install_semantic_boundary_repairs()
+    install_targeted_gap_recovery()
 
     from . import markdown_pipeline as pipeline
 
