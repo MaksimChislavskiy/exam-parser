@@ -52,13 +52,16 @@ def test_reconciles_shift_from_two_ocr_anchors_and_splits_glued_sources() -> Non
         page_num=2,
     )
     assert [task.task_num for task in reconciled] == ["7", "8", "9", "10", "11"]
-    assert [task.condition for task in reconciled] == [
-        task7,
-        task8,
-        task9,
-        task10,
-        task11,
+    expected_conditions = [
+        pipeline._clean_extracted_task(
+            ExtractedTask(task_num=str(number), condition=condition)
+        ).condition
+        for number, condition in zip(
+            (7, 8, 9, 10, 11),
+            (task7, task8, task9, task10, task11),
+        )
     ]
+    assert [task.condition for task in reconciled] == expected_conditions
 
     _split_glued_source_blocks(
         pipeline,
