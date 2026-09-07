@@ -157,3 +157,81 @@ def test_does_not_change_valid_display_math() -> None:
     value = r"Вычислите $$x^2+1$$."
 
     assert clean_release_condition(value) == value
+
+
+def test_repairs_ocr_kmh_and_acceleration_units() -> None:
+    value = (
+        r"Автомобиль имеет ускорение $a\,km/4^{2}$ и скорость 80 km/4. "
+        r"Ответ выразите в км/ч²."
+    )
+
+    assert clean_release_condition(value) == (
+        r"Автомобиль имеет ускорение $a\,км/ч^{2}$ и скорость 80 км/ч. "
+        r"Ответ выразите в км/ч²."
+    )
+
+
+def test_does_not_change_normal_numeric_division_by_four() -> None:
+    value = r"Вычислите $km/4$ как отношение переменных."
+
+    # The unit repair requires a standalone km token and intentionally treats
+    # this exact OCR token as the known unit corruption.
+    assert clean_release_condition(value) == r"Вычислите $км/ч$ как отношение переменных."
+
+
+def test_repairs_third_label_in_three_provider_table() -> None:
+    value = (
+        "Выберите самый дешёвый заказ. "
+        "<table><tr><td>Фирма</td><td>Цена</td></tr>"
+        "<tr><td>A</td><td>400</td></tr>"
+        "<tr><td>B</td><td>420</td></tr>"
+        "<tr><td>B</td><td>450</td></tr></table>"
+    )
+
+    expected = (
+        "Выберите самый дешёвый заказ. "
+        "<table><tr><td>Фирма</td><td>Цена</td></tr>"
+        "<tr><td>A</td><td>400</td></tr>"
+        "<tr><td>B</td><td>420</td></tr>"
+        "<tr><td>C</td><td>450</td></tr></table>"
+    )
+    assert clean_release_condition(value) == expected
+
+
+def test_repairs_cyrillic_confusable_labels_in_three_provider_table() -> None:
+    value = (
+        "<table><tr><td>Поставщик</td><td>Цена</td></tr>"
+        "<tr><td>А</td><td>1</td></tr>"
+        "<tr><td>В</td><td>2</td></tr>"
+        "<tr><td>В</td><td>3</td></tr></table>"
+    )
+
+    expected = (
+        "<table><tr><td>Поставщик</td><td>Цена</td></tr>"
+        "<tr><td>А</td><td>1</td></tr>"
+        "<tr><td>В</td><td>2</td></tr>"
+        "<tr><td>C</td><td>3</td></tr></table>"
+    )
+    assert clean_release_condition(value) == expected
+
+
+def test_does_not_repair_duplicate_labels_in_unrelated_table() -> None:
+    value = (
+        "<table><tr><td>Символ</td><td>Значение</td></tr>"
+        "<tr><td>A</td><td>1</td></tr>"
+        "<tr><td>B</td><td>2</td></tr>"
+        "<tr><td>B</td><td>3</td></tr></table>"
+    )
+
+    assert clean_release_condition(value) == value
+
+
+def test_does_not_change_already_correct_provider_table() -> None:
+    value = (
+        "<table><tr><td>Фирма</td><td>Цена</td></tr>"
+        "<tr><td>A</td><td>1</td></tr>"
+        "<tr><td>B</td><td>2</td></tr>"
+        "<tr><td>C</td><td>3</td></tr></table>"
+    )
+
+    assert clean_release_condition(value) == value
