@@ -46,6 +46,20 @@ _CASES_ENVIRONMENT = re.compile(
     re.DOTALL,
 )
 
+# A repeated OCR defect in historical exam collections loses the opening
+# parenthesis of the first factor in a product inside ``cases``:
+# ``3\sqrt{\sin x}-1)(7y-5)=0`` -> ``(3\sqrt{\sin x}-1)(7y-5)=0``.
+# Keep this deliberately narrow: only sin/cos square-root factors followed by
+# a linear factor in y and equality to zero are repaired.
+_BROKEN_CASE_FACTOR_PRODUCT = re.compile(
+    r"(?<!\()"
+    r"(?P<left>\d+\s*\\sqrt\{\\(?:sin|cos)\s+x\}\s*-\s*1)"
+    r"\)\("
+    r"(?P<right>\d+\s*y\s*[+-]\s*\d+)"
+    r"\)(?P<equal>\s*=\s*0)",
+    re.IGNORECASE,
+)
+
 # Invalid display math nested inside a single-dollar span, e.g.
 # ``$ $$CC_1$$=2$``. Collapse delimiter nesting while preserving the body.
 _NESTED_DISPLAY_IN_INLINE = re.compile(
@@ -106,6 +120,20 @@ def _remove_nested_case_dollars(value: str) -> str:
     return _CASES_ENVIRONMENT.sub(replace, value)
 
 
+def _repair_missing_case_factor_parenthesis(value: str) -> str:
+    def repair_cases(match: re.Match[str]) -> str:
+        body = _BROKEN_CASE_FACTOR_PRODUCT.sub(
+            lambda factor: (
+                f"({factor.group('left')})({factor.group('right')})"
+                f"{factor.group('equal')}"
+            ),
+            match.group("body"),
+        )
+        return match.group("open") + body + match.group("close")
+
+    return _CASES_ENVIRONMENT.sub(repair_cases, value)
+
+
 def clean_release_condition(value: str) -> str:
     """Fixes only deterministic service/Markdown formatting artifacts."""
 
@@ -116,6 +144,7 @@ def clean_release_condition(value: str) -> str:
         cleaned,
     )
     cleaned = _remove_nested_case_dollars(cleaned)
+    cleaned = _repair_missing_case_factor_parenthesis(cleaned)
     cleaned = _NESTED_DISPLAY_IN_INLINE.sub(
         lambda match: f"${match.group('inner')}{match.group('tail')}$",
         cleaned,
