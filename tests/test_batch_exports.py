@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from zipfile import ZipFile
 
+import pytest
+
 from exam_parser.batch_exports import (
     create_batch_metadata_archive,
     create_private_archive,
@@ -43,6 +45,31 @@ def test_send_archive_is_flat_and_contains_only_referenced_images(
     with ZipFile(archives[0]) as archive:
         assert sorted(archive.namelist()) == ["task_1.png", "tasks.xlsx"]
         assert all(not name.startswith("images/") for name in archive.namelist())
+
+
+def test_send_archive_rejects_strong_release_content_blocker(
+    tmp_path: Path,
+) -> None:
+    result_dir = tmp_path / "result" / "variant"
+    result_dir.mkdir(parents=True)
+    write_tasks_xlsx(
+        [
+            TaskRecord(
+                task_num="7",
+                condition="На рисунке изображен график функции. Найдите максимум.",
+            )
+        ],
+        result_dir / "tasks.xlsx",
+    )
+
+    with pytest.raises(ValueError, match="MISSING_REQUIRED_IMAGE"):
+        create_send_archives(
+            result_dir,
+            "variant",
+            tmp_path / "send",
+        )
+
+    assert list((tmp_path / "send").glob("*.zip")) == []
 
 
 def test_private_archive_contains_source_result_and_work(tmp_path: Path) -> None:
