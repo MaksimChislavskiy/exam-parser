@@ -31,6 +31,20 @@ def test_flags_required_figure_without_image() -> None:
     assert "MISSING_REQUIRED_IMAGE" in codes
 
 
+def test_flags_grid_points_without_image() -> None:
+    codes = _codes(
+        TaskRecord(
+            task_num="B5",
+            condition=(
+                "На клетчатой бумаге с размером клетки 1×1 отмечены "
+                "точки A и B. Найдите длину отрезка AB."
+            ),
+        )
+    )
+
+    assert "MISSING_REQUIRED_IMAGE" in codes
+
+
 def test_visual_prompt_with_image_is_allowed() -> None:
     codes = _codes(
         TaskRecord(
@@ -55,6 +69,49 @@ def test_flags_service_source_text() -> None:
     )
 
     assert "SERVICE_TEXT_LEAK" in codes
+
+
+def test_flags_html_part_marker_leaked_after_condition() -> None:
+    codes = _codes(
+        TaskRecord(
+            task_num="B12",
+            condition=(
+                "Найдите скорость велосипедиста. "
+                '<div style="text-align: center;">Часть 2</div>'
+            ),
+        )
+    )
+
+    assert "SERVICE_TEXT_LEAK" in codes
+
+
+def test_flags_answer_table_and_copying_notice() -> None:
+    codes = _codes(
+        TaskRecord(
+            task_num="18",
+            condition=(
+                "Решите задачу. Проверьте, чтобы каждый ответ был записан "
+                "рядом с номером соответствующего задания. "
+                "<table><tr><td>Номер задания</td><td>Ответ</td></tr></table> "
+                "Разрешается свободное копирование в образовательных целях"
+            ),
+        )
+    )
+
+    assert "SERVICE_TEXT_LEAK" in codes
+    assert "ANSWER_LEAK" in codes
+
+
+def test_flags_greek_ocr_answer_word() -> None:
+    codes = _codes(
+        TaskRecord(
+            task_num="15",
+            condition=r"Решите неравенство $x>0$. Οτθετ: $(0;+\infty)$",
+        )
+    )
+
+    assert "GREEK_OCR_TEXT" in codes
+    assert "ANSWER_LEAK" in codes
 
 
 def test_flags_embedded_next_task_label() -> None:
@@ -123,6 +180,21 @@ def test_flags_duplicate_single_letter_table_label() -> None:
     assert "DUPLICATE_TABLE_LABEL" in codes
 
 
+def test_flags_duplicate_markdown_table_label() -> None:
+    condition = (
+        "Цены приведены в таблице.\n\n"
+        "| Поставщик | Цена |\n"
+        "|---|---|\n"
+        "| A | 100 |\n"
+        "| B | 200 |\n"
+        "| B | 300 |\n"
+    )
+
+    codes = _codes(TaskRecord(task_num="B5", condition=condition))
+
+    assert "DUPLICATE_TABLE_LABEL" in codes
+
+
 def test_flags_duplicate_task_numbers_and_conditions() -> None:
     records = (
         TaskRecord(task_num="17.1", condition="Первое условие."),
@@ -134,3 +206,81 @@ def test_flags_duplicate_task_numbers_and_conditions() -> None:
 
     assert "DUPLICATE_TASK_NUM" in codes
     assert "DUPLICATE_CONDITION" in codes
+
+
+def test_flags_internal_gap_in_lettered_task_sequence() -> None:
+    records = (
+        TaskRecord(task_num="B1", condition="Первая задача."),
+        TaskRecord(task_num="B2", condition="Вторая задача."),
+        TaskRecord(task_num="B4", condition="Четвёртая задача."),
+        TaskRecord(task_num="C1", condition="Следующая часть."),
+    )
+
+    issues = find_release_content_issues(records)
+
+    assert any(
+        issue.code == "INTERNAL_TASK_NUM_GAP" and "B3" in issue.detail
+        for issue in issues
+    )
+
+
+def test_flags_internal_gap_in_numeric_task_sequence() -> None:
+    records = (
+        TaskRecord(task_num="12", condition="Двенадцатая."),
+        TaskRecord(task_num="14", condition="Четырнадцатая."),
+        TaskRecord(task_num="15", condition="Пятнадцатая."),
+    )
+
+    issues = find_release_content_issues(records)
+
+    assert any(
+        issue.code == "INTERNAL_TASK_NUM_GAP" and "13" in issue.detail
+        for issue in issues
+    )
+
+
+def test_accepts_contiguous_partial_numeric_sequence() -> None:
+    codes = _codes(
+        TaskRecord(task_num="12", condition="Двенадцатая."),
+        TaskRecord(task_num="13", condition="Тринадцатая."),
+        TaskRecord(task_num="14", condition="Четырнадцатая."),
+    )
+
+    assert "INTERNAL_TASK_NUM_GAP" not in codes
+
+
+def test_flags_unexpected_image_for_plain_algebra_task() -> None:
+    codes = _codes(
+        TaskRecord(
+            task_num="B3",
+            condition=r"Найдите корень уравнения $\log_6(5-x)=2$.",
+            image_name="task_B3.png",
+        )
+    )
+
+    assert "UNEXPECTED_IMAGE" in codes
+
+
+def test_flags_malformed_right_latex_delimiter() -> None:
+    codes = _codes(
+        TaskRecord(
+            task_num="C5",
+            condition=r"$x^2+y^2=4$, $\left\{y=ax+1,\right $. $xy>0$",
+        )
+    )
+
+    assert "MALFORMED_LATEX_DELIMITER" in codes
+
+
+def test_flags_long_prose_hidden_inside_overline_math() -> None:
+    codes = _codes(
+        TaskRecord(
+            task_num="B7",
+            condition=(
+                r"$\overline{\text{Hайдите соса, если } "
+                r"\sin \alpha=-\frac{\sqrt{21}}{5}}$"
+            ),
+        )
+    )
+
+    assert "SUSPICIOUS_PROSE_IN_MATH" in codes
