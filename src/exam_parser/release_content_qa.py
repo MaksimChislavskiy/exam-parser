@@ -64,8 +64,8 @@ _SUSPICIOUS_ACCELERATION_UNIT_PATTERN = re.compile(
 )
 _MALFORMED_RIGHT_DELIMITER_PATTERN = re.compile(r"\\right\s*(?=\$)")
 _LONG_PROSE_IN_OVERLINE_PATTERN = re.compile(
-    r"\\overline\s*\{\s*\\text\s*\{[^}]{20,}\}\s*\}",
-    re.IGNORECASE | re.DOTALL,
+    r"\\overline\s*\{\s*\\text\s*\{(?=[^}\r\n]*\s)[^}\r\n]{12,}\}",
+    re.IGNORECASE,
 )
 _TABLE_PATTERN = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
 _ROW_PATTERN = re.compile(r"<tr\b[^>]*>(?P<body>.*?)</tr>", re.IGNORECASE | re.DOTALL)
