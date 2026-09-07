@@ -22,6 +22,12 @@ _LEADING_SECTION_HEADING = re.compile(
     re.IGNORECASE,
 )
 
+# Some recovered conditions retain only the Markdown marker itself at the
+# beginning, while the text after it is the actual condition/region label, e.g.
+# ``## 5 Решить уравнение`` or ``## (Центр) ...``. Remove only the marker and
+# preserve every following source token.
+_GENERIC_LEADING_MARKDOWN_MARKER = re.compile(r"^\s*#{1,6}\s+")
+
 # A service/section Markdown heading can also be glued to the end of an already
 # complete condition, e.g. ``... $[5;17]$. ## Не забудьте перенести ответы``.
 # Once a task condition has started, a Markdown heading is structural page text,
@@ -36,6 +42,26 @@ _EMBEDDED_MARKDOWN_HEADING = re.compile(
 # The repair is deliberately limited to one symbol plus a braced subscript.
 _FRAGMENTED_SUBSCRIPT = re.compile(
     r"\$\$\s*(?P<symbol>[A-Za-zА-ЯЁ])\s*\$_\{\s*(?P<index>[A-Za-z0-9]+)\s*\}\$"
+)
+
+# A ratio is sometimes split across math delimiters as ``$CK$:KF$``. The colon
+# proves that both compact geometry labels belong to one ratio; merge only this
+# narrow label form and keep every label token unchanged.
+_FRAGMENTED_RATIO_MATH = re.compile(
+    r"(?<!\$)\$(?!\$)\s*"
+    r"(?P<left>[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё0-9_{}\\]*)"
+    r"\s*\$(?!\$)\s*:\s*"
+    r"(?P<right>[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё0-9_{}\\]*)"
+    r"\s*\$(?!\$)"
+)
+
+# Another historical delimiter artifact wraps a simple equality as
+# ``$ $$AA_1 $=5$``. Collapse only a compact letter/subscript label followed by
+# one equality whose right side contains no further dollar delimiters.
+_FRAGMENTED_LABEL_EQUALITY = re.compile(
+    r"(?<!\$)\$(?!\$)\s*\$\$\s*"
+    r"(?P<label>[A-Za-zА-Яа-яЁё]{1,4}(?:_\{?[A-Za-z0-9]+\}?)?)"
+    r"\s*\$(?P<tail>\s*=\s*[^$\n]+)\$(?!\$)"
 )
 
 # ``cases`` is already a math environment. Dollar delimiters inside it are
@@ -138,9 +164,18 @@ def clean_release_condition(value: str) -> str:
     """Fixes only deterministic service/Markdown formatting artifacts."""
 
     cleaned = _LEADING_SECTION_HEADING.sub("", value, count=1)
+    cleaned = _GENERIC_LEADING_MARKDOWN_MARKER.sub("", cleaned, count=1)
     cleaned = _EMBEDDED_MARKDOWN_HEADING.sub("", cleaned, count=1)
     cleaned = _FRAGMENTED_SUBSCRIPT.sub(
         lambda match: f"${match.group('symbol')}_{{{match.group('index')}}}$",
+        cleaned,
+    )
+    cleaned = _FRAGMENTED_RATIO_MATH.sub(
+        lambda match: f"${match.group('left')}:{match.group('right')}$",
+        cleaned,
+    )
+    cleaned = _FRAGMENTED_LABEL_EQUALITY.sub(
+        lambda match: f"${match.group('label')}{match.group('tail')}$",
         cleaned,
     )
     cleaned = _remove_nested_case_dollars(cleaned)
