@@ -78,6 +78,24 @@ def test_removes_embedded_trailing_markdown_heading() -> None:
     )
 
 
+def test_removes_trailing_task_service_marker() -> None:
+    value = r"Решите уравнение $\log_5(x-6)=2$. Задачи №7. Условия"
+
+    assert clean_release_condition(value) == r"Решите уравнение $\log_5(x-6)=2$."
+
+
+def test_removes_only_terminal_next_task_label() -> None:
+    value = "Найдите отношение $CK:KF$. C5 |"
+
+    assert clean_release_condition(value) == "Найдите отношение $CK:KF$."
+
+
+def test_does_not_remove_nonterminal_task_label() -> None:
+    value = r"Текст задачи. C5 $x^2=4$ продолжение."
+
+    assert clean_release_condition(value) == value
+
+
 def test_removes_nested_dollars_inside_cases_environment() -> None:
     value = (
         r"Решите систему $ \begin{cases}y+\sin x=0,\ $ "
