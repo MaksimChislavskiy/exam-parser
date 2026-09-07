@@ -6,6 +6,10 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from .excel import read_tasks_xlsx
+from .release_content_qa import (
+    find_release_content_issues,
+    format_release_content_issues,
+)
 
 
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*]')
@@ -134,6 +138,12 @@ def create_send_archives(
             send_dir / f"{_safe_filename(variant_name)}.zip"
         )
         records = read_tasks_xlsx(workbook)
+        release_issues = find_release_content_issues(records)
+        if release_issues:
+            raise ValueError(
+                "release content QA: "
+                + format_release_content_issues(release_issues)
+            )
         image_names = _referenced_image_names(records)
 
         with ZipFile(
