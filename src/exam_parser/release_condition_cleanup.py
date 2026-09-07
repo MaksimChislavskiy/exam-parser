@@ -82,7 +82,7 @@ _TABLE_CELL = re.compile(
 _HTML_TAG = re.compile(r"<[^>]+>")
 _PROVIDER_HEADER = re.compile(r"^(?:Фирма|Поставщик)$", re.IGNORECASE)
 _MARKDOWN_TABLE_BLOCK = re.compile(
-    r"(?m)(?:^\s*\|[^\n]*\|\s*$\n?){5}"
+    r"(?m)(?:^[ \t]*\|[^\n]*\|[ \t]*$\n?){5}"
 )
 _MARKDOWN_SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
 _INLINE_MATH_SPAN = re.compile(
