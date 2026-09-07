@@ -70,6 +70,9 @@ _BROKEN_KMH_UNIT = re.compile(
     r"(?P<square>\s*\^\s*\{?\s*2\s*\}?)?",
     re.IGNORECASE,
 )
+_KMH_CONTEXT = re.compile(
+    r"(?i)\b(?:автомобил\w*|скорост\w*|ускорен\w*|километр\w*)\b"
+)
 _TABLE = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
 _TABLE_ROW = re.compile(r"<tr\b[^>]*>.*?</tr>", re.IGNORECASE | re.DOTALL)
 _TABLE_CELL = re.compile(
@@ -135,6 +138,9 @@ def _repair_missing_case_factor_parenthesis(value: str) -> str:
 
 
 def _repair_broken_kmh_units(value: str) -> str:
+    if _KMH_CONTEXT.search(value) is None:
+        return value
+
     def replace(match: re.Match[str]) -> str:
         return "км/ч^{2}" if match.group("square") else "км/ч"
 
