@@ -48,8 +48,35 @@ def test_removes_nested_dollars_inside_cases_environment() -> None:
 
     assert clean_release_condition(value) == (
         r"Решите систему $ \begin{cases}y+\sin x=0,\  "
-        r"3\sqrt{\sin x}-1)(7y-5)=0.\end{cases} $"
+        r"(3\sqrt{\sin x}-1)(7y-5)=0.\end{cases} $"
     )
+
+
+def test_repairs_missing_opening_parenthesis_in_case_product() -> None:
+    value = (
+        r"Решите систему $\begin{cases}y-\cos x=0, "
+        r"5\sqrt{\cos x}-1)(2y-4)=0.\end{cases}$"
+    )
+
+    assert clean_release_condition(value) == (
+        r"Решите систему $\begin{cases}y-\cos x=0, "
+        r"(5\sqrt{\cos x}-1)(2y-4)=0.\end{cases}$"
+    )
+
+
+def test_does_not_change_valid_case_product_parentheses() -> None:
+    value = (
+        r"Решите систему $\begin{cases}y-\cos x=0, "
+        r"(5\sqrt{\cos x}-1)(2y-4)=0.\end{cases}$"
+    )
+
+    assert clean_release_condition(value) == value
+
+
+def test_does_not_repair_similar_product_outside_cases() -> None:
+    value = r"Выражение 5\sqrt{\cos x}-1)(2y-4)=0."
+
+    assert clean_release_condition(value) == value
 
 
 def test_collapses_display_math_nested_inside_inline_math() -> None:
