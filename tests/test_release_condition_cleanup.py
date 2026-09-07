@@ -7,12 +7,50 @@ def test_removes_leading_markdown_section_heading() -> None:
     assert clean_release_condition(value) == "Найдите значение выражения $36\\sqrt{6}$."
 
 
+def test_removes_only_generic_leading_markdown_marker() -> None:
+    value = "## (Центр) Решите уравнение $x^2=4$."
+
+    assert clean_release_condition(value) == "(Центр) Решите уравнение $x^2=4$."
+
+
+def test_preserves_plain_leading_region_label() -> None:
+    value = "(Центр) Решите уравнение $x^2=4$."
+
+    assert clean_release_condition(value) == value
+
+
 def test_repairs_fragmented_subscript_math() -> None:
     value = "вершинами являются точки $A$, $B$, $C$, $$B$_{1}$ параллелепипеда"
 
     assert clean_release_condition(value) == (
         "вершинами являются точки $A$, $B$, $C$, $B_{1}$ параллелепипеда"
     )
+
+
+def test_repairs_fragmented_ratio_math() -> None:
+    value = "Найдите отношение $CK$:KF$."
+
+    assert clean_release_condition(value) == "Найдите отношение $CK:KF$."
+
+
+def test_preserves_valid_ratio_math() -> None:
+    value = "Найдите отношение $CK:KF$."
+
+    assert clean_release_condition(value) == value
+
+
+def test_repairs_fragmented_label_equality() -> None:
+    value = r"У параллелепипеда $AB=3$, $AD=4$, $ $$AA_1 $=5$."
+
+    assert clean_release_condition(value) == (
+        r"У параллелепипеда $AB=3$, $AD=4$, $AA_1=5$."
+    )
+
+
+def test_preserves_valid_label_equality() -> None:
+    value = r"У параллелепипеда $AB=3$, $AD=4$, $AA_1=5$."
+
+    assert clean_release_condition(value) == value
 
 
 def test_inserts_missing_space_before_inline_math() -> None:
