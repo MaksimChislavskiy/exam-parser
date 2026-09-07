@@ -38,6 +38,22 @@ _EMBEDDED_MARKDOWN_HEADING = re.compile(
     re.DOTALL,
 )
 
+# Export/service headings from source collections can be glued to an otherwise
+# complete condition, e.g. ``... = 2. Задачи №7. Условия``. The marker itself is
+# structural metadata and can be removed without reconstructing task content.
+_TRAILING_TASK_SERVICE_MARKER = re.compile(
+    r"\s+Задачи?\s*№\s*\d+(?:[.,]\d+)?\.?\s*Условия\s*$",
+    re.IGNORECASE,
+)
+
+# Another proven boundary leak is only the label of the following task at the
+# very end, e.g. ``... Найдите отношение $CK:KF$. C5 |``. Remove only a terminal
+# A/B/C-style task label after sentence punctuation; never trim text after it.
+_TRAILING_NEXT_TASK_LABEL = re.compile(
+    r"(?P<punct>[.!?])\s+[ABCАБВ]\d{1,2}\s*\|?\s*$",
+    re.IGNORECASE,
+)
+
 # Broken delimiter nesting produced by OCR/normalization, e.g. ``$$B$_{1}$``.
 # The repair is deliberately limited to one symbol plus a braced subscript.
 _FRAGMENTED_SUBSCRIPT = re.compile(
@@ -166,6 +182,12 @@ def clean_release_condition(value: str) -> str:
     cleaned = _LEADING_SECTION_HEADING.sub("", value, count=1)
     cleaned = _GENERIC_LEADING_MARKDOWN_MARKER.sub("", cleaned, count=1)
     cleaned = _EMBEDDED_MARKDOWN_HEADING.sub("", cleaned, count=1)
+    cleaned = _TRAILING_TASK_SERVICE_MARKER.sub("", cleaned, count=1)
+    cleaned = _TRAILING_NEXT_TASK_LABEL.sub(
+        lambda match: match.group("punct"),
+        cleaned,
+        count=1,
+    )
     cleaned = _FRAGMENTED_SUBSCRIPT.sub(
         lambda match: f"${match.group('symbol')}_{{{match.group('index')}}}$",
         cleaned,
