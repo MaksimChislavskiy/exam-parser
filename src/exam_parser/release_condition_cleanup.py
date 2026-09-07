@@ -80,7 +80,20 @@ _TABLE_CELL = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _HTML_TAG = re.compile(r"<[^>]+>")
-_PROVIDER_HEADER = re.compile(r"^(?:Фирма|Поставщик)$", re.IGNORECASE)
+_PROVIDER_HEADER = re.compile(
+    r"^(?:"
+    r"Фирм\w*(?:\s+такси)?|"
+    r"Поставщик\w*|"
+    r"(?:Интернет-)?магазин\w*|"
+    r"Перевозчик\w*|"
+    r"Модель(?:\s+.+)?|"
+    r"Компания\w*|"
+    r"Тариф\w*|"
+    r"Марка\w*|"
+    r"Производитель\w*"
+    r")$",
+    re.IGNORECASE,
+)
 _MARKDOWN_TABLE_BLOCK = re.compile(
     r"(?m)(?:^[ \t]*\|[^\n]*\|[ \t]*$\n?){5}"
 )
