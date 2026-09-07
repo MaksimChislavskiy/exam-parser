@@ -171,12 +171,10 @@ def test_repairs_ocr_kmh_and_acceleration_units() -> None:
     )
 
 
-def test_does_not_change_normal_numeric_division_by_four() -> None:
+def test_preserves_km_over_four_outside_physics_context() -> None:
     value = r"Вычислите $km/4$ как отношение переменных."
 
-    # The unit repair requires a standalone km token and intentionally treats
-    # this exact OCR token as the known unit corruption.
-    assert clean_release_condition(value) == r"Вычислите $км/ч$ как отношение переменных."
+    assert clean_release_condition(value) == value
 
 
 def test_repairs_third_label_in_three_provider_table() -> None:
