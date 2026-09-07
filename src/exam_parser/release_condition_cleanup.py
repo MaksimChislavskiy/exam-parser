@@ -81,6 +81,10 @@ _TABLE_CELL = re.compile(
 )
 _HTML_TAG = re.compile(r"<[^>]+>")
 _PROVIDER_HEADER = re.compile(r"^(?:Фирма|Поставщик)$", re.IGNORECASE)
+_MARKDOWN_TABLE_BLOCK = re.compile(
+    r"(?m)(?:^\s*\|[^\n]*\|\s*$\n?){5}"
+)
+_MARKDOWN_SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
 _INLINE_MATH_SPAN = re.compile(
     r"(?<!\$)\$(?!\$)[^$\n]*?(?<!\$)\$(?!\$)"
 )
@@ -201,6 +205,64 @@ def _repair_three_option_table_labels(value: str) -> str:
     return _TABLE.sub(repair_table, value)
 
 
+def _split_markdown_row(line: str) -> list[str] | None:
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return None
+    return [cell.strip() for cell in stripped[1:-1].split("|")]
+
+
+def _replace_first_markdown_cell(line: str, replacement: str) -> str:
+    first_pipe = line.find("|")
+    second_pipe = line.find("|", first_pipe + 1)
+    if first_pipe < 0 or second_pipe < 0:
+        return line
+    old = line[first_pipe + 1 : second_pipe]
+    leading = old[: len(old) - len(old.lstrip())]
+    trailing = old[len(old.rstrip()) :]
+    return (
+        line[: first_pipe + 1]
+        + leading
+        + replacement
+        + trailing
+        + line[second_pipe:]
+    )
+
+
+def _repair_three_option_markdown_table_labels(value: str) -> str:
+    def repair_block(match: re.Match[str]) -> str:
+        block = match.group(0)
+        keep_newline = block.endswith("\n")
+        lines = block.rstrip("\n").splitlines()
+        if len(lines) != 5:
+            return block
+
+        header = _split_markdown_row(lines[0])
+        separator = _split_markdown_row(lines[1])
+        data_rows = [_split_markdown_row(line) for line in lines[2:]]
+        if header is None or separator is None or any(row is None for row in data_rows):
+            return block
+        if not header or _PROVIDER_HEADER.fullmatch(header[0]) is None:
+            return block
+        if len(separator) != len(header) or not all(
+            _MARKDOWN_SEPARATOR_CELL.fullmatch(cell) for cell in separator
+        ):
+            return block
+
+        typed_rows = [row for row in data_rows if row is not None]
+        if any(len(row) != len(header) for row in typed_rows):
+            return block
+        labels = [_normalize_option_label(row[0]) for row in typed_rows]
+        if labels != ["A", "B", "B"]:
+            return block
+
+        lines[4] = _replace_first_markdown_cell(lines[4], "C")
+        repaired = "\n".join(lines)
+        return repaired + ("\n" if keep_newline else "")
+
+    return _MARKDOWN_TABLE_BLOCK.sub(repair_block, value)
+
+
 def _trim_sequential_task_boundary(task_num: str, value: str) -> str:
     key = task_num_match_key(task_num).rstrip(".")
     match = _SECTION_TASK_KEY.fullmatch(key)
@@ -255,6 +317,7 @@ def clean_release_condition(value: str) -> str:
     )
     cleaned = _repair_broken_kmh_units(cleaned)
     cleaned = _repair_three_option_table_labels(cleaned)
+    cleaned = _repair_three_option_markdown_table_labels(cleaned)
     cleaned = _space_inline_math_boundaries(cleaned)
     return cleaned.strip()
 
