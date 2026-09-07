@@ -114,6 +114,28 @@ _EXTRA_INLINE_CLOSING_DOLLAR = re.compile(
     r"(?<!\$)\$(?!\$)(?P<body>[^$\n]+)\$\$(?=[\s.,;:!?)]|$)"
 )
 
+# The historical source repeatedly OCRs Cyrillic ``ч`` in speed/acceleration
+# units as the digit 4 and often Latinizes ``км`` as ``km``. The unit token is
+# unambiguous: ``km/4`` means km/h and ``km/4^{2}`` means km/h².
+_BROKEN_KMH_UNIT = re.compile(
+    r"(?<![A-Za-zА-Яа-яЁё])(?:km|км)\s*/\s*4"
+    r"(?P<square>\s*\^\s*\{?\s*2\s*\}?)?",
+    re.IGNORECASE,
+)
+
+# Some three-option price tables repeatedly OCR the final option C as B. Repair
+# only a very narrow, self-proving layout: a table whose first header cell is
+# ``Фирма`` or ``Поставщик``, exactly three data rows, and first-column labels
+# A, B, B. In that context the third distinct option is necessarily C.
+_TABLE = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
+_TABLE_ROW = re.compile(r"<tr\b[^>]*>.*?</tr>", re.IGNORECASE | re.DOTALL)
+_TABLE_CELL = re.compile(
+    r"(?P<open><t[dh]\b[^>]*>)(?P<body>.*?)(?P<close></t[dh]>)",
+    re.IGNORECASE | re.DOTALL,
+)
+_HTML_TAG = re.compile(r"<[^>]+>")
+_PROVIDER_HEADER = re.compile(r"^(?:Фирма|Поставщик)$", re.IGNORECASE)
+
 # Complete single-dollar inline math spans. Display math ``$$...$$`` and
 # incomplete delimiters are intentionally ignored. Spacing is added only
 # outside these spans, so already-correct math such as ``$A$`` remains byte-for-
@@ -176,6 +198,67 @@ def _repair_missing_case_factor_parenthesis(value: str) -> str:
     return _CASES_ENVIRONMENT.sub(repair_cases, value)
 
 
+def _repair_broken_kmh_units(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        return "км/ч^{2}" if match.group("square") else "км/ч"
+
+    return _BROKEN_KMH_UNIT.sub(replace, value)
+
+
+def _plain_cell_text(cell_body: str) -> str:
+    return _HTML_TAG.sub("", cell_body).strip()
+
+
+def _normalize_option_label(value: str) -> str:
+    normalized = value.upper()
+    return {"А": "A", "В": "B", "С": "C"}.get(normalized, normalized)
+
+
+def _repair_three_option_table_labels(value: str) -> str:
+    def repair_table(table_match: re.Match[str]) -> str:
+        table = table_match.group(0)
+        rows = list(_TABLE_ROW.finditer(table))
+        if len(rows) != 4:
+            return table
+
+        header_cell = _TABLE_CELL.search(rows[0].group(0))
+        if header_cell is None:
+            return table
+        header = _plain_cell_text(header_cell.group("body"))
+        if _PROVIDER_HEADER.fullmatch(header) is None:
+            return table
+
+        labels: list[str] = []
+        data_cells: list[re.Match[str]] = []
+        for row in rows[1:]:
+            cell = _TABLE_CELL.search(row.group(0))
+            if cell is None:
+                return table
+            label = _normalize_option_label(_plain_cell_text(cell.group("body")))
+            labels.append(label)
+            data_cells.append(cell)
+
+        if labels != ["A", "B", "B"]:
+            return table
+
+        third_row = rows[3]
+        third_row_text = third_row.group(0)
+        third_cell = data_cells[2]
+        repaired_cell = third_cell.group("open") + "C" + third_cell.group("close")
+        repaired_row = (
+            third_row_text[: third_cell.start()]
+            + repaired_cell
+            + third_row_text[third_cell.end() :]
+        )
+        return (
+            table[: third_row.start()]
+            + repaired_row
+            + table[third_row.end() :]
+        )
+
+    return _TABLE.sub(repair_table, value)
+
+
 def clean_release_condition(value: str) -> str:
     """Fixes only deterministic service/Markdown formatting artifacts."""
 
@@ -210,6 +293,8 @@ def clean_release_condition(value: str) -> str:
         lambda match: f"${match.group('body')}$",
         cleaned,
     )
+    cleaned = _repair_broken_kmh_units(cleaned)
+    cleaned = _repair_three_option_table_labels(cleaned)
     cleaned = _space_inline_math_boundaries(cleaned)
     return cleaned.strip()
 
